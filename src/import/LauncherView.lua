@@ -1097,7 +1097,8 @@ local function buildSaveCartRow(imp, x, y, w, m)
   else
     local info = GameVersion.info(version)
     hint = Strings("Freeze the mods enabled for %s into a cart.",
-      (info and (info.launcherName or info.displayName)) or tostring(version))
+      Strings((info and (info.launcherName or info.displayName))
+        or tostring(version)))
   end
   local hx = x + bw + gap
   local hw = math.max(0, x + w - hx)
@@ -1111,7 +1112,8 @@ end
 -- The launcher's name for a game id, where all a row has is the id.
 local function gameLabel(version)
   local info = GameVersion.info(version)
-  return (info and (info.launcherName or info.displayName)) or tostring(version)
+  return Strings((info and (info.launcherName or info.displayName))
+    or tostring(version))
 end
 
 local function findActionFor(entry, installedVersion)
@@ -1598,7 +1600,7 @@ local function romModel(imp, version, info, ready, locked)
   elseif imp.returning[version] then
     return { state = Strings("Update required"),
       detail = Strings("This build needs a few more things from your ")
-        .. info.label .. Strings(" ROM. Re-import to continue."),
+        .. Strings(info.label) .. Strings(" ROM. Re-import to continue."),
       label = Strings("Re-import ROM"), enabled = true }
   end
   return { state = Strings("No ROM imported"),
@@ -2082,8 +2084,7 @@ local function buildGamePanel(imp, x, y, w, availH, m, version, budgetH)
   local info = GameVersion.info(version)
   local locked = info == nil
   local skin = cartSkin(imp, version)
-  local gameName = skin.name or (info and (info.launcherName or info.displayName))
-    or tostring(version)
+  local gameName = skin.name or gameLabel(version)
   local ready = (not locked) and imp.ready[version] or false
 
   -- title + status tag.  Ready is a check chip (the font has no tick glyph);
@@ -3367,7 +3368,7 @@ local function footerHeight(imp, m)
   local f = footerLayout(imp, m, math.floor(130 * m.s))
   local h = math.floor(8 * m.s) + f.rowH + math.floor(6 * m.s)
   if f.wrap then h = h + f.chipH + math.floor(6 * m.s) end
-  return h + Kit.wrapHeight("micro", TRUST_WARNING, m.contentW)
+  return h + Kit.wrapHeight("micro", Strings(TRUST_WARNING), m.contentW)
     + math.floor(8 * m.s)
 end
 
@@ -3432,7 +3433,7 @@ local function buildFooter(imp, m, y)
   -- the URL inside it IS the link -- no separate link floating elsewhere.
   -- font:getWrap never splits an unspaced word, so the URL stays whole on
   -- one line and a plain substring find locates it.
-  local lines = Kit.wrapLines("micro", TRUST_WARNING, m.contentW)
+  local lines = Kit.wrapLines("micro", Strings(TRUST_WARNING), m.contentW)
   local lh = Kit.textHeight("micro")
   for i, line in ipairs(lines or {}) do
     local lw = Kit.textWidth("micro", line)
@@ -4027,8 +4028,7 @@ local function buildCartModal(imp, m)
   local version = imp._cartPopup
   local rows = imp:_ensureCarts(version)
   local info = GameVersion.info(version)
-  local baseName = info and (info.displayName or info.launcherName)
-    or tostring(version)
+  local baseName = gameLabel(version)
   local active = imp.activeCart[version]
   local pad = math.floor(18 * m.s)
   local gap = math.floor(8 * m.s)
@@ -4118,8 +4118,7 @@ end
 local function buildCartSaveModal(imp, m)
   local st = imp._cartSave
   local info = GameVersion.info(st.version)
-  local gameName = (info and (info.launcherName or info.displayName))
-    or tostring(st.version)
+  local gameName = gameLabel(st.version)
   local pad = math.floor(18 * m.s)
   local gap = math.floor(8 * m.s)
   local w = math.floor(500 * m.s)
@@ -4684,8 +4683,7 @@ local function buildGameManageModal(imp, m)
   local info = GameVersion.info(version)
   local ready = imp.ready[version] or false
   local mdl = romModel(imp, version, info, ready, info == nil)
-  local gameName = info and (info.launcherName or info.displayName)
-    or tostring(version)
+  local gameName = gameLabel(version)
   local saveDir = love.filesystem.getSaveDirectory
     and love.filesystem.getSaveDirectory() or nil
   -- The folder link is desktop-only: Android and NX have no browsable path to

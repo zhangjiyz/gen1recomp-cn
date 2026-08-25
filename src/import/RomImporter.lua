@@ -2034,7 +2034,23 @@ function RomImporter:chooseMod()
     return
   end
   local path = chooseZip()
-  if path then self:_installMod(path) end
+  if path then
+    self:_installMod(path)
+    return
+  end
+  -- Handheld Linux builds generally have neither zenity nor kdialog.  Mirror
+  -- the ROM import fallback and scan the unpacked lovegame root for a mod ZIP.
+  if love.system.getOS() == "Linux" then
+    local name = findPendingMod(true, self.pickSkip)
+    if name then
+      self:_installMod(name)
+      consumePick(self, name, "picked_mod.zip",
+        self.modNotice and self.modNotice.ok)
+    else
+      self.modNotice = { ok = false,
+        text = "No file picker. Copy a mod .zip into the game folder." }
+    end
+  end
 end
 
 local function requiredManifest(self, modId)

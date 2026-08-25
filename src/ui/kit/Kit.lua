@@ -42,6 +42,7 @@
 -- covers.
 
 local Theme = require("src.ui.kit.Theme")
+local Strings = require("src.core.Strings")
 local PAL = Theme.PAL
 
 local Kit = {}
@@ -880,11 +881,12 @@ function Kit.pager(x, y, w, page, total, perPage, idPrefix)
   local gap = 8 * Kit.scale
   idPrefix = idPrefix or "pager"
 
-  if Kit.button(x, y, bw, h, "< Prev", { kind = "ghost", font = "small",
+  if Kit.button(x, y, bw, h, Strings("< Prev"),
+      { kind = "ghost", font = "small",
       enabled = page > 1, id = idPrefix .. ":prev" }) then
     page = math.max(1, page - 1)
   end
-  if Kit.button(x + bw + gap, y, bw, h, "Next >", { kind = "ghost",
+  if Kit.button(x + bw + gap, y, bw, h, Strings("Next >"), { kind = "ghost",
       font = "small", enabled = page < pages, id = idPrefix .. ":next" }) then
     page = math.min(pages, page + 1)
   end
@@ -900,8 +902,8 @@ function Kit.pager(x, y, w, page, total, perPage, idPrefix)
       or memo.page ~= page or memo.pages ~= pages then
     memo.first, memo.last, memo.total = first, last, total
     memo.page, memo.pages = page, pages
-    memo.label = ("%d-%d of %d   (page %d/%d)")
-      :format(first, last, total, page, pages)
+    memo.label = Strings("%d-%d of %d   (page %d/%d)",
+      first, last, total, page, pages)
   end
   local label = memo.label
   local labelX = x + 2 * bw + 2 * gap + gap

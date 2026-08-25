@@ -36,8 +36,17 @@
 
 local Strings = {}
 
+-- The CN fork ships a small application catalog of its own.  A translation
+-- mod remains the top layer, so upstream's existing mod contract and load
+-- order stay intact while launcher/importer text can be Chinese before any
+-- game or mod has loaded.
+local baseCatalog = require("src.locales.zh_CN")
 local catalog = nil   -- Data.strings once a mod has put something in it
 local missing = {}    -- format-arity complaints, reported once each
+
+local function hasEntries(t)
+  return type(t) == "table" and next(t) ~= nil
+end
 
 -- Called from Game after the mod merge, and again on dev-mode hot reload.
 -- Holding the table (not a copy) means a mod that registers late still
@@ -53,19 +62,23 @@ function Strings.load(data)
 end
 
 function Strings.active()
-  return catalog ~= nil
+  return catalog ~= nil or hasEntries(baseCatalog)
 end
 
 -- The lookup itself.  `context` is optional and only disambiguates sources
 -- that collide; the plain key is tried after it, so a translation that does
 -- not care about the distinction can supply one entry for both.
 function Strings.lookup(source, context)
-  if not catalog then return source end
   if context then
-    local hit = catalog[context .. "|" .. source]
+    local key = context .. "|" .. source
+    local hit = catalog and catalog[key]
+    if type(hit) == "string" then return hit end
+    hit = baseCatalog and baseCatalog[key]
     if type(hit) == "string" then return hit end
   end
-  local hit = catalog[source]
+  local hit = catalog and catalog[source]
+  if type(hit) == "string" then return hit end
+  hit = baseCatalog and baseCatalog[source]
   if type(hit) == "string" then return hit end
   return source
 end

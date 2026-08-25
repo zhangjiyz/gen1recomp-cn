@@ -31,7 +31,7 @@ end
 
 local function volLabel(v)
   v = v or 7
-  return v == 0 and "OFF" or tostring(v)
+  return v == 0 and Strings("OFF") or tostring(v)
 end
 
 local function stepVolume(v, dir)
@@ -226,7 +226,7 @@ local function coreRows(opts, hooks)
     function() return volLabel(opts.sfxVol) end,
     function(dir) opts.sfxVol = stepVolume(opts.sfxVol, dir); return true end)
   add(Strings("MUSIC FILTER"),
-    function() return FILTERS[(opts.musicFilter or 0) + 1] end,
+    function() return Strings(FILTERS[(opts.musicFilter or 0) + 1]) end,
     function(dir)
       opts.musicFilter = ((opts.musicFilter or 0) + dir) % #FILTERS
       return true
@@ -245,7 +245,7 @@ local function coreRows(opts, hooks)
   local okPal, PaletteFX = pcall(require, "src.render.PaletteFX")
   if okPal then
     add(Strings("COLORS"),
-      function() return PaletteFX.modeLabel(opts.colors or "gbc") end,
+      function() return Strings(PaletteFX.modeLabel(opts.colors or "gbc")) end,
       function(dir)
         local cur, idx = opts.colors or "gbc", 1
         for i, m in ipairs(PaletteFX.MODES) do
@@ -259,7 +259,7 @@ local function coreRows(opts, hooks)
   local okTilt, Tilt = pcall(require, "src.render.Tilt")
   if okTilt then
     add(Strings("TILT"),
-      function() return Tilt.levelLabel(opts.tilt or 0) end,
+      function() return Strings(Tilt.levelLabel(opts.tilt or 0)) end,
       function(dir)
         opts.tilt = wrapIndex((opts.tilt or 0) + dir, 4)
         return true
@@ -269,7 +269,7 @@ local function coreRows(opts, hooks)
   local okZ, Zoom = pcall(require, "src.render.Zoom")
   if okZ then
     add(Strings("ZOOM"),
-      function() return Zoom.offsetLabel(opts.zoom or 0) end,
+      function() return Strings(Zoom.offsetLabel(opts.zoom or 0)) end,
       function(dir)
         Zoom.nudgeOptions(opts, dir, Zoom.windowFitScale())
         return true
@@ -279,7 +279,7 @@ local function coreRows(opts, hooks)
   local okTile, TileRenderer = pcall(require, "src.render.TileRenderer")
   if okTile and TileRenderer.VOID_FILLS then
     add(Strings("VOID FILL"),
-      function() return TileRenderer.voidFillLabel(opts.voidFill) end,
+      function() return Strings(TileRenderer.voidFillLabel(opts.voidFill)) end,
       function(dir)
         local modes = TileRenderer.VOID_FILLS
         local cur, idx = opts.voidFill or "trees", 1
@@ -294,7 +294,7 @@ local function coreRows(opts, hooks)
   local okVm, VideoMode = pcall(require, "src.core.VideoMode")
   if okVm then
     add(Strings("VIDEO MODE"),
-      function() return VideoMode.modeLabel(opts.videoMode) end,
+      function() return Strings(VideoMode.modeLabel(opts.videoMode)) end,
       function(dir)
         opts.videoMode = VideoMode.cycle(opts.videoMode, dir)
         return true
@@ -320,7 +320,7 @@ local function coreRows(opts, hooks)
   local okFr, FaithfulRes = pcall(require, "src.core.FaithfulRes")
   if okFr then
     add(Strings("FAITHFUL RATIO"),
-      function() return FaithfulRes.label(opts.faithfulRes) end,
+      function() return Strings(FaithfulRes.label(opts.faithfulRes)) end,
       function(dir)
         opts.faithfulRes = FaithfulRes.cycle(opts.faithfulRes, dir)
         return true
@@ -341,7 +341,7 @@ local function coreRows(opts, hooks)
   local okCap, FrameCap = pcall(require, "src.core.FrameCap")
   if okCap then
     add(Strings("MAX FPS"),
-      function() return FrameCap.label(opts.fpsCap) end,
+      function() return Strings(FrameCap.label(opts.fpsCap)) end,
       function(dir)
         opts.fpsCap = FrameCap.cycle(opts.fpsCap, dir)
         return true
@@ -353,19 +353,19 @@ local function coreRows(opts, hooks)
     -- Per-category (RFC 0007): overworld/battle/menu each cycle their own
     -- multiplier, mirroring OptionsMenu.lua's three rows.
     add(Strings("OVERWORLD SPEED"),
-      function() return GameSpeed.levelLabel(opts.speedOverworld) end,
+      function() return Strings(GameSpeed.levelLabel(opts.speedOverworld)) end,
       function(dir)
         opts.speedOverworld = GameSpeed.cycle(opts.speedOverworld, dir)
         return true
       end)
     add(Strings("BATTLE SPEED"),
-      function() return GameSpeed.levelLabel(opts.speedBattle) end,
+      function() return Strings(GameSpeed.levelLabel(opts.speedBattle)) end,
       function(dir)
         opts.speedBattle = GameSpeed.cycle(opts.speedBattle, dir)
         return true
       end)
     add(Strings("MENU SPEED"),
-      function() return GameSpeed.levelLabel(opts.speedMenu) end,
+      function() return Strings(GameSpeed.levelLabel(opts.speedMenu)) end,
       function(dir)
         opts.speedMenu = GameSpeed.cycle(opts.speedMenu, dir)
         return true
@@ -471,21 +471,21 @@ local function modRows(opts, mod)
       -- malformed rows are skipped silently here; the in-game manager is
       -- where schema errors are reported to the author
     elseif row.type == "toggle" then
-      rows[#rows + 1] = { label = row.label or row.key,
+      rows[#rows + 1] = { label = Strings(row.label or row.key),
         value = function() return get(row) and Strings("ON") or Strings("OFF") end,
         step = function()
           set(row.key, not get(row))
           return true
         end }
     elseif row.type == "choice" then
-      rows[#rows + 1] = { label = row.label or row.key,
+      rows[#rows + 1] = { label = Strings(row.label or row.key),
         value = function()
           local cur = get(row)
           for _, choice in ipairs(row.choices or {}) do
-            if choice[2] == cur then return tostring(choice[1]) end
+            if choice[2] == cur then return Strings(tostring(choice[1])) end
           end
           local first = (row.choices or {})[1]
-          return first and tostring(first[1]) or "----"
+          return first and Strings(tostring(first[1])) or "----"
         end,
         step = function(dir)
           local choices = row.choices or {}
@@ -498,7 +498,7 @@ local function modRows(opts, mod)
           return true
         end }
     elseif row.type == "number" then
-      rows[#rows + 1] = { label = row.label or row.key,
+      rows[#rows + 1] = { label = Strings(row.label or row.key),
         value = function() return tostring(get(row) or 0) end,
         step = function(dir)
           local v = (tonumber(get(row)) or 0) + dir * (row.step or 1)
@@ -508,7 +508,7 @@ local function modRows(opts, mod)
           return true
         end }
     elseif row.type == "text" then
-      rows[#rows + 1] = { label = row.label or row.key,
+      rows[#rows + 1] = { label = Strings(row.label or row.key),
         value = function() return tostring(get(row) or "") end,
         editText = { maxLen = row.maxLen or 7 },
         setText = function(text) set(row.key, text) end }
@@ -600,7 +600,7 @@ local function gen2Rows(opts, hooks)
     function() return volLabel(opts.sfxVol) end,
     function(dir) opts.sfxVol = stepVolume(opts.sfxVol, dir); return true end)
   add(Strings("MUSIC FILTER"),
-    function() return FILTERS[(opts.musicFilter or 0) + 1] end,
+    function() return Strings(FILTERS[(opts.musicFilter or 0) + 1]) end,
     function(dir)
       opts.musicFilter = ((opts.musicFilter or 0) + dir) % #FILTERS
       return true
@@ -609,7 +609,7 @@ local function gen2Rows(opts, hooks)
   local okPal, GbcPalette = pcall(require, "src.render.GbcPalette")
   if okPal then
     add(Strings("COLOR"),
-      function() return GbcPalette.modeLabel(opts.color or "gbc") end,
+      function() return Strings(GbcPalette.modeLabel(opts.color or "gbc")) end,
       function(dir)
         local cur, idx = opts.color or "gbc", 1
         for i, mode in ipairs(GbcPalette.MODES) do
@@ -624,7 +624,7 @@ local function gen2Rows(opts, hooks)
   local okSpd, GameSpeed = pcall(require, "src.core.GameSpeed")
   if okSpd then
     add(Strings("GAME SPEED"),
-      function() return GameSpeed.levelLabel(opts.speed) end,
+      function() return Strings(GameSpeed.levelLabel(opts.speed)) end,
       function(dir)
         opts.speed = GameSpeed.cycle(opts.speed, dir)
         return true
@@ -634,7 +634,7 @@ local function gen2Rows(opts, hooks)
   local okTilt, Tilt = pcall(require, "src.render.Tilt")
   if okTilt then
     add(Strings("TILT"),
-      function() return Tilt.levelLabel(opts.tilt or 0) end,
+      function() return Strings(Tilt.levelLabel(opts.tilt or 0)) end,
       function(dir)
         opts.tilt = wrapIndex((opts.tilt or 0) + dir, 4)
         return true
@@ -644,7 +644,7 @@ local function gen2Rows(opts, hooks)
   local okZ, Zoom = pcall(require, "src.render.Zoom")
   if okZ then
     add(Strings("ZOOM"),
-      function() return Zoom.offsetLabel(opts.zoom or 0) end,
+      function() return Strings(Zoom.offsetLabel(opts.zoom or 0)) end,
       function(dir)
         Zoom.nudgeOptions(opts, dir, Zoom.windowFitScale())
         return true
@@ -654,7 +654,7 @@ local function gen2Rows(opts, hooks)
   local okFill, BorderFill = pcall(require, "src.world.gen2.BorderFill")
   if okFill and BorderFill.VOID_FILLS then
     add(Strings("VOID FILL"),
-      function() return BorderFill.voidFillLabel(opts.voidFill) end,
+      function() return Strings(BorderFill.voidFillLabel(opts.voidFill)) end,
       function(dir)
         local modes = BorderFill.VOID_FILLS
         local cur, idx = opts.voidFill or "fade", 1
@@ -669,7 +669,7 @@ local function gen2Rows(opts, hooks)
   local okVm, VideoMode = pcall(require, "src.core.VideoMode")
   if okVm then
     add(Strings("VIDEO MODE"),
-      function() return VideoMode.modeLabel(opts.videoMode) end,
+      function() return Strings(VideoMode.modeLabel(opts.videoMode)) end,
       function(dir)
         opts.videoMode = VideoMode.cycle(opts.videoMode, dir)
         return true
@@ -679,7 +679,7 @@ local function gen2Rows(opts, hooks)
   local okCap, FrameCap = pcall(require, "src.core.FrameCap")
   if okCap then
     add(Strings("MAX FPS"),
-      function() return FrameCap.label(opts.fpsCap) end,
+      function() return Strings(FrameCap.label(opts.fpsCap)) end,
       function(dir)
         opts.fpsCap = FrameCap.cycle(opts.fpsCap, dir)
         return true
@@ -708,7 +708,7 @@ end
 -- options.lua rather than the flat Gen 1 one.
 function LauncherSettings.open(hooks, version)
   local opts = SaveData.loadOptions()
-  local sections
+  local sections = {}
   local GameVersion = require("src.core.GameVersion")
   if GameVersion.VERSIONS[version]
       and GameVersion.generation(version) == 2 then
@@ -717,13 +717,11 @@ function LauncherSettings.open(hooks, version)
       block = {}
       opts[GEN2_KEY] = block
     end
-    sections = {
-      { title = Strings("OPTIONS"), rows = gen2Rows(block, hooks) },
-    }
+    sections[#sections + 1] =
+      { title = Strings("OPTIONS"), rows = gen2Rows(block, hooks) }
   else
-    sections = {
-      { title = Strings("OPTIONS"), rows = coreRows(opts, hooks) },
-    }
+    sections[#sections + 1] =
+      { title = Strings("OPTIONS"), rows = coreRows(opts, hooks) }
   end
   -- Mod options are generation-agnostic (the manager's options_schema
   -- contract), so they ride along either way.

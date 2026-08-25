@@ -1035,8 +1035,7 @@ function Game2:load()
   -- restored world level stays switched on, as it does for Gen 1.
 
   -- After the merge, so a font override and a translation mod's catalog
-  -- (#501) are both in Data before the first screen draws a glyph.  Gen 1
-  -- calls these two here for the same reason (src/core/Game.lua:65,70).
+  -- (#501) are both in Data before the first screen draws a glyph.
   if self.data.font then
     pcall(Font.load, self.data)
   end

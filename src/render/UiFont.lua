@@ -8,21 +8,21 @@
 --
 -- Font:setFallbacks fills ONLY the codepoints the primary face is missing, so
 -- Latin keeps the launcher's own look and nothing about an English install
--- changes; only the glyphs it genuinely cannot draw come from the bundled
--- Plain Pixel (assets/fonts/plainpixel/README.md: CC-BY 4.0, Douglas
--- Vautour), which covers kana and CJK.  That is the same face the in-game TTF
--- text mode uses, so a translated launcher and a translated game agree.
+-- changes. Simplified Chinese comes from Fusion Pixel's zh_hans face, which
+-- covers the characters Plain Pixel's smaller CJK set does not. The in-game
+-- TTF mode uses the same face, so launcher and game agree.
 --
 -- Measuring and rendering must attach the same fallback or the launcher
 -- measures a width it does not draw -- which is how buttons clip.
 
 local UiFont = {}
 
-local FALLBACK_PATH = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
--- Plain Pixel only rasterizes evenly at multiples of its 15px design em, so
+local FALLBACK_PATH =
+  "assets/fonts/fusionpixel/fusion-pixel-12px-proportional-zh_hans.ttf"
+-- Fusion Pixel only rasterizes evenly at multiples of its 12px design em, so
 -- snap rather than matching the primary size exactly: a fallback glyph a pixel
 -- off its grid is far more obvious than one a pixel off its neighbours.
-local DESIGN_EM = 15
+local DESIGN_EM = 12
 
 local cache = {}
 local unavailable = false
