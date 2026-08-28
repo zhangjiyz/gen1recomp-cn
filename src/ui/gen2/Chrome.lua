@@ -12,6 +12,7 @@
 
 local Font = require("src.render.Font")
 local GbcPalette = require("src.render.GbcPalette")
+local Strings = require("src.core.Strings")
 
 local Chrome = {}
 
@@ -92,7 +93,7 @@ end
 
 function Chrome.print(text, tx, ty)
   love.graphics.setColor(0, 0, 0, 1)
-  return Font.draw(text, tx * 8, ty * 8)
+  return Font.draw(Strings(text), tx * 8, ty * 8)
 end
 
 -- Prints a string the way a tilemap screen does: the glyph tiles replace the
@@ -130,6 +131,7 @@ function Chrome.printThrough(text, tx, ty, palette, invert)
   if not (palette and GbcPalette.available()) then
     return Chrome.print(text, tx, ty)
   end
+  text = Strings(text)
   -- `pal` is used below and never touches the caller's palette again --
   -- including useRaw for the draw, since useRaw skips the fold GbcPalette.use
   -- would otherwise apply and folding it a second time would undo this.
@@ -187,6 +189,7 @@ end
 -- Right-aligned within a field that ends at tile `txEnd` (exclusive), which is
 -- how Gold prints numbers (PrintNum fills from the right).
 function Chrome.printRight(text, txEnd, ty)
+  text = Strings(text)
   local width = Font.width(text)
   love.graphics.setColor(0, 0, 0, 1)
   return Font.draw(text, txEnd * 8 - width, ty * 8)
@@ -200,6 +203,7 @@ end
 -- segment wraps on its own and the break survives, rather than being eaten by
 -- the %S+ tokenizer and re-wrapped by width.
 function Chrome.wrap(text, width)
+  text = Strings(text)
   local budget = (width or Chrome.SCREEN_W) * 8
   local lines = {}
   for segment in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do

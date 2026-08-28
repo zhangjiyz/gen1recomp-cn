@@ -6,6 +6,7 @@ local check, eq = T.check, T.eq
 
 local TouchSkin = require("src.core.TouchSkin")
 local Studio = require("src.ui.SkinStudio")
+local Strings = require("src.core.Strings")
 
 local function near(a, b, tol, msg)
   check(math.abs(a - b) <= (tol or 1e-6), msg .. " (got " .. tostring(a) ..
@@ -254,7 +255,8 @@ Studio.nextPage()
 eq(Studio.pageIndex, 2, "next page still cycles")
 local name, detail = Studio.pageLabel(2)
 eq(name, "page2", "the page list shows the page name")
-check(detail:find("controls", 1, true) ~= nil, "and what is on it")
+check(detail:find(Strings("%d controls", 0), 1, true) ~= nil,
+      "and what is on it")
 
 check(Studio.renamePage("landscape"), "a page can be renamed")
 eq(Studio.page().name, "landscape", "and keeps the new name")

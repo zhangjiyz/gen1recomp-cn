@@ -41,6 +41,7 @@ local Strings = {}
 -- order stay intact while launcher/importer text can be Chinese before any
 -- game or mod has loaded.
 local baseCatalog = require("src.locales.zh_CN")
+local appCatalogEnabled = false
 local catalog = nil   -- Data.strings once a mod has put something in it
 local missing = {}    -- format-arity complaints, reported once each
 
@@ -61,8 +62,16 @@ function Strings.load(data)
   end
 end
 
+-- Launcher and game boot enable the bundled Chinese fallback explicitly.
+-- Keeping the default off lets ROM-free tools and parity tests request the
+-- upstream-English behavior without loading a game. Data.strings is always
+-- checked first, so a translation mod stays authoritative when enabled.
+function Strings.setAppCatalogEnabled(enabled)
+  appCatalogEnabled = enabled == true
+end
+
 function Strings.active()
-  return catalog ~= nil or hasEntries(baseCatalog)
+  return catalog ~= nil or (appCatalogEnabled and hasEntries(baseCatalog))
 end
 
 -- The lookup itself.  `context` is optional and only disambiguates sources
@@ -73,12 +82,12 @@ function Strings.lookup(source, context)
     local key = context .. "|" .. source
     local hit = catalog and catalog[key]
     if type(hit) == "string" then return hit end
-    hit = baseCatalog and baseCatalog[key]
+    hit = appCatalogEnabled and baseCatalog and baseCatalog[key]
     if type(hit) == "string" then return hit end
   end
   local hit = catalog and catalog[source]
   if type(hit) == "string" then return hit end
-  hit = baseCatalog and baseCatalog[source]
+  hit = appCatalogEnabled and baseCatalog and baseCatalog[source]
   if type(hit) == "string" then return hit end
   return source
 end

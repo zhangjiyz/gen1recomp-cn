@@ -5,10 +5,8 @@
 -- against a real Gold build, gen1recomp#1642). This drives
 -- OptionsMenu:drawPanel() with a mod-loaded Strings catalog and checks the
 -- translated text reaches Font.draw, for both a cart-original row (label +
--- display value) and a port-added row (label only -- its value already
--- comes pre-translated from the shared module it calls, same as the Gen 1
--- OPTION screen's equivalent rows), plus a vanilla no-mod case proving the
--- fallback is unchanged.
+-- display value) and port-added dynamic values, plus a vanilla no-mod case
+-- proving the fallback is unchanged.
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local T = require("tests.harness")
@@ -60,7 +58,7 @@ do
   drawn = {}
   menu:drawPanel()
   T.eq(drawnAt(LABEL_X, 2 * 8), "TEXT SPEED",
-    "row 1's label draws in English with no mod loaded")
+    "row 1's label draws in English before app/game boot enables fallback")
   -- Save.DEFAULT_OPTIONS.textSpeed is "MID", the cart's own default.
   T.eq(drawnAt(VALUE_X, 3 * 8), "MID ",
     "and its cart-original display value too")
@@ -116,6 +114,43 @@ do
   -- every check below it in this file.
   Strings.load({})
   T.check(not Strings.active(), "the catalog is unloaded for the checks after this one")
+end
+
+-- --------------------------------------- bundled Chinese game fallback
+do
+  Strings.setAppCatalogEnabled(true)
+  Strings.load(nil)
+  local menu = OptionsMenu.new({})
+  local videoIndex
+  for i, row in ipairs(menu.rows) do
+    if row.key == "videoMode" then videoIndex = i break end
+  end
+  T.check(videoIndex ~= nil, "VIDEO MODE is one of the rows")
+  menu.index = videoIndex
+  menu:ensureVisible()
+
+  menu.options.videoMode = "windowed"
+  drawn = {}
+  menu:drawPanel()
+  local slot = videoIndex - menu.scroll
+  T.eq(drawnAt(VALUE_X, (3 + (slot - 1) * 2) * 8), "窗口",
+    "WINDOWED uses the bundled Chinese game fallback")
+
+  menu.options.videoMode = "borderless"
+  drawn = {}
+  menu:drawPanel()
+  T.eq(drawnAt(VALUE_X, (3 + (slot - 1) * 2) * 8), "全屏",
+    "FULL uses the video-mode context instead of the generic translation")
+
+  Strings.load({ strings = {
+    ["options.videoMode|WINDOWED"] = "MOD WINDOW",
+  } })
+  menu.options.videoMode = "windowed"
+  drawn = {}
+  menu:drawPanel()
+  T.eq(drawnAt(VALUE_X, (3 + (slot - 1) * 2) * 8), "MOD WINDOW",
+    "a translation mod still overrides the bundled contextual value")
+  Strings.load(nil)
 end
 
 T.finish("gen2_options_menu_translation_test")

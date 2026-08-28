@@ -285,6 +285,11 @@ function closeSkinStudio()
 end
 
 local function makeLauncher()
+  local Strings = require("src.core.Strings")
+  Strings.setAppCatalogEnabled(true)
+  local preload = require("src.mods.LauncherMods").translationStrings()
+  Strings.load(preload and { strings = preload } or nil)
+
   local RomImporter = require("src.import.RomImporter")
   local forceImport = os.getenv("POKEPORT_FORCE_IMPORT") == "1"
   return RomImporter.new(function(version, cartId)
@@ -321,9 +326,6 @@ local function returnToLauncher()
 
   require("src.core.Orientation").applyOptions(
     require("src.core.SaveData").loadOptions())
-
-  local preload = require("src.mods.LauncherMods").translationStrings()
-  if preload then require("src.core.Strings").load({ strings = preload }) end
 
   if love.window and love.window.setTitle then
     local Version = require("src.core.Version")
@@ -425,6 +427,10 @@ function love.load(args)
   local Boot = require("src.update.Boot")
   if Boot.run(args) then return end
 
+  -- Enable the bundled Chinese fallback before either launcher or game boot.
+  -- Game/Game2 keep it enabled, with translation mods taking priority.
+  require("src.core.Strings").setAppCatalogEnabled(true)
+
   local savePath
   for i, a in ipairs(args or {}) do
     if a == "--editor" then
@@ -497,18 +503,6 @@ function love.load(args)
     end
     bootGame(scriptedVersion)
     return
-  end
-
-  -- The launcher draws before any game boots, so the mod loader has not run
-  -- and Strings has no catalog.  Routing the launcher's text through Strings
-  -- (#767) only pays off if something fills that catalog this early, and no
-  -- restart could: the ordering is the same on every launch.  Read the
-  -- enabled mods' string catalogs -- data only, no entry chunk -- so a
-  -- translation reaches the launcher too.  The active game's loader replaces
-  -- this with the real merged catalog once a version boots.
-  do
-    local preload = require("src.mods.LauncherMods").translationStrings()
-    if preload then require("src.core.Strings").load({ strings = preload }) end
   end
 
   -- LAUNCH OPTIONS: skip the launcher and boot a game directly.

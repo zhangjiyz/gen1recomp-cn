@@ -1,6 +1,7 @@
 local SyncClient = require("src.sync.SyncClient")
 local SyncState = require("src.sync.SyncState")
 local SyncMods = require("src.sync.SyncMods")
+local Strings = require("src.core.Strings")
 
 local SyncEngine = {}
 SyncEngine.__index = SyncEngine
@@ -156,8 +157,8 @@ function SyncEngine.forgetShared()
 end
 
 function SyncEngine:defaultStatus()
-  if not SyncState.linked(self.state) then return UNLINKED_STATUS end
-  return IDLE_STATUS
+  if not SyncState.linked(self.state) then return Strings(UNLINKED_STATUS) end
+  return Strings(IDLE_STATUS)
 end
 
 function SyncEngine:linked()
@@ -175,8 +176,8 @@ end
 
 function SyncEngine:_fail(message)
   self.phase = "error"
-  self.error = tostring(message or "sync failed")
-  self.status = "Sync failed: " .. self.error
+  self.error = Strings(tostring(message or "sync failed"))
+  self.status = Strings("Sync failed: %s", self.error)
   self.queue = {}
   self.pending = nil
 end
@@ -189,8 +190,8 @@ function SyncEngine:_finish()
       if row.overlap then overlap = true end
     end
     self.status = overlap
-      and "These saves were played at the same time."
-      or "This save also changed on another device."
+      and Strings("These saves were played at the same time.")
+      or Strings("This save also changed on another device.")
     return
   end
   self.phase = "idle"
@@ -281,7 +282,7 @@ end
 function SyncEngine:createAccount(label)
   if self:busy() then return false, "sync is busy" end
   self.phase = "checking"
-  self.status = "Creating a sync account..."
+  self.status = Strings("Creating a sync account...")
   self.error = nil
   local handle, err = self.client:create(label)
   return self:_request(handle, err, function(eng, res)
@@ -301,7 +302,7 @@ function SyncEngine:createAccount(label)
     eng.state.enabled = true
     eng.client:setAuth(data.account, data.deviceToken)
     eng.phase = "idle"
-    eng.status = "Sync account created"
+    eng.status = Strings("Sync account created")
     eng:_persist()
     eng:syncNow()
   end)
@@ -316,7 +317,7 @@ function SyncEngine:linkDevice(code1, code2, label)
     return false, "both codes are 8 digits"
   end
   self.phase = "checking"
-  self.status = "Linking this device..."
+  self.status = Strings("Linking this device...")
   self.error = nil
   local handle, err = self.client:link(a, b, label)
   return self:_request(handle, err, function(eng, res)
@@ -331,7 +332,7 @@ function SyncEngine:linkDevice(code1, code2, label)
     eng.state.deviceLabel = label
     eng.state.enabled = true
     eng.client:setAuth(data.account, data.deviceToken)
-    eng.status = "This device is linked"
+    eng.status = Strings("This device is linked")
     eng:_persist()
     eng:syncNow()
   end)
@@ -344,7 +345,7 @@ function SyncEngine:_forgetLocal()
   self.conflicts = {}
   self.devices = nil
   self.phase = "idle"
-  self.status = UNLINKED_STATUS
+  self.status = Strings(UNLINKED_STATUS)
   self:_persist()
 end
 
@@ -355,7 +356,7 @@ function SyncEngine:unlink()
   end
   if self:busy() then return false, "sync is busy" end
   self.phase = "checking"
-  self.status = "Unlinking this device..."
+  self.status = Strings("Unlinking this device...")
   self.error = nil
   local handle, err = self.client:unlink(self.state.deviceId)
   return self:_request(handle, err, function(eng)
@@ -377,11 +378,11 @@ function SyncEngine:unlinkDevice(deviceId)
   if deviceId == self.state.deviceId then return self:unlink() end
   if self:busy() then return false, "sync is busy" end
   self.phase = "checking"
-  self.status = "Unlinking that device..."
+  self.status = Strings("Unlinking that device...")
   self.error = nil
   local handle, err = self.client:unlink(deviceId)
   return self:_request(handle, err, function(eng)
-    eng.status = "That device was unlinked"
+    eng.status = Strings("That device was unlinked")
     eng.phase = "idle"
     eng:syncNow()
   end)
@@ -415,7 +416,7 @@ function SyncEngine:syncNow()
   self.conflicts = {}
   self.state.pendingConflicts = {}
   self.phase = "checking"
-  self.status = "Checking for changes..."
+  self.status = Strings("Checking for changes...")
   self.error = nil
   local handle, err = self.client:fetchState()
   return self:_request(handle, err, function(eng, res)
@@ -510,7 +511,7 @@ end
 function SyncEngine:_queueUpload(entry, key, force)
   self:_enqueue(function(eng)
     eng.phase = "uploading"
-    eng.status = "Uploading saves..."
+    eng.status = Strings("Uploading saves...")
     local handle, err = eng.client:putSave({
       version = entry.version,
       slot = entry.slot,
@@ -540,7 +541,7 @@ end
 function SyncEngine:_queueDownload(key, version, playthroughId, mode, knownRev)
   self:_enqueue(function(eng)
     eng.phase = "downloading"
-    eng.status = "Downloading saves..."
+    eng.status = Strings("Downloading saves...")
     local handle, err = eng.client:getSave(version, playthroughId)
     eng:_request(handle, err, function(e, res)
       local data = res.data or {}
@@ -592,7 +593,7 @@ function SyncEngine:resolveConflict(key, choice)
     return false, "unknown resolution"
   end
   self.phase = "uploading"
-  self.status = "Applying your choice..."
+  self.status = Strings("Applying your choice...")
   return true
 end
 
@@ -601,12 +602,13 @@ function SyncEngine:uploadMods(includeOptions)
   if self:busy() then return false, "sync is busy" end
   local manifest = SyncMods.build(self.modDeps, includeOptions)
   self.phase = "uploading"
-  self.status = includeOptions and "Uploading the mod list and options..."
-    or "Uploading the mod list..."
+  self.status = includeOptions
+    and Strings("Uploading the mod list and options...")
+    or Strings("Uploading the mod list...")
   local handle, err = self.client:putMods(manifest)
   return self:_request(handle, err, function(eng)
     eng.phase = "idle"
-    eng.status = "Mod list synced"
+    eng.status = Strings("Mod list synced")
   end)
 end
 
@@ -614,7 +616,7 @@ function SyncEngine:fetchModPlan()
   if not self:linked() then return false, "this device is not linked" end
   if self:busy() then return false, "sync is busy" end
   self.phase = "downloading"
-  self.status = "Reading the mod list..."
+  self.status = Strings("Reading the mod list...")
   local handle, err = self.client:getMods()
   return self:_request(handle, err, function(eng, res)
     local data = res.data or {}
@@ -628,22 +630,23 @@ function SyncEngine:shareMods(includeOptions)
   if self:busy() then return false, "sync is busy" end
   local manifest = SyncMods.build(self.modDeps, includeOptions)
   self.phase = "uploading"
-  self.status = includeOptions and "Sharing the mod list and options..."
-    or "Sharing the mod list..."
+  self.status = includeOptions
+    and Strings("Sharing the mod list and options...")
+    or Strings("Sharing the mod list...")
   local handle, err = self.client:shareMods(manifest)
   return self:_request(handle, err, function(eng, res)
     local data = res.data or {}
     eng.shareCode = type(data.code) == "string" and data.code or nil
     eng.phase = "idle"
-    eng.status = eng.shareCode and ("Share code " .. eng.shareCode)
-      or "The server sent no share code"
+    eng.status = eng.shareCode and Strings("Share code %s", eng.shareCode)
+      or Strings("The server sent no share code")
   end)
 end
 
 function SyncEngine:fetchShare(code)
   if self:busy() then return false, "sync is busy" end
   self.phase = "downloading"
-  self.status = "Fetching that mod list..."
+  self.status = Strings("Fetching that mod list...")
   local handle, err = self.client:fetchShare(code)
   return self:_request(handle, err, function(eng, res)
     local data = res.data or {}
@@ -656,12 +659,12 @@ function SyncEngine:_takeModPlan(plan)
   self.modPlan = plan
   self.phase = "idle"
   if SyncMods.planHasOptions(plan) then
-    self.status = ("This list carries options for %d mods.")
-      :format(#plan.options)
+    self.status = Strings("This list carries options for %d mods.",
+      #plan.options)
   elseif SyncMods.planEmpty(plan) then
-    self.status = "Mods already match"
+    self.status = Strings("Mods already match")
   else
-    self.status = "Mod changes ready to apply"
+    self.status = Strings("Mod changes ready to apply")
   end
 end
 
@@ -677,8 +680,8 @@ function SyncEngine:answerModOptions(importThem)
   if not SyncMods.planHasOptions(plan) then return false end
   SyncMods.answerOptions(plan, importThem)
   self.status = plan.applyOptions
-    and "Their mod options will be imported too"
-    or "Their mod options will be skipped"
+    and Strings("Their mod options will be imported too")
+    or Strings("Their mod options will be skipped")
   return plan.applyOptions
 end
 
@@ -689,14 +692,14 @@ function SyncEngine:applyModPlan(progress)
   local steps = SyncMods.steps(self.modPlan, self.modDeps)
   if #steps == 0 then
     self.modPlan = nil
-    self.status = "Mods already match"
+    self.status = Strings("Mods already match")
     if progress then progress(0, 0, nil, true) end
     return true
   end
   self.modApply = { steps = steps, index = 0, failures = {},
                     progress = progress }
   self.phase = "applying"
-  self.status = ("Applying mods... 0 of %d"):format(#steps)
+  self.status = Strings("Applying mods... %d of %d", 0, #steps)
   return true
 end
 
@@ -717,7 +720,7 @@ function SyncEngine:_stepModApply()
   local total = #job.steps
   local done = job.index >= total
   if not done then
-    self.status = ("Applying mods... %d of %d"):format(job.index, total)
+    self.status = Strings("Applying mods... %d of %d", job.index, total)
     if job.progress then
       pcall(job.progress, job.index, total, step.label, false)
     end
@@ -727,10 +730,10 @@ function SyncEngine:_stepModApply()
   self.modPlan = nil
   self.phase = "idle"
   if #job.failures > 0 then
-    self.status = "Some mods could not be applied: "
-      .. table.concat(job.failures, "; ")
+    self.status = Strings("Some mods could not be applied: %s",
+      table.concat(job.failures, "; "))
   else
-    self.status = "Mods applied"
+    self.status = Strings("Mods applied")
   end
   if job.progress then
     pcall(job.progress, job.index, total, step.label, true)

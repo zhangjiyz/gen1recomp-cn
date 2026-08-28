@@ -240,8 +240,9 @@ local ROWS = {
     end,
     text = function(options)
       local VideoMode = require("src.core.VideoMode")
-      return VideoMode.normalize(options.videoMode) == "borderless"
+      local source = VideoMode.normalize(options.videoMode) == "borderless"
         and "FULL" or "WINDOWED"
+      return Strings(source, "options.videoMode")
     end },
   { label = Strings.source("SCREEN POS"), key = "screenPos", port = true,
     cycle = function(options, delta)
@@ -484,7 +485,7 @@ function OptionsMenu:drawPanel()
         Chrome.print(tostring(self.options.frame or 1), 16, labelY + 1)
       elseif row.text then
         Chrome.print(":", 10, labelY + 1)
-        Chrome.print(row.text(self.options), 11, labelY + 1)
+        Chrome.print(Strings(row.text(self.options)), 11, labelY + 1)
       elseif row.values then
         Chrome.print(":", 10, labelY + 1)
         local value = self.options[row.key]
@@ -495,7 +496,7 @@ function OptionsMenu:drawPanel()
         -- shows its setting here instead of drawing a bare label
         local ok, text = pcall(row.value, self.game)
         Chrome.print(":", 10, labelY + 1)
-        Chrome.print(ok and tostring(text) or "?", 11, labelY + 1)
+        Chrome.print(ok and Strings(tostring(text)) or "?", 11, labelY + 1)
       end
     end
   end

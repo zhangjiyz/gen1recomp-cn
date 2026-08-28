@@ -46,6 +46,7 @@
 local Chrome = require("src.ui.gen2.Chrome")
 local CoinCase = require("src.core.gen2.CoinCase")
 local Sound = require("src.core.Sound")
+local Strings = require("src.core.Strings")
 
 local SlotMachine = {}
 SlotMachine.__index = SlotMachine
@@ -610,19 +611,19 @@ local TEXT_X, TEXT_Y, TEXT_LINE = 1, 14, 2
 -- text.lua: no script bytecode points at them, so the extractor -- which walks
 -- reachable script pointers -- never reaches them.
 local TEXTS = {
-  betHowMany = { "Bet how many", "coins?" },      -- _SlotsBetHowManyCoinsText
-  start = { "Start!" },                            -- _SlotsStartText
-  notEnough = { "Not enough", "coins." },          -- _SlotsNotEnoughCoinsText
-  ranOut = { "Darn… Ran out of", "coins…" },       -- _SlotsRanOutOfCoinsText
-  playAgain = { "Play again?" },                   -- _SlotsPlayAgainText
-  darn = { "Darn!" },                              -- _SlotsDarnText
+  betHowMany = { Strings.source("Bet how many"), Strings.source("coins?") },
+  start = { Strings.source("Start!") },
+  notEnough = { Strings.source("Not enough"), Strings.source("coins.") },
+  ranOut = { Strings.source("Darn… Ran out of"), Strings.source("coins…") },
+  playAgain = { Strings.source("Play again?") },
+  darn = { Strings.source("Darn!") },
 }
 SlotMachine.TEXTS = TEXTS
 
 -- _SlotsLinedUpText: "lined up!" / "Won @<wStringBuffer2> coins!", with the
 -- matched symbol's 2x2 tiles printed to its left by .Text_PrintPayout.
 local function linedUpLines(payout)
-  return { "    lined up!", ("Won %d coins!"):format(payout) }
+  return { Strings("    lined up!"), Strings("Won %d coins!", payout) }
 end
 
 -- Slots_PlaySFX's labels, spelled the pokegold way (Sound.GEN2_ALIASES is what

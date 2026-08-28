@@ -12,6 +12,7 @@ local check, eq = T.check, T.eq
 local FilePicker = require("src.core.FilePicker")
 local TouchSkin = require("src.core.TouchSkin")
 local Studio = require("src.ui.SkinStudio")
+local Strings = require("src.core.Strings")
 
 local function session()
   Studio.skin = TouchSkin.newSkin("t")
@@ -48,7 +49,8 @@ check(Studio.adoptImage("bezel.png", "PNGDATA", "bezel"), "bezel import succeeds
 eq(Studio.page().imagePath, "img/bezel.png", "bezel art lands on the page")
 eq(ctl.imagePath, nil, "and not on the selected control")
 check(Studio.dirty, "importing marks the skin dirty")
-check(Studio.status:find("bezel", 1, true) ~= nil, "the status names the target")
+check(Studio.status:find(Strings("bezel"), 1, true) ~= nil,
+      "the status names the target")
 
 check(Studio.adoptImage("a_button.png", "PNGDATA", "idle"), "idle import succeeds")
 eq(ctl.imagePath, "img/a_button.png", "idle art lands on the control")
@@ -80,7 +82,7 @@ session()
 Studio.importImageFile("bezel")
 check(asked ~= nil, "the bezel button opens a picker")
 eq(asked.kind, FilePicker.IMAGE, "and asks for images, not archives")
-check(asked.prompt:lower():find("bezel", 1, true) ~= nil, "with a bezel prompt")
+eq(asked.prompt, Strings("Choose a bezel image"), "with a bezel prompt")
 eq(Studio.page().imagePath, "img/frame.png", "the pick becomes the bezel")
 eq(Studio.imageTarget, "bezel", "and the target sticks for the cycle button")
 

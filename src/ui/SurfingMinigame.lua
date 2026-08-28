@@ -1284,7 +1284,7 @@ function SurfingMinigame:drawTitleScreen()
   if self.titleBg then
     love.graphics.draw(self.titleBg, 0, 0)
   else
-    Font.draw("PIKACHU'S BEACH", 20, 32)
+    Font.draw(Strings("PIKACHU'S BEACH"), 20, 32)
   end
 
   -- 2. Draw 3x3 Pikachu intro sprite on the water using authentic OAM tile indices
@@ -1294,10 +1294,10 @@ function SurfingMinigame:drawTitleScreen()
   end
 
   -- 3. High score display at bottom
-  Font.draw(string.format("Hi-Score   %4d Pt", self.hiScore), 16, 120)
+  Font.draw(Strings("Hi-Score   %4d Pt", self.hiScore), 16, 120)
 
   if math.floor(self.t / 30) % 2 == 0 then
-    Font.draw("PRESS START", 36, 132)
+    Font.draw(Strings("PRESS START"), 36, 132)
   end
 end
 

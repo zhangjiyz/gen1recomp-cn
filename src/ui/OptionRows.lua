@@ -7,6 +7,7 @@
 -- rows that open something instead (MODS, CANCEL stays the caller's).
 
 local Font = require("src.render.Font")
+local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
 
 local OptionRows = {}
@@ -37,8 +38,9 @@ function OptionRows.draw(game, rows, index, scroll, bottomLabel, bottomRow)
     if not row then break end
     Font.drawBox(0, (slot - 1) * 4, 20, 4)
     love.graphics.setColor(0, 0, 0, 1)
-    Font.draw(row.label, 16, ((slot - 1) * 4 + 1) * 8)
-    Font.draw(row.value and row.value(game) or "", 24, ((slot - 1) * 4 + 2) * 8)
+    Font.draw(Strings(row.label), 16, ((slot - 1) * 4 + 1) * 8)
+    Font.draw(Strings(row.value and row.value(game) or ""),
+              24, ((slot - 1) * 4 + 2) * 8)
     if i == index then
       Font.drawCode(Theme.cursor, 8, ((slot - 1) * 4 + 1) * 8)
     end
@@ -48,7 +50,7 @@ function OptionRows.draw(game, rows, index, scroll, bottomLabel, bottomRow)
   end
   if bottomLabel then
     love.graphics.setColor(0, 0, 0, 1)
-    Font.draw(bottomLabel, 16, 136)
+    Font.draw(Strings(bottomLabel), 16, 136)
     if bottomRow and index == bottomRow then
       Font.drawCode(Theme.cursor, 8, 136)
     end

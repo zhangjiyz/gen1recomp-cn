@@ -1258,13 +1258,18 @@ local HEADER_TABS = {
 
 local BETA_TAG_OPTS = { fill = true, bold = true, ink = PAL.inverse }
 
+local function betaLabel()
+  return Strings("BETA")
+end
+
 local function drawBetaTag(x, y, w, h)
-  Kit.tag(x, y, w, h, "BETA", PAL.yellow, BETA_TAG_OPTS)
+  Kit.tag(x, y, w, h, betaLabel(), PAL.yellow, BETA_TAG_OPTS)
 end
 
 local function overlayBeta(tx, ty, w, tabH, m)
   local bh = math.floor(11 * m.s)
-  local bw = math.min(w, Kit.textWidth("micro", "BETA") + math.floor(10 * m.s))
+  local bw = math.min(w,
+    Kit.textWidth("micro", betaLabel()) + math.floor(10 * m.s))
   drawBetaTag(tx + (w - bw) / 2, ty + tabH - bh - math.floor(2 * m.s), bw, bh)
 end
 
@@ -2936,7 +2941,7 @@ local function buildSkinsPanel(imp, x, y, w, availH, m)
 
   local currentH = active and (bh * 2 + gap * 2) or (bh + gap * 2)
   Kit.card(x, cy, w, currentH)
-  Kit.caption(x + gap, cy + gap, "CURRENT SKIN")
+  Kit.caption(x + gap, cy + gap, Strings("CURRENT SKIN"))
   local current = active and tostring(active) or Strings("No skin enabled")
   Kit.text("mono", Kit.ellipsize("mono", current, w - gap * 2), x + gap,
     cy + gap + Kit.textHeight("small") + math.floor(4 * m.s),
@@ -3798,7 +3803,8 @@ local function buildProfilesModal(imp, m)
     Strings("+ Create New Profile"), {
       kind = "accent", font = "small",
       action = function()
-        imp._profileSavePrompt = { text = "PROFILE " .. tostring(#profiles + 1) }
+        imp._profileSavePrompt = {
+          text = Strings("PROFILE %d", #profiles + 1) }
         imp:_armTextInput(imp._profileSavePrompt.text)
       end,
     })
@@ -5150,7 +5156,7 @@ local function syncTitle(imp, m, px, py, pw, pad)
   local label = Strings("SAVE SYNC")
   Kit.text("button", label, px + pad, py, PAL.heading)
   local bh = math.floor(15 * m.s)
-  local bw = Kit.textWidth("micro", "BETA") + math.floor(14 * m.s)
+  local bw = Kit.textWidth("micro", betaLabel()) + math.floor(14 * m.s)
   drawBetaTag(px + pad + Kit.textWidth("button", label) + math.floor(8 * m.s),
     py + (Kit.textHeight("button") - bh) / 2, bw, bh)
   return py + Kit.textHeight("button") + math.floor(12 * m.s)
@@ -5415,7 +5421,7 @@ function LauncherView.syncDeviceRows(eng, limit)
         id = row.id,
         current = row.current == true,
         label = type(row.label) == "string" and row.label ~= "" and row.label
-          or "device",
+          or Strings("device"),
       }
     end
   end

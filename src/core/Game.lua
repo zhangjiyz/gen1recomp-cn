@@ -72,7 +72,11 @@ function Game:load()
   require("src.ui.Theme").load(Data)
   -- the engine's own text, after the merge so a translation mod's catalog
   -- is already in Data.strings; empty on a mod-free boot and skipped
-  require("src.core.Strings").load(Data)
+  local Strings = require("src.core.Strings")
+  -- The CN engine catalog remains the in-game fallback. A translation mod
+  -- still wins because Strings.lookup checks Data.strings first.
+  Strings.setAppCatalogEnabled(true)
+  Strings.load(Data)
 
   self.stack = StateStack
   StateStack:init()

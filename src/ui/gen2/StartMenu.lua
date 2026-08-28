@@ -23,6 +23,7 @@ local Chrome = require("src.ui.gen2.Chrome")
 local Logger = require("src.core.Logger")
 local Runtime = require("src.mods.Runtime")
 local Sound = require("src.core.Sound")
+local Strings = require("src.core.Strings")
 
 local StartMenu = {}
 StartMenu.__index = StartMenu
@@ -47,39 +48,39 @@ StartMenu.isOpaque = false
 local ITEMS = {
   {
     id = "pokedex", label = "POKéDEX", need = "pokedex",
-    desc = { "POKéMON", "database" },
+    desc = { Strings.source("POKéMON"), Strings.source("database") },
   },
   {
     id = "pokemon", label = "POKéMON", need = "party",
-    desc = { "Party <PK><MN>", "status" },
+    desc = { Strings.source("Party <PK><MN>"), Strings.source("status") },
   },
   {
     id = "pack", label = "PACK", need = "pack",
-    desc = { "Contains", "items" },
+    desc = { Strings.source("Contains"), Strings.source("items") },
   },
   {
     id = "pokegear", label = "<PO><KE>GEAR", need = "pokegear",
-    desc = { "Trainer's", "key device" },
+    desc = { Strings.source("Trainer's"), Strings.source("key device") },
   },
   {
     -- The player's own name is the label (.StatusString is "<PLAYER>").
     id = "status", label = nil,
-    desc = { "Your own", "status" },
+    desc = { Strings.source("Your own"), Strings.source("status") },
   },
   {
     id = "save", label = "SAVE",
-    desc = { "Save your", "progress" },
+    desc = { Strings.source("Save your"), Strings.source("progress") },
   },
   {
     id = "option", label = "OPTION",
-    desc = { "Change", "settings" },
+    desc = { Strings.source("Change"), Strings.source("settings") },
   },
   {
     -- The mod manager's discoverable home, exactly as the Gen 1 start menu
     -- carries it: the row only appears once at least one mod has been
     -- discovered, so a vanilla install's menu is the cart's.
     id = "mods", label = "MODS", need = "mods",
-    desc = { "Installed", "add-ons" },
+    desc = { Strings.source("Installed"), Strings.source("add-ons") },
   },
   {
     -- The cart's EXIT just closed the menu (CloseStartMenu).  A window with a
@@ -87,7 +88,7 @@ local ITEMS = {
     -- (src/ui/StartMenu.lua) -- this row is QUIT and power-cycles back to the
     -- title after a confirmation that defaults to NO.
     id = "quit", label = "QUIT",
-    desc = { "Return to", "the title" },
+    desc = { Strings.source("Return to"), Strings.source("the title") },
   },
 }
 

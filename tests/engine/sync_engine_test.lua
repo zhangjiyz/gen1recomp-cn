@@ -4,6 +4,7 @@ local T = require("tests.harness")
 love = love or require("tests.love_stub")
 
 local Json = require("src.link.Json")
+local Strings = require("src.core.Strings")
 local SyncState = require("src.sync.SyncState")
 local SyncEngine = require("src.sync.SyncEngine")
 
@@ -99,7 +100,7 @@ do
   }, { saveEntry("red", "abc", 500, 400) }, SyncState.defaults())
 
   T.eq(eng:linked(), false, "a fresh engine is not linked")
-  T.eq(eng.status, "Not set up", "and says so")
+  T.eq(eng.status, Strings("Not set up"), "and says so")
 
   eng:createAccount("laptop")
   pump(eng)
@@ -143,7 +144,7 @@ do
   eng:linkDevice("12", "34", "phone")
   T.eq(#transport.sent, 0, "a malformed code pair is refused locally")
   T.eq(eng.phase, "error", "and the engine reports the problem")
-  T.check(eng.status:find("8 digits", 1, true) ~= nil,
+  T.check(eng.status:find(Strings("both codes are 8 digits"), 1, true) ~= nil,
     "with copy that says what a code is")
 end
 
@@ -201,7 +202,7 @@ do
   T.eq(#eng.conflicts, 1, "one conflict is raised")
   T.eq(eng.conflicts[1].overlap, true,
     "the two sessions ran over the same minutes")
-  T.eq(eng.status, "These saves were played at the same time.",
+  T.eq(eng.status, Strings("These saves were played at the same time."),
     "and the status is the wording the player was promised")
   T.eq(eng.conflicts[1].remoteMeta.summary.name, "BLUE",
     "the other device's save is summarized for the prompt")
@@ -430,7 +431,7 @@ do
     "naming the device id the server knows, not the platform label")
   pump(eng, 3)
   T.eq(eng:linked(), false, "and only then drops the credentials")
-  T.eq(eng.status, "Not set up", "reporting the device as unlinked")
+  T.eq(eng.status, Strings("Not set up"), "reporting the device as unlinked")
 end
 
 do
@@ -530,7 +531,7 @@ do
   T.eq(order[3], "enable:beta", "in plan order")
   T.eq(eng.modApply, nil, "the job is done")
   T.eq(eng.modPlan, nil, "and the plan is spent")
-  T.eq(eng.status, "Mods applied", "the status says so")
+  T.eq(eng.status, Strings("Mods applied"), "the status says so")
   T.eq(seen[#seen], "3/3 true", "and the last progress call reports the end")
 end
 
@@ -610,7 +611,7 @@ do
   pump(eng)
   T.eq(#eng.modPlan.options, 1, "a fetched list reports the options it carries")
   T.eq(eng.modPlan.applyOptions, nil, "without deciding for the player")
-  T.check(eng.status:find("options", 1, true) ~= nil,
+  T.eq(eng.status, Strings("This list carries options for %d mods.", 1),
     "and the status line says there is a question to answer")
   local ask = eng:modOptionsAsk()
   T.eq(ask and ask[1], "alpha", "the launcher can name the mods it would touch")

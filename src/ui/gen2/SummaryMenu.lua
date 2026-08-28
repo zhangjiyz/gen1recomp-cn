@@ -67,6 +67,7 @@ local Mon = require("src.battle.gen2.Mon")
 local MonAnim = require("src.render.MonAnim")
 local Palettes = require("src.world.gen2.Palettes")
 local Pokerus = require("src.core.gen2.Pokerus")
+local Strings = require("src.core.Strings")
 local Unown = require("src.core.gen2.Unown")
 
 local SummaryMenu = {}
@@ -143,18 +144,24 @@ end
 -- are the ASM's own `cp $6 / cp $b / cp $29` ladder, and the lines join with
 -- <NEXT> exactly as the db/next strings do.
 local EGG_FLAVOR = {
-  { below = 0x6, text = "It's making sounds<NEXT>inside. It's going"
-      .. "<NEXT>to hatch soon!" },
-  { below = 0xb, text = "It moves around<NEXT>inside sometimes."
-      .. "<NEXT>It must be close<NEXT>to hatching." },
-  { below = 0x29, text = "Wonder what's<NEXT>inside? It needs"
-      .. "<NEXT>more time, though." },
-  { text = "This EGG needs a<NEXT>lot more time to<NEXT>hatch." },
+  { below = 0x6, text = Strings.source(
+      "It's making sounds<NEXT>inside. It's going"
+      .. "<NEXT>to hatch soon!") },
+  { below = 0xb, text = Strings.source(
+      "It moves around<NEXT>inside sometimes."
+      .. "<NEXT>It must be close<NEXT>to hatching.") },
+  { below = 0x29, text = Strings.source(
+      "Wonder what's<NEXT>inside? It needs"
+      .. "<NEXT>more time, though.") },
+  { text = Strings.source(
+      "This EGG needs a<NEXT>lot more time to<NEXT>hatch.") },
 }
 
 local function eggFlavor(cycles)
   for _, entry in ipairs(EGG_FLAVOR) do
-    if not entry.below or cycles < entry.below then return entry.text end
+    if not entry.below or cycles < entry.below then
+      return Strings(entry.text)
+    end
   end
 end
 

@@ -10,6 +10,7 @@ local Font = require("src.render.Font")
 local UIVisibility = require("src.battle.UIVisibility")
 local Theme = require("src.ui.Theme")
 local Timing = require("src.core.Timing")
+local Strings = require("src.core.Strings")
 
 local TextBox = {}
 TextBox.__index = TextBox
@@ -74,7 +75,11 @@ function TextBox.new(game, text, onDone, opts)
   self.textX = (self.boxTx + 1) * 8
   self.line1Y = (self.boxTy + 2) * 8
   self.line2Y = (self.boxTy + 4) * 8
-  text = TextBox.substitute(game, text)
+  -- Script/ROM text is normally translated before it arrives here, but a few
+  -- engine-authored prompts historically reached the shared textbox as raw
+  -- literals.  This final lookup is an identity operation for unknown text
+  -- and keeps a missed callsite from leaking English on screen.
+  text = TextBox.substitute(game, Strings(text))
   self.pages = TextBox.paginate(text, self.maxCols)
   self.pageIndex = 1
   self.lineIndex = 1

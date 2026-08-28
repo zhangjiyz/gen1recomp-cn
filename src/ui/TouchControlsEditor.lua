@@ -21,6 +21,8 @@ local TouchControls = require("src.core.TouchControls")
 local TouchSkin = require("src.core.TouchSkin")
 local PadCursor = require("src.ui.PadCursor")
 local GamepadMap = require("src.core.GamepadMap")
+local Strings = require("src.core.Strings")
+local UiFont = require("src.render.UiFont")
 
 local Editor = {}
 
@@ -51,7 +53,13 @@ local function fitText(font, text, maxW)
   text = tostring(text)
   if maxW <= 0 or font:getWidth(text) <= maxW then return text end
   while #text > 1 and font:getWidth(text .. "...") > maxW do
-    text = text:sub(1, #text - 1)
+    local last = #text
+    while last > 1 do
+      local byte = text:byte(last)
+      if not byte or byte < 0x80 or byte >= 0xC0 then break end
+      last = last - 1
+    end
+    text = text:sub(1, last - 1)
   end
   return text .. "..."
 end
@@ -67,9 +75,9 @@ function Editor.load(opts)
   Editor._hostMouse = false
   Editor._hostTouches = nil
   Editor.fonts = {
-    title = love.graphics.newFont(28),
-    body = love.graphics.newFont(16),
-    btn = love.graphics.newFont(18),
+    title = UiFont.attach(love.graphics.newFont(28), 28),
+    body = UiFont.attach(love.graphics.newFont(16), 16),
+    btn = UiFont.attach(love.graphics.newFont(18), 18),
   }
   local optsTbl = SaveData.loadOptions()
   local applied = optsTbl
@@ -102,10 +110,10 @@ end
 
 function Editor.skinLabel()
   local entry = (Editor.skins or {})[Editor.skinIndex() - 1]
-  if not entry then return "Built-in pad" end
+  if not entry then return Strings("Built-in pad") end
   local skin = TouchSkin.active
   local pages = skin and #skin.pages or 1
-  if pages > 1 then return entry.id .. " (" .. pages .. " pages)" end
+  if pages > 1 then return Strings("%s (%d pages)", entry.id, pages) end
   return entry.id
 end
 
@@ -123,13 +131,13 @@ function Editor.exportSkin()
   if not skin then return end
   local path, missing = TouchSkin.export(skin)
   if not path then
-    Editor.exportMsg = "Export failed: " .. tostring(missing)
+    Editor.exportMsg = Strings("Export failed: %s", tostring(missing))
     return
   end
-  Editor.exportMsg = "Exported to " .. path .. " in your save folder."
+  Editor.exportMsg = Strings("Exported to %s in your save folder.", path)
   if type(missing) == "table" and missing[1] then
-    Editor.exportMsg = Editor.exportMsg
-      .. " " .. #missing .. " image(s) were missing and left out."
+    Editor.exportMsg = Editor.exportMsg .. " "
+      .. Strings("%d image(s) were missing and left out.", #missing)
   end
   Editor.skins = TouchSkin.list()
 end
@@ -244,7 +252,8 @@ function Editor.draw()
   love.graphics.setFont(Editor.fonts.title)
   col(PAL.white)
   love.graphics.print(
-    fitText(Editor.fonts.title, "Touch Controls", reset.x - 10 * s - (ox + pad)),
+    fitText(Editor.fonts.title, Strings("Touch Controls"),
+      reset.x - 10 * s - (ox + pad)),
     ox + pad, oy + pad + 4 * s)
 
   local function chromeBtn(r, label, fill)
@@ -258,8 +267,8 @@ function Editor.draw()
     love.graphics.print(label, r.x + (r.w - tw) / 2,
                         r.y + (r.h - Editor.fonts.btn:getHeight()) / 2)
   end
-  chromeBtn(reset, "Reset", { 60, 70, 110 })
-  chromeBtn(done, "Done", PAL.green)
+  chromeBtn(reset, Strings("Reset"), { 60, 70, 110 })
+  chromeBtn(done, Strings("Done"), PAL.green)
 
   -- enable toggle card
   local cardY = oy + barH + pad + 14 * s
@@ -272,12 +281,12 @@ function Editor.draw()
 
   love.graphics.setFont(Editor.fonts.body)
   col(PAL.label)
-  love.graphics.print("On-screen controls", cardX + 16 * s,
+  love.graphics.print(Strings("On-screen controls"), cardX + 16 * s,
                       cardY + 12 * s)
   love.graphics.setFont(Editor.fonts.btn)
   local on = Editor.enabled
   col(on and PAL.green or PAL.red)
-  love.graphics.print(on and "ON" or "OFF", cardX + 16 * s,
+  love.graphics.print(on and Strings("ON") or Strings("OFF"), cardX + 16 * s,
                       cardY + 34 * s)
 
   local toggleW = 110 * s
@@ -287,7 +296,7 @@ function Editor.draw()
     w = toggleW, h = btnH,
   }
   Editor.rects.toggle = toggle
-  chromeBtn(toggle, on and "Disable" or "Enable",
+  chromeBtn(toggle, on and Strings("Disable") or Strings("Enable"),
             on and PAL.red or PAL.green)
 
   local skinY = cardY + cardH + 10 * s
@@ -317,7 +326,7 @@ function Editor.draw()
   local skinTextW = leftmost - 10 * s - (cardX + 16 * s)
   love.graphics.setFont(Editor.fonts.body)
   col(PAL.label)
-  love.graphics.print("Skin", cardX + 16 * s, skinY + 12 * s)
+  love.graphics.print(Strings("Skin"), cardX + 16 * s, skinY + 12 * s)
   love.graphics.setFont(Editor.fonts.btn)
   col(TouchControls.skinId and PAL.green or PAL.white)
   love.graphics.print(fitText(Editor.fonts.btn, Editor.skinLabel(), skinTextW),
@@ -326,7 +335,7 @@ function Editor.draw()
   chromeBtn(skinPrev, "<", { 60, 70, 110 })
   chromeBtn(skinNext, ">", { 60, 70, 110 })
   if Editor.rects.export then
-    chromeBtn(Editor.rects.export, "Export", { 60, 70, 110 })
+    chromeBtn(Editor.rects.export, Strings("Export"), { 60, 70, 110 })
   end
 
   -- size card (#633): -/+ resize every control in the orientation on
@@ -340,8 +349,8 @@ function Editor.draw()
   love.graphics.setFont(Editor.fonts.body)
   col(PAL.label)
   local orient = TouchControls.orientation == "landscape"
-    and "Landscape" or "Portrait"
-  love.graphics.print("Button size (" .. orient .. ")",
+    and Strings("Landscape") or Strings("Portrait")
+  love.graphics.print(Strings("Button size (%s)", orient),
                       cardX + 16 * s, sizeY + 12 * s)
   love.graphics.setFont(Editor.fonts.btn)
   col(PAL.white)
@@ -363,11 +372,11 @@ function Editor.draw()
   if Editor.exportMsg then
     hint = Editor.exportMsg
   elseif not on then
-    hint = "Controls are hidden in-game. Enable them to show and edit the layout."
+    hint = Strings("Controls are hidden in-game. Enable them to show and edit the layout.")
   elseif TouchSkin.active then
-    hint = "This skin owns its own art, hitboxes and screen position, so size and dragging are off. Drop a RetroArch overlay folder or .zip into the skins folder of your save directory to add more."
+    hint = Strings("This skin owns its own art, hitboxes and screen position, so size and dragging are off. Drop a RetroArch overlay folder or .zip into the skins folder of your save directory to add more.")
   else
-    hint = "Drag each button to reposition, -/+ to resize. Portrait and landscape are saved separately when you tap Done."
+    hint = Strings("Drag each button to reposition, -/+ to resize. Portrait and landscape are saved separately when you tap Done.")
   end
   love.graphics.printf(hint, ox + pad, sizeY + cardH + 12 * s, ww - 2 * pad, "left")
 

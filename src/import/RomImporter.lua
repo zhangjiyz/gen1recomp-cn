@@ -763,8 +763,8 @@ function RomImporter:rescanModsAction()
   -- a good install; still append the last failure so a real broken zip is
   -- visible beside the success line.
   if anyOk and lastFail then
-    local okText = (lastOk and lastOk.text) or "Installed"
-    local failText = (lastFail and lastFail.text) or "unknown error"
+    local okText = (lastOk and lastOk.text) or Strings("Installed")
+    local failText = (lastFail and lastFail.text) or Strings("unknown error")
     self.modNotice = {
       ok = true,
       text = Strings("%s\n(%d failed: %s)", okText, failCount, failText),
@@ -827,7 +827,7 @@ function RomImporter:rescanSavesAction(version)
         okCount, gameLabel, tostring(self.activeSlot[version]))
     end
     if failCount > 0 then
-      local failText = (lastFail and lastFail.text) or "unknown error"
+      local failText = (lastFail and lastFail.text) or Strings("unknown error")
       okText = Strings("%s\n(%d failed: %s)", okText, failCount, failText)
     end
     if skipCount > 0 then
@@ -866,7 +866,8 @@ function RomImporter:rescanAction(version)
     local data = love.filesystem.read(path)
     local displayName = path:match("[^/\\]+$") or path
     if type(data) ~= "string" then
-      self:setError("The file could not be read: " .. displayName, version)
+      self:setError(Strings("The file could not be read: %s", displayName),
+        version)
       return
     end
     if not isAcceptedRomSize(#data) then
@@ -982,8 +983,8 @@ local function consumePickedRomError(self)
   end
   love.filesystem.remove(preferred)
   if type(data) ~= "string" then
-    self:setError("The picked file could not be read. Reopen the picker and "
-      .. "choose the ROM with the Files (Documents) app.")
+    self:setError(Strings(
+      "The picked file could not be read. Reopen the picker and choose the ROM with the Files (Documents) app."))
     return true
   end
   self:startData(data, preferred)
@@ -1564,7 +1565,7 @@ function RomImporter:focus(f)
     end
     local version = self.androidPendingExportVersion or self:_savedropTarget()
     self.androidPendingExportVersion = nil
-    self.saveNotice[version] = { ok = true, text = "Save exported." }
+    self.saveNotice[version] = { ok = true, text = Strings("Save exported.") }
     if self.tab == "mods" then self.tab = version end
     return
   end
@@ -1577,9 +1578,9 @@ function RomImporter:focus(f)
     and love.filesystem.read("pick_error.flag")
   if pickError then
     love.filesystem.remove("pick_error.flag")
-    local text = "Could not read the picked file. Reopen the picker and choose "
-      .. "it with the Files (Documents) app, or copy it into: "
-      .. love.filesystem.getSaveDirectory()
+    local text = Strings(
+      "Could not read the picked file. Reopen the picker and choose it with the Files (Documents) app, or copy it into: %s",
+      love.filesystem.getSaveDirectory())
     local legacyRequiredPick = self.requiredImportLegacyRomPick
       and self.pickerPendingKind == "required_import"
     if pickError:find("picked_required_import", 1, true)
@@ -1617,7 +1618,8 @@ function RomImporter:focus(f)
     consumePick(self, requiredName, requiredName, imported)
     if not modId or not importId then
       self.modNotice = { ok = false,
-        text = "A picked dependency file had no pending mod request and was discarded." }
+        text = Strings(
+          "A picked dependency file had no pending mod request and was discarded.") }
     end
     return
   end
@@ -1663,7 +1665,7 @@ function RomImporter:setError(message, version)
   self.errorVersion = version or self.importing or self.chooseVersion or "red"
   self.importing = nil
   self.notice = nil
-  self.status = "That ROM could not be imported"
+  self.status = Strings("That ROM could not be imported")
   self.detail = tostring(message)
   self.progress = 0
   self.worker = nil
@@ -1704,22 +1706,21 @@ end
 function RomImporter:startData(data, displayName)
   if self.workState == "working" then return end
   if type(data) ~= "string" then
-    self:setError("The selected file could not be read.")
+    self:setError(Strings("The selected file could not be read."))
     return
   end
   if not isAcceptedRomSize(#data) then
-    self:setError(("Expected a 1 MiB Game Boy ROM (%s) or a "
-      .. "2 MiB Game Boy Color ROM (%s); this file is %.2f MiB.")
-      :format(cartsSlashed(1), cartsSlashed(2), #data / 1024 / 1024))
+    self:setError(Strings("Expected a 1 MiB Game Boy ROM (%s) or a "
+      .. "2 MiB Game Boy Color ROM (%s); this file is %.2f MiB.",
+      cartsSlashed(1), cartsSlashed(2), #data / 1024 / 1024))
     return
   end
   local actualHash = sha1(data)
   local version = GameVersion.forSha1(actualHash)
   if not version then
-    self:setError(("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "
-      .. "%s dump; patched, trimmed or "
-      .. "\"fixed\" dumps "
-      .. "(tagged [b] or [BF]) never verify."):format(actualHash, cartsProse()))
+    self:setError(Strings("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "
+      .. "%s dump; patched, trimmed or \"fixed\" dumps "
+      .. "(tagged [b] or [BF]) never verify.", actualHash, cartsProse()))
     return
   end
   self.romSha1 = actualHash
@@ -1733,11 +1734,11 @@ function RomImporter:startData(data, displayName)
   self.importing = version
   self.workState = "working"
   self.notice = nil
-  self.status = "Verifying " .. info.displayName
+  self.status = Strings("Verifying %s", info.displayName)
   self.detail = displayName or info.displayName
   self.progress = 0
   self.romData = data
-  self.status = "Preparing private game data"
+  self.status = Strings("Preparing private game data")
 
   -- Clear this version's previous cache from both homes before anything
   -- writes.  Stays on the main thread so delete-then-fill-then-mark keeps one
@@ -1801,7 +1802,7 @@ function RomImporter:_startExtractCoroutine(version, info, prefix, displayName)
       or require("src.import.RomExtractor")
     local extractor = RomExtractor.new(self.romData, manifest,
       function(progress, total, stage, current, stageTotal)
-        self.status = stage
+        self.status = Strings(stage)
         self.progress = progress / total
         self.stageCurrent = current
         self.stageTotal = stageTotal
@@ -1842,7 +1843,7 @@ function RomImporter:_completeImport(version, prefix, displayName)
   self.importing = nil
   self.workState = "complete"
   self.completeVersion = version
-  self.status = "Ready"
+  self.status = Strings("Ready")
   RomImporter.syncAndroidShortcuts(version)
   -- NX launcher stays put: keep the imports/ cleanup hint instead of
   -- overwriting it with a "Starting…" line that never boots from here.
@@ -1850,7 +1851,7 @@ function RomImporter:_completeImport(version, prefix, displayName)
     self.detail = Strings("%s imported. You may delete the copy from "
       .. "imports/ when finished.", displayName)
   else
-    self.detail = "Starting " .. info.displayName .. "..."
+    self.detail = Strings("Starting %s...", info.displayName)
   end
   self.progress = 1
   if self.launcher then
@@ -1870,7 +1871,7 @@ function RomImporter:_pumpExtract()
   if not job then return end
   local msg = job.progress:pop()
   while msg do
-    self.status = msg.stage
+    self.status = Strings(msg.stage)
     self.progress = msg.progress / msg.total
     self.stageCurrent = msg.current
     self.stageTotal = msg.stageTotal
@@ -1900,7 +1901,8 @@ function RomImporter:startPath(path)
   if not path then return end
   local data, readError = readExternalPath(path)
   if not data then
-    self:setError("Could not read the selected file: " .. tostring(readError))
+    self:setError(Strings("Could not read the selected file: %s",
+      tostring(readError)))
     return
   end
   self:startData(data, path:match("[^/\\]+$") or path)
@@ -1935,7 +1937,8 @@ function RomImporter:filedropped(file)
   end
   local data, readError = readDroppedFile(file)
   if not data then
-    self:setError("Could not read the dropped file: " .. tostring(readError))
+    self:setError(Strings("Could not read the dropped file: %s",
+      tostring(readError)))
     return
   end
   self:startData(data, file:getFilename())
@@ -1954,12 +1957,12 @@ function RomImporter:_installMod(source)
   end)
   if not ok then
     self.modNotice = { ok = false,
-      text = "Import failed: " .. tostring(installed) }
+      text = Strings("Import failed: %s", tostring(installed)) }
     return
   end
   if installed then
     pcall(self._refreshMods, self)
-    self.modNotice = { ok = true, text = "Installed " .. tostring(res) }
+    self.modNotice = { ok = true, text = Strings("Installed %s", tostring(res)) }
     local LauncherMods = require("src.mods.LauncherMods")
     local checkTarget = manifest
     if not checkTarget and type(res) == "string" then
@@ -1985,12 +1988,12 @@ function RomImporter:_deleteMod(id)
   end)
   if not ok then
     self.modNotice = { ok = false,
-      text = "Delete failed: " .. tostring(deleted) }
+      text = Strings("Delete failed: %s", tostring(deleted)) }
     return
   end
   if deleted then
     pcall(self._refreshMods, self)
-    self.modNotice = { ok = true, text = "Deleted " .. tostring(id) }
+    self.modNotice = { ok = true, text = Strings("Deleted %s", tostring(id)) }
   else
     self.modNotice = { ok = false, text = tostring(res) }
   end
@@ -2012,7 +2015,8 @@ function RomImporter:chooseMod()
     self.pickerPendingKind = "mod"
     if not pickFile("mod") then
       self.pickerPendingKind = nil
-      self.modNotice = { ok = false, text = "Could not open the file picker." }
+      self.modNotice = { ok = false,
+        text = Strings("Could not open the file picker.") }
     end
     return
   end
@@ -2026,7 +2030,8 @@ function RomImporter:chooseMod()
     end
     if not pickFile("mod") then
       self.modNotice = { ok = false,
-        text = "Could not open the file picker. Copy a mod .zip via USB." }
+        text = Strings(
+          "Could not open the file picker. Copy a mod .zip via USB.") }
     else
       self.pickPending = true
       self.pickTimer = 0
@@ -2039,16 +2044,26 @@ function RomImporter:chooseMod()
     return
   end
   -- Handheld Linux builds generally have neither zenity nor kdialog.  Mirror
-  -- the ROM import fallback and scan the unpacked lovegame root for a mod ZIP.
+  -- the ROM import fallback and scan the unpacked lovegame root for mod ZIPs.
+  -- Keep walking after a stale/already-installed archive fails: these devices
+  -- have no picker with which the player could select the second ZIP, and the
+  -- importer is often rebuilt after each panel action, losing pickSkip.  A
+  -- failed player-owned archive stays on disk and is skipped for this scan;
+  -- the first archive that installs successfully is consumed as before.
   if love.system.getOS() == "Linux" then
-    local name = findPendingMod(true, self.pickSkip)
-    if name then
+    local found = false
+    while true do
+      local name = findPendingMod(true, self.pickSkip)
+      if not name then break end
+      found = true
       self:_installMod(name)
-      consumePick(self, name, "picked_mod.zip",
-        self.modNotice and self.modNotice.ok)
-    else
+      local installed = self.modNotice and self.modNotice.ok
+      consumePick(self, name, "picked_mod.zip", installed)
+      if installed then return end
+    end
+    if not found then
       self.modNotice = { ok = false,
-        text = "No file picker. Copy a mod .zip into the game folder." }
+        text = Strings("No file picker. Copy a mod .zip into the game folder.") }
     end
   end
 end
@@ -2078,15 +2093,16 @@ end
 function RomImporter:_importRequiredData(modId, importId, data)
   local manifest = requiredManifest(self, modId)
   if not manifest then
-    self.modNotice = { ok = false, text = "Required import failed: mod not found." }
+    self.modNotice = { ok = false,
+      text = Strings("Required import failed: mod not found.") }
     return nil
   end
   local ok, result = require("src.mods.RequiredImports")
     .importData(manifest, importId, data)
   if ok then
     self.requiredImportNotice = nil
-    self.modNotice = { ok = true, text = "Imported " .. tostring(importId)
-      .. " for " .. tostring(manifest.name or manifest.id) .. "." }
+    self.modNotice = { ok = true, text = Strings("Imported %s for %s.",
+      tostring(importId), tostring(manifest.name or manifest.id)) }
     self:_refreshMods()
     return true
   end
@@ -2101,7 +2117,8 @@ function RomImporter:_importRequiredSource(modId, importId, source, confirmed)
   local manifest = requiredManifest(self, modId)
   local spec = manifest and requiredSpec(manifest, importId)
   if not spec then
-    requiredImportNotice(self, modId, importId, "Import declaration was not found.")
+    requiredImportNotice(self, modId, importId,
+      Strings("Import declaration was not found."))
     self.modNotice = nil
     return nil
   end
@@ -2140,8 +2157,8 @@ function RomImporter:_importRequiredSource(modId, importId, source, confirmed)
     local ok, result = streamRequiredImport(manifest, importId, source)
     if ok then
       self.requiredImportNotice = nil
-      self.modNotice = { ok = true, text = "Imported " .. tostring(importId)
-        .. " for " .. tostring(manifest.name or manifest.id) .. "." }
+      self.modNotice = { ok = true, text = Strings("Imported %s for %s.",
+        tostring(importId), tostring(manifest.name or manifest.id)) }
       self:_refreshMods()
       return true
     end
@@ -2152,7 +2169,8 @@ function RomImporter:_importRequiredSource(modId, importId, source, confirmed)
   local data = love.filesystem.read(source)
   if not data then data = readExternalPath(source) end
   if not data then
-    requiredImportNotice(self, modId, importId, "Could not read the selected file.")
+    requiredImportNotice(self, modId, importId,
+      Strings("Could not read the selected file."))
     self.modNotice = nil
     return nil
   end
@@ -2165,7 +2183,8 @@ function RomImporter:_removeRequiredImport(modId, importId)
   local ok, err = require("src.mods.RequiredImports").remove(manifest, importId)
   if ok then
     self.requiredImportNotice = nil
-    self.modNotice = { ok = true, text = "Deleted " .. tostring(importId) .. "." }
+    self.modNotice = { ok = true,
+      text = Strings("Deleted %s.", tostring(importId)) }
     self:_refreshMods()
   else
     requiredImportNotice(self, modId, importId, err)
@@ -2239,7 +2258,8 @@ function RomImporter:chooseRequiredImport(modId, importId)
       self.pickerPendingModId = nil
       self.pickerPendingImportId = nil
       self.requiredImportLegacyRomPick = nil
-      requiredImportNotice(self, modId, importId, "Could not open the file picker.")
+      requiredImportNotice(self, modId, importId,
+        Strings("Could not open the file picker."))
       self.modNotice = nil
     elseif self.android then
       self.pickPending = true
@@ -2273,8 +2293,9 @@ function RomImporter:_importSave(version, source, force)
     self.tab = version
   end
   if not self.ready[version] then
-    self.saveNotice[version] = { ok = false, text = "Import the "
-      .. GameVersion.info(version).displayName .. " ROM before importing a save." }
+    self.saveNotice[version] = { ok = false, text = Strings(
+      "Import the %s ROM before importing a save.",
+      GameVersion.info(version).displayName) }
     return
   end
   local ok, res, info = require("src.import.SaveFileIO").importToSlot(source, version, force)
@@ -2282,7 +2303,8 @@ function RomImporter:_importSave(version, source, force)
     self:_refreshSlots(version)
     self.activeSlot[version] = res
     self.slotScroll[version] = math.huge   -- pin the new row on screen (clamped in draw)
-    self.saveNotice[version] = { ok = true, text = "Imported save into " .. tostring(res) .. "." }
+    self.saveNotice[version] = { ok = true,
+      text = Strings("Imported save into %s.", tostring(res)) }
     return
   end
   if res == nil and info and info.needsConfirm then
@@ -2293,15 +2315,15 @@ function RomImporter:_importSave(version, source, force)
       kind = "importOversize",
       version = version,
       source = source,
-      title = "Oversized save file",
+      title = Strings("Oversized save file"),
       lines = {
-        ("This save is %d bytes; a cartridge save is exactly %d bytes (32 KB).")
-          :format(info.size, 32768),
-        "It may come from a ROM that saved the battery image with an emulator.",
-        "The extra bytes would be discarded.",
-        "Import it anyway?",
+        Strings("This save is %d bytes; a cartridge save is exactly %d bytes (32 KB).",
+          info.size, 32768),
+        Strings("It may come from a ROM that saved the battery image with an emulator."),
+        Strings("The extra bytes would be discarded."),
+        Strings("Import it anyway?"),
       },
-      yesLabel = "Import anyway",
+      yesLabel = Strings("Import anyway"),
     }
     return
   end
@@ -2325,7 +2347,8 @@ function RomImporter:chooseSaveImport(version)
     if not pickFile("sav") then
       self.pickerPendingKind = nil
       self.pickerPendingVersion = nil
-      self.saveNotice[version] = { ok = false, text = "Could not open the file picker." }
+      self.saveNotice[version] = { ok = false,
+        text = Strings("Could not open the file picker.") }
     end
     return
   end
@@ -2342,7 +2365,7 @@ function RomImporter:chooseSaveImport(version)
     if not pickFile("sav") then
       self.androidPendingVersion = nil
       self.saveNotice[version] = { ok = false,
-        text = "Could not open the file picker. Copy a .sav via USB." }
+        text = Strings("Could not open the file picker. Copy a .sav via USB.") }
     else
       self.pickPending = true
       self.pickTimer = 0
@@ -2384,14 +2407,14 @@ function RomImporter:exportSave(version)
     local data = rel and love.filesystem.read(rel)
     if not data then
       self.saveNotice[version] = { ok = false,
-        text = "Exported, but could not stage the file for the picker." }
+        text = Strings("Exported, but could not stage the file for the picker.") }
       return
     end
     local suggested = rel:match("[^/\\]+$") or "export.sav"
     local wrote, writeErr = love.filesystem.write("pending_export.sav", data)
     if not wrote then
       self.saveNotice[version] = { ok = false,
-        text = "Could not stage the export: " .. tostring(writeErr) }
+        text = Strings("Could not stage the export: %s", tostring(writeErr)) }
       return
     end
     self.androidPendingExportVersion = version
@@ -2399,16 +2422,17 @@ function RomImporter:exportSave(version)
       self.pickPending = true
       self.pickTimer = 0
       self.saveNotice[version] = { ok = true,
-        text = "Pick where to save " .. suggested .. "..." }
+        text = Strings("Pick where to save %s...", suggested) }
     else
       self.androidPendingExportVersion = nil
       self.saveNotice[version] = { ok = true,
-        text = "Exported inside the app folder (picker unavailable)." }
+        text = Strings("Exported inside the app folder (picker unavailable).") }
     end
     return
   end
   local dir = res:match("^(.*)[/\\][^/\\]+$")
-  self.saveNotice[version] = { ok = true, text = "Exported to " .. res, dir = dir }
+  self.saveNotice[version] = { ok = true,
+    text = Strings("Exported to %s", res), dir = dir }
 end
 
 -- Delete a save slot from the registry and disk, then refresh the panel.  If the
@@ -2425,7 +2449,8 @@ function RomImporter:_deleteSlot(scope, id)
   end
   if ok then
     self:_refreshSlots(scope)
-    self.saveNotice[scope] = { ok = true, text = "Deleted " .. tostring(id) .. "." }
+    self.saveNotice[scope] = { ok = true,
+      text = Strings("Deleted %s.", tostring(id)) }
   else
     self.saveNotice[scope] = { ok = false, text = tostring(err) }
   end
@@ -2450,8 +2475,8 @@ function RomImporter:choose(version)
     if not data then
       self.notice = {
         version = self.chooseVersion,
-        status = "The detected ROM is no longer available.",
-        detail = "Choose Import ROM to select it another way.",
+        status = Strings("The detected ROM is no longer available."),
+        detail = Strings("Choose Import ROM to select it another way."),
       }
       return
     end
@@ -2462,7 +2487,7 @@ function RomImporter:choose(version)
     self.pickerPendingKind = "rom"
     if not pickFile("rom") then
       self.pickerPendingKind = nil
-      self:setError("Could not open the file picker.")
+      self:setError(Strings("Could not open the file picker."))
     end
     return
   end
@@ -2482,7 +2507,7 @@ function RomImporter:choose(version)
       -- error (which would read as a rejected file).
       self.notice = {
         version = self.chooseVersion,
-        status = "No picker available, copy your ROM into:",
+        status = Strings("No picker available, copy your ROM into:"),
         detail = love.filesystem.getSaveDirectory(),
       }
     else
@@ -2511,16 +2536,17 @@ function RomImporter:choose(version)
     local where = love.filesystem.getSourceBaseDirectory
       and love.filesystem.getSourceBaseDirectory()
       or love.filesystem.getSource and love.filesystem.getSource()
-      or "the game folder"
+      or Strings("the game folder")
     self.notice = {
       version = self.chooseVersion,
-      status = "No file picker. Copy your .gb/.gbc into:",
+      status = Strings("No file picker. Copy your .gb/.gbc into:"),
       detail = where,
     }
     return
   end
   if love.system.getOS() ~= "OS X" and love.system.getOS() ~= "Windows" then
-    self:setError("File selection is unavailable here. Drop the .gb/.gbc file onto the window.")
+    self:setError(Strings(
+      "File selection is unavailable here. Drop the .gb/.gbc file onto the window."))
   end
 end
 
@@ -2561,7 +2587,7 @@ function RomImporter:_pollPickedFiles(dt)
     self.pickPending = nil
     self.modNotice = { ok = false, text = pickError }
     self.notice = { version = self.chooseVersion or "red",
-                    status = "File import failed:", detail = pickError }
+                    status = Strings("File import failed:"), detail = pickError }
     return
   end
   local found = love.filesystem.getInfo("export_done.flag", "file") ~= nil
@@ -2637,11 +2663,11 @@ function RomImporter:update(dt)
       if os.getenv("POKEPORT_LAUNCHER_CONFIRM") == "1" then
         self._modConfirm = {
           kind = "update",
-          title = "Install mod",
-          yesLabel = "Install",
+          title = Strings("Install mod"),
+          yesLabel = Strings("Install"),
           lines = { "JP GREEN - Poketto Monsuta Midori v0.4.4",
                     "by bryanthaboi",
-                    "Mods are not reviewed - trust the author." },
+                    Strings("Mods are not reviewed - trust the author.") },
         }
       end
       -- POKEPORT_LAUNCHER_SETTINGS=1 opens the gear panel, the other layout
@@ -3305,7 +3331,8 @@ function RomImporter:_useSkin(id)
   SaveData.saveOptions(opts)
   self._skinNotice = {
     ok = true,
-    text = id and ("Now using " .. id) or "Now using the built-in pad",
+    text = id and Strings("Now using %s", id)
+      or Strings("Now using the built-in pad"),
   }
 end
 
@@ -3320,7 +3347,8 @@ function RomImporter:_disableSkins()
   tc.enabled, tc.skin = true, nil
   opts.touchControls = tc
   SaveData.saveOptions(opts)
-  self._skinNotice = { ok = true, text = "Skins are off. Mobile will use the built-in pad when needed." }
+  self._skinNotice = { ok = true, text = Strings(
+    "Skins are off. Mobile will use the built-in pad when needed.") }
 end
 
 function RomImporter:_installSkinZip(source)
@@ -3341,8 +3369,8 @@ function RomImporter:_installSkinZip(source)
   end
   if not data then
     self._skinNotice = { ok = false,
-      text = "Could not read the skin archive: "
-        .. tostring(readError or name) }
+      text = Strings("Could not read the skin archive: %s",
+        tostring(readError or name)) }
     return
   end
   self:_installSkinData(name, data)
@@ -3387,12 +3415,13 @@ function RomImporter:_installSkinData(name, data)
   local id, note = TouchSkin.installArchive(wrappedName, payload)
   self:_ensureSkins(true)
   if not id then
-    self._skinNotice = { ok = false, text = "Import failed: " .. tostring(note) }
+    self._skinNotice = { ok = false,
+      text = Strings("Import failed: %s", tostring(note)) }
     return nil
   end
-  local text = "Imported " .. id
+  local text = Strings("Imported %s", id)
   if type(note) == "table" and note[1] then
-    text = text .. ": " .. tostring(note[1])
+    text = text .. "：" .. Strings(tostring(note[1]))
   end
   self._skinNotice = { ok = true, text = text }
   return id
@@ -3457,7 +3486,8 @@ function RomImporter:_pumpSkinFetch()
   self._skinFetch, self._skinFetchProgress = nil, nil
   if st.status ~= "ok" or not st.path then
     self._skinNotice = { ok = false,
-      text = "Download failed: " .. tostring(st.err or "no data") }
+      text = Strings("Download failed: %s",
+        Strings(tostring(st.err or "no data"))) }
     return
   end
   local data = love.filesystem.read(st.path)
@@ -3490,7 +3520,7 @@ function RomImporter:_exportSkin(id, kind)
   end
   if not path then
     self._skinNotice = { ok = false,
-      text = "Export failed: " .. tostring(missing) }
+      text = Strings("Export failed: %s", tostring(missing)) }
     return nil
   end
   local dir = love.filesystem.getSaveDirectory
@@ -3498,7 +3528,7 @@ function RomImporter:_exportSkin(id, kind)
   self._skinExport = { path = path, dir = dir }
   local text = Strings("Exported to %s", (dir and (dir .. "/") or "") .. path)
   if type(missing) == "table" and missing[1] then
-    text = text .. " (" .. #missing .. " image(s) missing)"
+    text = text .. Strings(" (%d image(s) not found)", #missing)
   end
   if type(warnings) == "table" and warnings[1] then
     text = text .. " " .. tostring(warnings[1])
@@ -3740,7 +3770,8 @@ function RomImporter:chooseSkin()
     self.pickerPendingKind = "skin"
     if not pickFile("mod") then
       self.pickerPendingKind = nil
-      self._skinNotice = { ok = false, text = "Could not open the file picker." }
+      self._skinNotice = { ok = false,
+        text = Strings("Could not open the file picker.") }
     end
     return
   end
@@ -3756,7 +3787,8 @@ function RomImporter:chooseSkin()
     if not pickFile("mod") then
       self.pickerPendingKind = nil
       self._skinNotice = { ok = false,
-        text = "Could not open the file picker. Copy a skin .zip via USB." }
+        text = Strings(
+          "Could not open the file picker. Copy a skin .zip via USB.") }
     else
       self.pickPending = true
       self.pickTimer = 0
@@ -3853,7 +3885,8 @@ function RomImporter:_reportIssue(options, version)
   self.issueNotice = nil
   local ok, IssueReport = pcall(require, "src.core.IssueReport")
   if not ok then
-    self.issueNotice = { ok = false, text = "Could not prepare the issue report." }
+    self.issueNotice = { ok = false,
+      text = Strings("Could not prepare the issue report.") }
     return false
   end
   local opened, url, reason = IssueReport.open(options, {
@@ -3861,7 +3894,8 @@ function RomImporter:_reportIssue(options, version)
     mods = self.mods,
   })
   if not opened then
-    self.issueNotice = { ok = false, text = reason or "Could not open the issue report." }
+    self.issueNotice = { ok = false,
+      text = reason or Strings("Could not open the issue report.") }
     return false
   end
   self._lastIssueReportURL = url
@@ -4563,7 +4597,7 @@ function RomImporter:exportCart(id)
   local SaveData = require("src.core.SaveData")
   local bytes, err = CartStore.export(id)
   if type(bytes) ~= "string" then
-    self._cartNotice = tostring(err or "that cart could not be read")
+    self._cartNotice = Strings(tostring(err or "that cart could not be read"))
     return
   end
   local fs = SaveData.portableFs() or (love and love.filesystem)
@@ -4837,12 +4871,13 @@ function RomImporter:_refreshMods()
     -- the list right below it, one that did not is the only word they get
     if #imported > 0 then
       self.modNotice = { ok = true,
-        text = "Imported from the game folder: " .. table.concat(imported, ", ") }
+        text = Strings("Imported from the game folder: %s",
+          table.concat(imported, ", ")) }
     end
     if #failed > 0 then
       self.modNotice = { ok = false,
-        text = "Found beside the game but could not import: "
-               .. table.concat(failed, ", ") }
+        text = Strings("Found beside the game but could not import: %s",
+          table.concat(failed, ", ")) }
     end
   end
   local listed = LauncherMods.list(self.modScope) or {}
@@ -5027,7 +5062,8 @@ end
 -- Enabling an experimental mod arms a confirmation for that same game.
 function RomImporter:_toggleMod(id, confirmed, version)
   if self.safeMode then
-    self.modNotice = { ok = false, text = "Safe mode is active. Turn it off in the Bug tab to change mods." }
+    self.modNotice = { ok = false, text = Strings(
+      "Safe mode is active. Turn it off in the Bug tab to change mods.") }
     return
   end
   local cartId, cartReport = self:modCartPlan()
@@ -5052,12 +5088,12 @@ function RomImporter:_toggleMod(id, confirmed, version)
   if want and experimental and not confirmed then
     self._modConfirm = {
       kind = "experimental", id = id, version = version,
-      title = "Experimental mod",
-      yesLabel = "Enable",
+      title = Strings("Experimental mod"),
+      yesLabel = Strings("Enable"),
       lines = {
-        "This mod is marked experimental.",
-        "It may be unfinished or unstable.",
-        "Enable it anyway?",
+        Strings("This mod is marked experimental."),
+        Strings("It may be unfinished or unstable."),
+        Strings("Enable it anyway?"),
       },
     }
     return
@@ -5104,12 +5140,12 @@ function RomImporter:_toggleCartMod(cartId, report, id, confirmed)
   if want and row and row.experimental and not confirmed then
     self._modConfirm = {
       kind = "experimental", id = id, version = self.modScope,
-      title = "Experimental mod",
-      yesLabel = "Enable",
+      title = Strings("Experimental mod"),
+      yesLabel = Strings("Enable"),
       lines = {
-        "This mod is marked experimental.",
-        "It may be unfinished or unstable.",
-        "Enable it anyway?",
+        Strings("This mod is marked experimental."),
+        Strings("It may be unfinished or unstable."),
+        Strings("Enable it anyway?"),
       },
     }
     return
@@ -5134,7 +5170,8 @@ end
 -- rather than becoming a way to add to it or empty it.
 function RomImporter:_setAllMods(want, confirmed)
   if self.safeMode then
-    self.modNotice = { ok = false, text = "Safe mode is active. Turn it off in the Bug tab to change mods." }
+    self.modNotice = { ok = false, text = Strings(
+      "Safe mode is active. Turn it off in the Bug tab to change mods.") }
     return
   end
   local cartId, cartReport = self:modCartPlan()
@@ -5171,12 +5208,12 @@ function RomImporter:_setAllMods(want, confirmed)
   if want and experimental and not confirmed then
     self._modConfirm = {
       kind = "enableAll",
-      title = "Experimental mods",
-      yesLabel = "Enable all",
+      title = Strings("Experimental mods"),
+      yesLabel = Strings("Enable all"),
       lines = {
-        "Some of these mods are marked experimental.",
-        "They may be unfinished or unstable.",
-        "Enable everything anyway?",
+        Strings("Some of these mods are marked experimental."),
+        Strings("They may be unfinished or unstable."),
+        Strings("Enable everything anyway?"),
       },
     }
     return
@@ -5200,7 +5237,8 @@ function RomImporter:_modGithubAction(id, action)
   -- lands in this branch.
   if not Platform.canFetchRemote() then
     self.modNotice = { ok = false,
-      text = "Remote mod download is unavailable on this platform. Install a mod .zip from storage instead." }
+      text = Strings(
+        "Remote mod download is unavailable on this platform. Install a mod .zip from storage instead.") }
     return
   end
   local ModUpdate = require("src.mods.ModUpdate")
@@ -5209,7 +5247,8 @@ function RomImporter:_modGithubAction(id, action)
     if m.id == id then row = m; break end
   end
   if not row or not row.github then
-    self.modNotice = { ok = false, text = "This mod has no github field" }
+    self.modNotice = { ok = false,
+      text = Strings("This mod has no github field") }
     return
   end
 
@@ -5220,12 +5259,12 @@ function RomImporter:_modGithubAction(id, action)
     if info and info.status == "available" and info.best then
       self._modConfirm = {
         kind = "update", id = row.id, release = info.best,
-        title = "Update available",
-        yesLabel = "Update",
+        title = Strings("Update available"),
+        yesLabel = Strings("Update"),
         lines = {
-          "Update " .. row.name .. "?",
-          "Installed v" .. tostring(row.version),
-          "Latest v" .. tostring(info.best.version),
+          Strings("Update %s?", row.name),
+          Strings("Installed v%s", tostring(row.version)),
+          Strings("Latest v%s", tostring(info.best.version)),
         },
       }
       return
@@ -5259,7 +5298,8 @@ function RomImporter:_pumpModCheck()
   self:_clearBusy()
   if not ok then
     self._modVersions = nil
-    self.modNotice = { ok = false, text = "Update failed: " .. tostring(done) }
+    self.modNotice = { ok = false,
+      text = Strings("Update failed: %s", tostring(done)) }
     return
   end
   if not releases then
@@ -5267,7 +5307,7 @@ function RomImporter:_pumpModCheck()
     return
   end
   if #releases == 0 then
-    self.modNotice = { ok = false, text = "No .zip releases found" }
+    self.modNotice = { ok = false, text = Strings("No .zip releases found") }
     return
   end
 
@@ -5292,20 +5332,22 @@ function RomImporter:_pumpModCheck()
 
   if status == "available" and best then
     self.modNotice = { ok = true,
-      text = job.name .. ": new version available (v" .. best.version .. ")" }
+      text = Strings("%s: new version available (v%s)",
+        job.name, best.version) }
     self._modConfirm = {
       kind = "update", id = job.id, release = best,
-      title = "Update available",
-      yesLabel = "Update",
+      title = Strings("Update available"),
+      yesLabel = Strings("Update"),
       lines = {
-        "Update " .. job.name .. "?",
-        "Installed v" .. tostring(job.version),
-        "Latest v" .. tostring(best.version),
+        Strings("Update %s?", job.name),
+        Strings("Installed v%s", tostring(job.version)),
+        Strings("Latest v%s", tostring(best.version)),
       },
     }
   else
     self.modNotice = { ok = true,
-      text = job.name .. " is up to date (v" .. tostring(job.version) .. ")" }
+      text = Strings("%s is up to date (v%s)",
+        job.name, tostring(job.version)) }
   end
 end
 
@@ -5330,13 +5372,14 @@ function RomImporter:_beginModInstall(spec)
   if not release and spec.entry then
     local resolved, why = ModIndex.releaseFor(spec.entry)
     if not resolved then
-      self:_modInstallFailed(spec, why or "this mod cannot be installed")
+      self:_modInstallFailed(spec,
+        Strings(tostring(why or "this mod cannot be installed")))
       return
     end
     release = resolved
   end
   if type(release) ~= "table" or not release.zip or not release.zip.url then
-    self:_modInstallFailed(spec, "release has no downloadable .zip")
+    self:_modInstallFailed(spec, Strings("release has no downloadable .zip"))
     return
   end
   local version = release.version or os.time()
@@ -5353,7 +5396,7 @@ function RomImporter:_beginModInstall(spec)
 end
 
 function RomImporter:_modInstallFailed(spec, msg)
-  local notice = { ok = false, text = tostring(msg) }
+  local notice = { ok = false, text = Strings(tostring(msg)) }
   if spec.notice == "find" then self.findNotice = notice
   elseif spec.notice ~= "cart" then self.modNotice = notice end
   self:_clearBusy()
@@ -5373,19 +5416,20 @@ end
 function RomImporter.verifyArchiveSha256(path, want)
   if type(want) ~= "string" or not want:lower():match("^%x+$")
       or #want ~= 64 then
-    return false, "the cart records no usable sha256 for this mod"
+    return false, Strings("the cart records no usable sha256 for this mod")
   end
   local ok, data = pcall(love.filesystem.read, path)
   if not ok or type(data) ~= "string" or data == "" then
-    return false, "the downloaded archive could not be read back"
+    return false, Strings("the downloaded archive could not be read back")
   end
   local hashed, got = pcall(sha256hex, data)
   if not hashed or type(got) ~= "string" then
-    return false, "this platform cannot hash the archive, so it was not installed"
+    return false, Strings(
+      "this platform cannot hash the archive, so it was not installed")
   end
   if got:lower() ~= want:lower() then
-    return false, ("archive sha256 %s does not match the pinned %s")
-      :format(got:sub(1, 12), want:sub(1, 12))
+    return false, Strings("archive sha256 %s does not match the pinned %s",
+      got:sub(1, 12), want:sub(1, 12))
   end
   return true
 end
@@ -5403,7 +5447,8 @@ function RomImporter:_pumpModInstall()
   self._modInstall = nil
   local spec = job.spec
   if not ok then
-    self:_modInstallFailed(spec, "download failed: " .. tostring(done))
+    self:_modInstallFailed(spec,
+      Strings("download failed: %s", tostring(done)))
     return
   end
   if not path then
@@ -5428,7 +5473,8 @@ function RomImporter:_pumpModInstall()
     spec.modId, path, job.version)
   self:_clearBusy()
   if not ran then
-    self:_modInstallFailed(spec, "install failed: " .. tostring(res))
+    self:_modInstallFailed(spec,
+      Strings("install failed: %s", tostring(res)))
     return
   end
   if not res then
@@ -5439,7 +5485,7 @@ function RomImporter:_pumpModInstall()
   -- to be re-derived before the next paint or the card lies.
   pcall(self._refreshMods, self)
   local shown = tostring(resErr or job.version or "")
-  local text = ("%s %s %s"):format(spec.verb or "Installed",
+  local text = ("%s %s %s"):format(Strings(spec.verb or "Installed"),
     tostring(spec.name or spec.modId), shown)
   if spec.notice == "find" then
     self.findNotice = { ok = true, text = text }
@@ -5468,8 +5514,8 @@ function RomImporter:_beginCartInstall(entry)
   local release, why = ModIndex.releaseFor(entry)
   if type(release) ~= "table" or not (release.zip and release.zip.url) then
     self.findNotice = { ok = false,
-      text = ("%s: %s"):format(tostring(entry.title or entry.id),
-        tostring(why or "this cart has no downloadable release")) }
+      text = Strings("%s: %s", tostring(entry.title or entry.id),
+        Strings(tostring(why or "this cart has no downloadable release"))) }
     return
   end
   local ModUpdate = require("src.mods.ModUpdate")
@@ -5488,7 +5534,7 @@ end
 function RomImporter:_cartInstallFailed(msg)
   self._cartInstall = nil
   self:_clearBusy()
-  self.findNotice = { ok = false, text = tostring(msg) }
+  self.findNotice = { ok = false, text = Strings(tostring(msg)) }
 end
 
 function RomImporter:_pumpCartInstall()
@@ -5503,7 +5549,8 @@ function RomImporter:_pumpCartInstall()
   local entry = job.entry
   local name = tostring(entry.title or entry.id)
   if not ok then
-    return self:_cartInstallFailed(name .. ": download failed: " .. tostring(done))
+    return self:_cartInstallFailed(
+      Strings("%s: download failed: %s", name, tostring(done)))
   end
   if not path then
     return self:_cartInstallFailed(name .. ": " .. tostring(err or "download failed"))
@@ -5512,14 +5559,16 @@ function RomImporter:_pumpCartInstall()
   local read, bytes = pcall(love.filesystem.read, path)
   pcall(love.filesystem.remove, path)
   if not read or type(bytes) ~= "string" or bytes == "" then
-    return self:_cartInstallFailed(name .. ": the download could not be read back")
+    return self:_cartInstallFailed(
+      Strings("%s: the download could not be read back", name))
   end
   self:_setBusy(Strings("Installing %s", name))
   local CartStore = require("src.carts.CartStore")
   local ran, cart, installErr = pcall(CartStore.install, bytes)
   self:_clearBusy()
   if not ran then
-    return self:_cartInstallFailed(name .. ": install failed: " .. tostring(cart))
+    return self:_cartInstallFailed(
+      Strings("%s: install failed: %s", name, tostring(cart)))
   end
   if not cart then
     return self:_cartInstallFailed(name .. ": " .. tostring(installErr))
@@ -5558,12 +5607,12 @@ function RomImporter:_offerCartPins(cart)
   local title = tostring(cart.title or cart.id)
   self._modConfirm = {
     kind = "cartPins", version = cart.base, id = cart.id,
-    title = "Install this cart's mods",
-    yesLabel = "Install",
+    title = Strings("Install this cart's mods"),
+    yesLabel = Strings("Install"),
     lines = {
-      ("%s pins %d mod(s) you do not have."):format(title, #rows),
-      "Install them now? Each one is checked against the cart's own hash.",
-      ("This selects %s as the cart for %s."):format(title,
+      Strings("%s pins %d mod(s) you do not have.", title, #rows),
+      Strings("Install them now? Each one is checked against the cart's own hash."),
+      Strings("This selects %s as the cart for %s.", title,
         tostring((info and (info.launcherName or info.displayName))
           or cart.base)),
     },
@@ -5601,12 +5650,12 @@ function RomImporter:_pumpDepPulls()
       if done then
         if err or not releases or #releases == 0 then
           state.stage = "error"
-          state.err = err or "No downloadable releases found on GitHub"
+          state.err = err or Strings("No downloadable releases found on GitHub")
         else
           local rel = releases[1]
           if not rel or not rel.zip or not rel.zip.url then
             state.stage = "error"
-            state.err = "Latest release has no downloadable .zip asset"
+            state.err = Strings("Latest release has no downloadable .zip asset")
           else
             local tmpName = ("dep_%s_%s.zip"):format(depId, tostring(rel.version or os.time()))
             state.dlHandle = ModUpdate.beginDownloadZip(rel.zip.url, tmpName, rel.zip.size)
@@ -5621,7 +5670,7 @@ function RomImporter:_pumpDepPulls()
       if done then
         if err or not localPath then
           state.stage = "error"
-          state.err = err or "Download failed"
+          state.err = err or Strings("Download failed")
         else
           state.stage = "installing"
           local okInst, versionRes = LauncherMods.installDownloadedZip(depId, localPath, state.targetVersion)
@@ -5634,7 +5683,7 @@ function RomImporter:_pumpDepPulls()
             end
           else
             state.stage = "error"
-            state.err = tostring(versionRes or "Installation failed")
+            state.err = Strings(tostring(versionRes or "Installation failed"))
           end
         end
       end
@@ -5704,7 +5753,7 @@ function RomImporter:_modsEmptyHint()
       .. "and tap Scan again.")
   end
   if self.android then
-    return "No mods installed - tap Import mod .zip to add one."
+    return Strings("No mods installed - tap Import mod .zip to add one.")
   end
   return Strings("No mods installed - drop a mod .zip here to add one.")
 end
@@ -5754,7 +5803,8 @@ function RomImporter:_refreshFind(force)
     self.findLoaded = true
     self.findIndex = { mods = {}, carts = {}, categories = {}, baseGames = {} }
     self.findNotice = { ok = false,
-      text = "Mod indexes cannot be fetched on this platform. Install a mod .zip from storage instead." }
+      text = Strings(
+        "Mod indexes cannot be fetched on this platform. Install a mod .zip from storage instead.") }
     return
   end
   local ModIndex = require("src.mods.ModIndex")
@@ -6309,7 +6359,8 @@ function RomImporter:_findConfirmInstall(entry)
   local url, why = ModIndex.installUrl(entry)
   if not url then
     self.findNotice = { ok = false,
-      text = (entry.title or entry.id) .. ": " .. tostring(why) }
+      text = Strings("%s: %s", entry.title or entry.id,
+        Strings(tostring(why))) }
     return
   end
   if ModIndex.isCart(entry) then
@@ -6323,20 +6374,20 @@ function RomImporter:_findConfirmInstall(entry)
   })
   local version = ModIndex.displayVersion(entry)
   local lines = { (entry.title or entry.id) .. " v" .. tostring(version) }
-  if entry.author then lines[#lines + 1] = "by " .. entry.author end
+  if entry.author then lines[#lines + 1] = Strings("by %s", entry.author) end
   local have = installed[entry.id]
   if have then
-    lines[#lines + 1] = "Replaces installed v" .. tostring(have)
+    lines[#lines + 1] = Strings("Replaces installed v%s", tostring(have))
   end
   for _, issue in ipairs(issues) do
-    lines[#lines + 1] = "! " .. issue.text
+    lines[#lines + 1] = "! " .. Strings(issue.text)
   end
-  lines[#lines + 1] = "Mods are not reviewed - trust the author."
+  lines[#lines + 1] = Strings("Mods are not reviewed - trust the author.")
   self._modConfirm = {
     kind = (#issues > 0) and "warn" or "update",
     indexEntry = entry,
-    title = have and "Reinstall mod" or "Install mod",
-    yesLabel = have and "Reinstall" or "Install",
+    title = have and Strings("Reinstall mod") or Strings("Install mod"),
+    yesLabel = have and Strings("Reinstall") or Strings("Install"),
     lines = lines,
   }
 end
@@ -6354,25 +6405,25 @@ function RomImporter:_findConfirmCartInstall(entry)
   local version = ModIndex.displayVersion(entry)
   local info = GameVersion.info(entry.base)
   local lines = { (entry.title or entry.id) .. " v" .. tostring(version) }
-  if entry.author then lines[#lines + 1] = "by " .. entry.author end
-  lines[#lines + 1] = "Plays as "
-    .. tostring((info and (info.launcherName or info.displayName)) or entry.base)
-    .. " - " .. tostring(entry.seal)
-  lines[#lines + 1] = ("Pins %d mod(s), installed separately from its page")
-    :format(#(entry.mods or {}))
+  if entry.author then lines[#lines + 1] = Strings("by %s", entry.author) end
+  lines[#lines + 1] = Strings("Plays as %s - %s",
+    tostring((info and (info.launcherName or info.displayName)) or entry.base),
+    tostring(entry.seal))
+  lines[#lines + 1] = Strings(
+    "Pins %d mod(s), installed separately from its page", #(entry.mods or {}))
   local have = self:_findInstalledCarts()[entry.id]
   if have then
-    lines[#lines + 1] = "Replaces installed v" .. tostring(have)
+    lines[#lines + 1] = Strings("Replaces installed v%s", tostring(have))
   end
   for _, issue in ipairs(issues) do
-    lines[#lines + 1] = "! " .. issue.text
+    lines[#lines + 1] = "! " .. Strings(issue.text)
   end
-  lines[#lines + 1] = "Carts are not reviewed - trust the author."
+  lines[#lines + 1] = Strings("Carts are not reviewed - trust the author.")
   self._modConfirm = {
     kind = (#issues > 0) and "warn" or "update",
     indexEntry = entry,
-    title = have and "Reinstall cart" or "Install cart",
-    yesLabel = have and "Reinstall" or "Install",
+    title = have and Strings("Reinstall cart") or Strings("Install cart"),
+    yesLabel = have and Strings("Reinstall") or Strings("Install"),
     lines = lines,
   }
 end

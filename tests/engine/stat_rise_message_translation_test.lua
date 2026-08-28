@@ -138,4 +138,19 @@ withCatalog({ ["%s's DEFENSE rose!"] = "%s voit sa DEFENSE augmenter !" },
       "a catalog translating Reflect's rose! message reaches it")
   end)
 
+-- The Chinese fork enables its bundled catalog during game boot.  This is a
+-- full dynamic message: both the sentence template and the substituted stat
+-- label must resolve, otherwise the renderer-boundary fallback cannot repair
+-- the already-formatted English text later.
+Strings.setAppCatalogEnabled(true)
+Strings.load(nil)
+do
+  local battle = newGen2Battle()
+  battle:changeStage(battle.player, "attack", 1)
+  local events = battle:takeEvents()
+  T.eq(events[1].text, "MACHOP的攻击提高了！",
+    "bundled Chinese translates a formatted Gen 2 stage message")
+end
+Strings.setAppCatalogEnabled(false)
+
 T.finish("stat rise message translation")

@@ -132,7 +132,8 @@ imp.tab = "red"
 imp.ready.red = true
 imp._cartPopup = "red"
 local picker = drawAndCapture(imp)
-check(picker:find("Pokemon Red", 1, true) ~= nil,
+check(picker:find("红版", 1, true) ~= nil
+    or picker:find("Red", 1, true) ~= nil,
   "the picker offers the base game as the first row")
 check(picker:find("Kanto Plus", 1, true) ~= nil, "the picker lists Kanto Plus")
 check(picker:find("Zeta Open", 1, true) ~= nil, "the picker lists Zeta Open")

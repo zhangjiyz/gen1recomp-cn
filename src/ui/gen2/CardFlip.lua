@@ -54,6 +54,7 @@
 -- the board draws as labelled cells.
 
 local Chrome = require("src.ui.gen2.Chrome")
+local Strings = require("src.core.Strings")
 local CoinCase = require("src.core.gen2.CoinCase")
 local Sound = require("src.core.Sound")
 
@@ -303,14 +304,14 @@ local TEXT_X, TEXT_Y, TEXT_LINE = 1, 14, 2
 -- data/text/common_3.asm; none of these are in the cache's text.lua, because no
 -- script bytecode the extractor walks points at them.
 CardFlip.TEXTS = {
-  playWithThree = { "Play with", "3 coins?" },
-  notEnough = { "Not enough", "coins." },
-  chooseACard = { "Choose a", "card." },
-  placeYourBet = { "Place", "your bet" },
-  playAgain = { "Play", "again?" },
-  shuffled = { "The cards", "shuffled." },
-  yeah = { "Yeah!" },
-  darn = { "Darn…" },
+  playWithThree = { Strings.source("Play with"), Strings.source("3 coins?") },
+  notEnough = { Strings.source("Not enough"), Strings.source("coins.") },
+  chooseACard = { Strings.source("Choose a"), Strings.source("card.") },
+  placeYourBet = { Strings.source("Place"), Strings.source("your bet") },
+  playAgain = { Strings.source("Play"), Strings.source("again?") },
+  shuffled = { Strings.source("The cards"), Strings.source("shuffled.") },
+  yeah = { Strings.source("Yeah!") },
+  darn = { Strings.source("Darn…") },
 }
 
 local SFX_TRANSACTION = "Sfx_Transaction"
@@ -979,4 +980,3 @@ function CardFlip:drawWidescreen(winW, winH)
 end
 
 return CardFlip
-
