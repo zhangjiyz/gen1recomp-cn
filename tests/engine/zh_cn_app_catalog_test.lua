@@ -39,6 +39,14 @@ eq(Strings("EXIT GAME"), "关闭", "port-added title exit command")
 eq(Strings("BATTLE LAYOUT"), "战斗布局", "port-added battle layout row")
 eq(Strings("SHADER FX 2"), "着色器效果2", "port-added shader row")
 eq(Strings("%d INSTALLED", 3), "已安装3个模组", "port-added mod count")
+eq(Strings("%d OPTIONS", 4), "4 个选项", "grouped option count")
+eq(Strings("BATTLE OPTIONS"), "战斗选项", "grouped battle options")
+eq(Strings("Select Mod (.zip)"), "选择模组（.zip）", "mod file picker title")
+eq(Strings("Choose a\nPOKéMON BOX."), "请选择一个\n宝可梦盒子。",
+  "box selection prompt")
+eq(Strings("When you change a\nPOKéMON BOX, data\vwill be saved.\fIs that okay?"),
+  "更换宝可梦盒子时，\n数据将会保存。\f可以吗？",
+  "box save prompt preserves control markers")
 eq(Strings("RETURN TO MAIN\nMENU?"), "返回主菜单？",
   "port-added launcher return prompt")
 eq(Strings("DATE FORMAT"), "日期格式", "port-added date format row")

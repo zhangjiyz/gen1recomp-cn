@@ -610,6 +610,27 @@ local catalog = {
   ["This is permanent and cannot be undone. That save is marked modified from then on."] = "此操作永久生效且无法撤销，之后该存档会被标记为已修改。",
   ["Press Break it again to do it."] = "再次点击“确认解除”以继续。",
 
+  -- Current v0.2.32 engine/UI keys that were absent from the original seed
+  -- package. Keep the exact source spelling and control markers: Strings is
+  -- keyed by the rendered English source, not by a normalized label.
+  ["%d OPTIONS"] = "%d 个选项",
+  ["%s got %s%d\nfor winning!\vSent some to MOM!"] = "%s赢得了%s%d！\v其中一部分寄给了妈妈！",
+  [":L%d"] = "：Lv%d",
+  ["AUDIO"] = "音频",
+  ["AUTO (FILL HUD)"] = "自动（填满HUD）",
+  ["BATTLE OPTIONS"] = "战斗选项",
+  ["BOX%2d"] = "盒子%2d",
+  ["COLOUR"] = "彩色",
+  ["CONTENTS"] = "目录",
+  ["Choose a\nPOKéMON BOX."] = "请选择一个\n宝可梦盒子。",
+  ["EXTRAS"] = "其他",
+  ["GRAPHICS"] = "图像",
+  ["MONOCHROME"] = "单色",
+  ["Select Mod (.zip)"] = "选择模组（.zip）",
+  ["UI LETTERBOX"] = "界面留边",
+  ["VIDEO"] = "视频",
+  ["When you change a\nPOKéMON BOX, data\vwill be saved.\fIs that okay?"] = "更换宝可梦盒子时，\n数据将会保存。\f可以吗？",
+
   -- Third-party option schemas are translated when LauncherSettings imports
   -- their rows.  Values remain the mod's stored ids; only labels are Chinese.
   ["VOXEL"] = "体素3D",
