@@ -190,7 +190,8 @@ function Game:makeTitleState()
     onContinue = function()
       local loaded, recovered = SaveData.load()
       if loaded then
-        self:restoreSave(loaded, recovered, { freshBoot = true })
+        self:restoreSave(loaded, recovered,
+                         { freshBoot = true, continued = true })
       end
     end,
     onExit = self.onExit,
@@ -1262,6 +1263,7 @@ function Game:applyOptions(opts)
   if Sound.applyOptions then Sound.applyOptions(opts) end
   require("src.render.PaletteFX").applyOptions(opts)
   require("src.render.Tilt").applyOptions(opts)
+  require("src.render.Letterbox").applyOptions(opts)
   -- after Tilt, so a persisted world pipeline can switch the tilt level it
   -- just restored back off (the two are mutually exclusive)
   require("src.render.Pipelines").applyOptions(opts)
@@ -1325,12 +1327,13 @@ function Game:restoreSave(loaded, recovered, opts)
   report.recovered = recovered
   report.modsDiff = modsDiff
   self.save = loaded
+  -- the START cursor lives outside sGameData (ram/sram.asm:17-21)
+  loaded.startMenuIndex = nil
+  self.startMenuIndex = nil
   self:adoptSave(loaded)
   -- SaveData.load already attached the standalone options.lua table
   self:applyOptions(loaded.options)
-  -- saves from before OT/ID stamping: backfill with the player's (after
-  -- the scrub, so every mon the stamp loop sees is known)
-  SaveData.repairTradedOtIds(loaded)
+  -- saves from before OT/ID stamping: backfill with the player's
   local stamp = require("src.battle.BattleState").stampOT
   for _, mon in ipairs(loaded.party or {}) do stamp(loaded, mon) end
   for _, box in ipairs(loaded.boxes or {}) do
@@ -1341,8 +1344,10 @@ function Game:restoreSave(loaded, recovered, opts)
   -- freshBoot threads through from the caller (onContinue and F2 both set
   -- it); a future caller that doesn't ask for it keeps the ordinary
   -- crossfade by default.
+  -- engine/menus/main_menu.asm:110 (CONTINUE forces PLAYER_DIR_DOWN)
+  local facing = (opts and opts.continued) and "down" or loaded.player.facing
   self.stack:push(self.overworld, loaded.player.map,
-                  loaded.player.x, loaded.player.y, loaded.player.facing,
+                  loaded.player.x, loaded.player.y, facing,
                   { via = "boot", freshBoot = opts and opts.freshBoot })
   self.saveReport = report
   if not SaveData.emptyReport(report) then
@@ -1393,8 +1398,13 @@ end
 
 -- Drop every session-owned field so the next Game:load() starts clean when
 -- the process returns to the launcher in-place (Android / intent_game).
--- main.lua must not guess field names: new systems (Game.network, …) are
--- cleared automatically because only functions (methods) are kept.
+--
+-- Gen1 Game is a MODULE SINGLETON (methods live on this table).  Never fan
+-- out arbitrary field:release() here: session fields can hold shared modules
+-- (Fetch, SyncClient, …) whose :release is a job-handle API, not instance
+-- teardown -- calling them as value:release() corrupts process state and has
+-- been observed to leave Game.load nil after EXIT GAME on Android.
+-- Explicit GPU owners are released below; everything else is just dropped.
 function Game:reset()
   if self.stack and self.stack.clear then
     pcall(function() self.stack:clear() end)
@@ -1407,23 +1417,23 @@ function Game:reset()
       if canvas and canvas.release then pcall(canvas.release, canvas) end
     end
   end
-  if self.renderer and self.renderer.releaseCanvases then
-    pcall(function() self.renderer:releaseCanvases() end)
+  if self.renderer then
+    local release = self.renderer.releaseCanvases or self.renderer.release
+    if release then pcall(release, self.renderer) end
   end
+  -- Keep methods; clear every other field (including session scalars like
+  -- speedOverride).  Re-seed module constants afterward.
+  local skinFast = self.SKIN_FAST_FORWARD
   local keys = {}
   for key, value in pairs(self) do
     if type(value) ~= "function" then
-      if key ~= "world" and key ~= "renderer" and key ~= "_canvases" then
-        if type(value) == "table" and value.release then
-          pcall(value.release, value)
-        end
-      end
       keys[#keys + 1] = key
     end
   end
   for _, key in ipairs(keys) do
     self[key] = nil
   end
+  self.SKIN_FAST_FORWARD = skinFast or 4
 end
 
 return Game

@@ -94,9 +94,11 @@ function ItemEffects.healsHP(id)
 end
 
 -- .useRareCandy prints over the still-drawn party menu
--- (engine/items/item_effects.asm:1392-1418)
+-- (engine/items/item_effects.asm:1392-1418); .useVitamin ends at
+-- RemoveUsedItem the same way (engine/items/item_effects.asm:1315-1322)
 function ItemEffects.keepsPartyMenuOpen(id)
   return ItemEffects.healsHP(id) or id == "RARE_CANDY"
+      or VITAMINS[id] ~= nil
 end
 
 function ItemEffects.isBattleMedicine(id)
@@ -183,6 +185,14 @@ local function adjacentSleepingSnorlax(save, ow)
   end
   return nil
 end
+
+local function itemUseLine(data, save, name)
+  return romText(data, "_ItemUseText001", "%s used\n%s!", save.player.name, name)
+end
+
+-- PrintItemUseTextAndRemoveItem (item_effects.asm): used-line + SFX_HEAL_AILMENT.
+-- BagMenu plays Heal_Ailment via TextBox.soundOpts when extra.useJingle is set.
+local USE_JINGLE = { useJingle = true }
 
 -- Use an item on a target party mon (target may be nil for targetless
 -- items).  data = generated data tables; battle = BattleState when used
@@ -280,7 +290,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
                         "All sleeping\nPOKéMON woke up!") }
   end
 
-  -- battle-only items
+  -- battle-only items (PrintItemUseTextAndRemoveItem + Heal_Ailment, #1635)
   if X_ITEMS[itemId] or itemId == "DIRE_HIT" or itemId == "GUARD_SPEC"
      or itemId == "POKE_DOLL" then
     if not battle then
@@ -293,43 +303,53 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
       require("src.world.PikachuFollower")
         .modifyHappiness(save, "USEDXITEM", b and b.mon)
     end
+    local used = itemUseLine(data, save, name)
     if itemId == "X_ACCURACY" then
       -- ItemUseXAccuracy sets USING_X_ACCURACY: moves never miss
-      -- (not an accuracy stage)
+      -- (not an accuracy stage); vanilla prints only the used line
       b.xAccuracy = true
-      return "consumed", { Strings("%s's\nhits will never\nmiss!", b.name) }
+      return "consumed", { used }, USE_JINGLE
     end
     if X_ITEMS[itemId] then
       local stat = X_ITEMS[itemId]
       local cur = b.stages[stat] or 0
-      -- ItemUseXStat removes the item BEFORE running the stat-up
-      -- effect, so at +6 it is still consumed and StatModifierUpEffect
-      -- just prints "Nothing happened!"
+      -- ItemUseXStat: PrintItemUseTextAndRemoveItem, then StatModifierUpEffect
       if cur >= 6 then
-        return "consumed", { romText(data, "_NothingHappenedText",
-          "Nothing happened!") }
+        return "consumed", { used }, {
+          useJingle = true,
+          afterMessages = { romText(data, "_NothingHappenedText",
+            "Nothing happened!") },
+        }
       end
       b.stages[stat] = cur + 1
-      return "consumed", { Strings("%s's\n%s rose!", b.name, Strings(STAT_LABEL[stat])) }
+      b.hazeStatReset = nil
+      if battle.ruleset and battle.ruleset.badgeBoostReapplyBug
+         and battle.kind ~= "link" then
+        require("src.battle.Damage").reapplyBadgeBoosts(b, stat)
+      end
+      return "consumed", { used }, {
+        useJingle = true,
+        afterMessages = { Strings("%s's\n%s rose!", b.name,
+                                  Strings(STAT_LABEL[stat])) },
+      }
     end
     -- ItemUseDireHit/ItemUseGuardSpec always set the bit and consume
-    -- the item, even when it is already active
+    -- the item, even when it is already active; vanilla prints only used
     if itemId == "DIRE_HIT" then
       b.focusEnergy = true
-      return "consumed", { romText(data, "_GettingPumpedText",
-        "%s's\ngetting pumped!", b.name) }
+      return "consumed", { used }, USE_JINGLE
     end
     if itemId == "GUARD_SPEC" then
       b.mist = true
-      return "consumed", { Strings("%s's\nprotected against\nstat changes!", b.name) }
+      return "consumed", { used }, USE_JINGLE
     end
     if itemId == "POKE_DOLL" then
       if battle.kind ~= "wild" then
         -- ItemUsePokeDoll jumps to ItemUseNotTime in trainer battles
         return "failed", { notTime(data, save) }
       end
-      return "consumed_escape", { romText(data, "_WildRanText",
-        "The wild POKéMON\nran away!", battle.enemy and battle.enemy.name) }
+      -- PrintItemUseTextAndRemoveItem then escape
+      return "consumed_escape", { used }, USE_JINGLE
     end
   end
 
@@ -508,8 +528,9 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     -- _VitaminStatRoseText's slot order is localization-dependent (the
     -- Spanish ROM puts the stat before the name), so the extracted line
     -- cannot be filled positionally; the engine wording stands
+    -- engine/items/item_effects.asm:1313
     return "consumed", { Strings("%s's %s\nrose!", monName(data, target),
-      Strings(STAT_LABEL[vitaminStat])) }
+      Strings(STAT_LABEL[vitaminStat])) }, { useJingle = true }
   end
 
   -- PP UP boosts the move the player picked (ItemUsePPUp's move menu)
@@ -608,7 +629,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   if REPELS[itemId] then
     local steps = itemId == "REPEL" and 100 or itemId == "SUPER_REPEL" and 200 or 250
     save.repelSteps = steps
-    return "consumed", { Strings("%s used\n%s!", save.player.name, name) }
+    return "consumed", { itemUseLine(data, save, name) }, USE_JINGLE
   end
 
   return "failed", { notTime(data, save) }

@@ -10,6 +10,7 @@ local check = S.check
 
 local RomImporter = require("src.import.RomImporter")
 local HostShell = require("src.core.HostShell")
+local savedKit = package.loaded["src.ui.kit.Kit"]
 
 local saved = {
   getOS = love.system.getOS,
@@ -32,6 +33,10 @@ HostShell.popen = function()
   return { read = function() return "" end }
 end
 HostShell.pclose = function() end
+-- Current upstream provides an in-launcher browser first.  This test keeps
+-- covering the final game-folder fallback for a stripped handheld build where
+-- that optional browser could not be loaded.
+package.loaded["src.ui.kit.Kit"] = { FileBrowser = nil }
 
 local attempts = {}
 local ri = setmetatable({
@@ -67,5 +72,6 @@ love.system.getOS = saved.getOS
 love.filesystem.getDirectoryItems = saved.getDirectoryItems
 HostShell.popen = saved.popen
 HostShell.pclose = saved.pclose
+package.loaded["src.ui.kit.Kit"] = savedKit
 
 S.finish()

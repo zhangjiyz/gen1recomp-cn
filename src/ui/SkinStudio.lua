@@ -690,8 +690,10 @@ function Studio.deleteEntry(id)
       local opts = SaveData.loadOptions()
       local tc = type(opts.touchControls) == "table" and opts.touchControls or {}
       if tc.skin == id then
-        tc.enabled, tc.skin = false, nil
+        tc.enabled, tc.skin = true, nil
+        opts.touchControls = tc
         SaveData.saveOptions(opts)
+        TouchControls:applyOptions(opts)
       end
       Studio.refreshAvailable()
       setStatus(Strings("Deleted %s", id))

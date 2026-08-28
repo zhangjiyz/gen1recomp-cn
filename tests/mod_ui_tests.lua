@@ -285,7 +285,7 @@ local WANT_IDS = { "textSpeed", "animations", "battleStyle", "battleLayout",
                    "battleFit", "battleHud", "battleBg", "uiLayout",
                    "ruleset", "musicVol", "sfxVol", "musicFilter",
                    "performance", "colors",
-                   "tilt", "shaderfx", "shaderfx2", "zoom", "voidFill",
+                   "tilt", "uiLetterbox", "shaderfx", "shaderfx2", "zoom", "voidFill",
                    "videoMode", "faithfulRes", "screenPos", "fpsCap",
                    "speedOverworld", "speedBattle", "speedMenu",
                    "mods", "controls", "dateFormat", "timeFormat" }
@@ -369,10 +369,10 @@ check(om.game.save.options.voidFill == "trees", "VOID FILL wraps to TREES")
 -- mirrors it one row down, opening the same shared screen on
 -- "secondary" instead.
 local ShaderFX = require("src.render.ShaderFX")
-check(om.rows[16].id == "shaderfx", "row 16 is the SHADER FX row")
-check(om.rows[16].value(om.game) == "OFF", "SHADER FX shows OFF with no presets")
-check(om.rows[16].step == nil, "SHADER FX row has no step() any more")
-om.rows[16].activate(om.game)
+local sfx = orow(om, "shaderfx")
+check(sfx.value(om.game) == "OFF", "SHADER FX shows OFF with no presets")
+check(sfx.step == nil, "SHADER FX row has no step() any more")
+sfx.activate(om.game)
 local sfxScreen = om.game.stack:top()
 check(sfxScreen and sfxScreen.title == "SHADER FX",
   "SHADER FX row.activate() pushes a ShaderFXScreen")
@@ -383,9 +383,9 @@ sfxScreen.onChoose(sfxScreen.items[1])
 check(ShaderFX.active("main") == false, "choosing OFF on an empty list stays a safe no-op")
 check(om.game.stack:top() == nil, "ShaderFXScreen pops itself after onChoose")
 
-check(om.rows[17].id == "shaderfx2", "row 17 is the SHADER FX 2 row")
-check(om.rows[17].value(om.game) == "OFF", "SHADER FX 2 shows OFF with no presets")
-om.rows[17].activate(om.game)
+local sfx2 = orow(om, "shaderfx2")
+check(sfx2.value(om.game) == "OFF", "SHADER FX 2 shows OFF with no presets")
+sfx2.activate(om.game)
 local sfx2Screen = om.game.stack:top()
 check(sfx2Screen and sfx2Screen.title == "SHADER FX 2",
   "SHADER FX 2 row.activate() pushes the shared ShaderFXScreen on the secondary slot")
@@ -558,8 +558,9 @@ local pm = PartyMenu.new(pgame)
 pm.game = pgame
 pgame.stack:push(pm)
 press(pm, "a")
-check(pm.submenu and #pm.subItems == 2
-  and pm.subItems[1].label == "STATS" and pm.subItems[2].label == "SWITCH",
+check(pm.submenu and #pm.subItems == 3
+  and pm.subItems[1].label == "STATS" and pm.subItems[2].label == "SWITCH"
+  and pm.subItems[3].label == "CANCEL",
   "vanilla party submenu unchanged with no hooks")
 pm.submenu = nil
 
@@ -570,9 +571,9 @@ hooks:wrap("ui.party.submenu", function(nextFn, game, items, mon, ctx)
   return nextFn(game, items, mon, ctx)
 end, 0, "fixture")
 press(pm, "a")
-check(#pm.subItems == 3 and pm.subItems[3].label == "QUESTS",
+check(#pm.subItems == 4 and pm.subItems[4].label == "QUESTS",
   "hook appends a party submenu entry")
-pm.subIndex = 3
+pm.subIndex = 4
 press(pm, "a")
 check(ranWith == pgame.save.party[1],
   "an injected entry's onSelect runs with the focused mon")
@@ -581,7 +582,7 @@ hooks:removeOwner("fixture")
 
 hooks:wrap("ui.party.submenu", function() return nil end, 0, "bad")
 press(pm, "a")
-check(#pm.subItems == 2, "a non-table submenu result keeps the vanilla list")
+check(#pm.subItems == 3, "a non-table submenu result keeps the vanilla list")
 hooks:removeOwner("bad")
 pm.submenu = nil
 

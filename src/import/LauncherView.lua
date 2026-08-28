@@ -377,12 +377,19 @@ end
 -- visible while typing, and blinks a caret on the importer's pulse clock.
 local function textField(imp, x, y, w, h, key, rawText, placeholder, focused, action)
   Kit._audit("control", x, y, w, h, key)
-  Kit.focusable(key, x, y, w, h)
+  local isFocused = Kit.focusable(key, x, y, w, h)
   Theme.fill(x, y, w, h, PAL.bg, 1)
-  Theme.stroke(x, y, w, h, PAL.line,
-    focused and Theme.A.focus or
-      (Kit.hover(x, y, w, h) and Theme.A.hover or Theme.A.hairline),
-    focused and 2 or 1)
+  if isFocused then
+    local glowPulse = 0.5 + 0.5 * math.sin(Kit.time * 5)
+    Theme.strokeRounded(x - 3, y - 3, w + 6, h + 6, PAL.ink, 0.35 + 0.25 * glowPulse, 2.5, 4)
+    Theme.strokeRounded(x, y, w, h, PAL.ink, 0.95 + 0.05 * glowPulse, 2, 2)
+    Theme.fillRounded(x, y, w, h, PAL.ink, 0.12 + 0.06 * glowPulse, 2)
+  else
+    Theme.stroke(x, y, w, h, PAL.line,
+      focused and Theme.A.focus or
+        (Kit.hover(x, y, w, h) and Theme.A.hover or Theme.A.hairline),
+      focused and 2 or 1)
+  end
   local pad = math.floor(10 * Kit.scale)
   local ty = y + (h - Kit.textHeight("button")) / 2
   local text = rawText or ""
@@ -397,8 +404,35 @@ local function textField(imp, x, y, w, h, key, rawText, placeholder, focused, ac
         Kit.textHeight("button"), PAL.ink, 1)
     end
   end
-  if action and (Kit.press(x, y, w, h) or Kit._activateId == key) then
-    queueAction(imp, key, action)
+  if (Kit.press(x, y, w, h) or Kit._activateId == key) then
+    if Kit.VirtualKeyboard then
+      Kit.VirtualKeyboard.open({
+        text = text,
+        targetId = key,
+        title = placeholder or "Enter Text",
+        onDone = function(newText, confirmed)
+          if confirmed then
+            if imp._indexPrompt and key:find("index") then
+              imp._indexPrompt.text = newText
+            elseif imp._rename and key:find("rename") then
+              imp._rename.text = newText
+            elseif imp._profileRenamePrompt and key:find("profren") then
+              imp._profileRenamePrompt.text = newText
+            elseif imp._profileSavePrompt and key:find("profsave") then
+              imp._profileSavePrompt.text = newText
+            elseif imp._settingsText and key:find("settext") then
+              imp._settingsText.text = newText
+            elseif imp.tab == "find" then
+              imp._findQuery = newText
+              if imp._refreshFind then imp:_refreshFind() end
+            end
+          end
+        end
+      })
+    end
+    if action then
+      queueAction(imp, key, action)
+    end
   end
 end
 
@@ -984,6 +1018,17 @@ local function modScopeChipsWidth(options, gap, m)
   return need
 end
 
+local function profileState(imp)
+  if imp._profileCache == nil then
+    local LauncherMods = require("src.mods.LauncherMods")
+    local SaveData = require("src.core.SaveData")
+    local options = SaveData.loadOptions()
+    local list, cur = LauncherMods.getProfiles(options)
+    imp._profileCache = { options = options, list = list, active = cur }
+  end
+  return imp._profileCache
+end
+
 local function buildModScopeRow(imp, x, y, w, m)
   local LauncherMods = require("src.mods.LauncherMods")
   local h = math.max(Kit.tapMin(), math.floor(26 * m.s))
@@ -994,7 +1039,7 @@ local function buildModScopeRow(imp, x, y, w, m)
   local options = modScopeOptions(imp)
 
   -- Dedicated Profile control section (cycle button + gear icon button) on right side of Scope Bar
-  local _, activeProf = LauncherMods.getProfiles()
+  local activeProf = profileState(imp).active
   local isCompact = (w < math.floor(500 * m.s))
   local nameText = tostring(activeProf or "Default")
   local profLabel = isCompact and nameText or Strings("Profile: %s", nameText)
@@ -1356,7 +1401,9 @@ local function buildHeader(imp, m)
   -- under the gear and the quit X -- "the settings is covering the logo".
   -- Reserving the space on both sides costs a little width and cannot
   -- overlap at any window size.
-  local clusterW = 2 * gear + math.floor(6 * m.s) + m.pad
+  -- iOS has no quit button (the OS owns app exit), so the cluster is the
+  -- gear alone and the wordmark gets that width back
+  local clusterW = (imp.ios and gear or 2 * gear + math.floor(6 * m.s)) + m.pad
   local boxX = m.x + clusterW
   local boxW = math.max(0, m.w - 2 * clusterW)
   if imp.logo and boxW > 0 then
@@ -1390,8 +1437,8 @@ local function buildHeader(imp, m)
   -- inboard of it -- but the two are REGISTERED gear first, because the first
   -- focusable of the first frame adopts the keyboard ring and that must not be
   -- the button that exits the app.
-  local quitX = rx - gear
-  rx = quitX - math.floor(6 * m.s)
+  local quitX = not imp.ios and rx - gear or nil
+  if quitX then rx = quitX - math.floor(6 * m.s) end
 
   -- Settings gear.  It now also owns the CONTROL settings (touch overlay
   -- editor, reset rebinds), which used to be buttons stacked in the game
@@ -1403,7 +1450,7 @@ local function buildHeader(imp, m)
   chrome.gear.image = imp._gearIcon
   btn(imp, rx, by, gear, gear, "gear", "", chrome.gear)
 
-  btn(imp, quitX, by, gear, gear, "quit", "", chrome.quit)
+  if quitX then btn(imp, quitX, by, gear, gear, "quit", "", chrome.quit) end
 
   -- The self-update control lives in the FOOTER next to the BCG mark (small,
   -- out of the wordmark's way -- it used to overlap the logo on a phone).  It
@@ -3401,13 +3448,19 @@ local function buildFooter(imp, m, y)
   local bx = m.x + math.floor((m.w - topW) / 2)
   local my = cy + math.floor((rowH - dh) / 2)
   local chipY = cy + math.floor((rowH - chipH) / 2)
+  local isFocused = Kit.focusable("bcg", bx, my, dw, dh)
   local hot = Kit.hover(bx, my, dw, dh)
+  if isFocused then
+    local glowPulse = 0.5 + 0.5 * math.sin(Kit.time * 5)
+    Theme.strokeRounded(bx - 3, my - 3, dw + 6, dh + 6, PAL.ink, 0.35 + 0.25 * glowPulse, 2.5, 4)
+    Theme.strokeRounded(bx, my, dw, dh, PAL.ink, 0.95 + 0.05 * glowPulse, 2, 2)
+  end
   love.graphics.setShader(imp.invertShader)
-  love.graphics.setColor(1, 1, 1, hot and 1 or 0.85)
+  love.graphics.setColor(1, 1, 1, (hot or isFocused) and 1 or 0.85)
   love.graphics.draw(imp.bcg, Theme.snap(bx), Theme.snap(my), 0, scale, scale)
   love.graphics.setShader()
   love.graphics.setColor(1, 1, 1, 1)
-  if Kit.press(bx, my, dw, dh) then
+  if Kit.press(bx, my, dw, dh) or Kit._activateId == "bcg" then
     queueAction(imp, "bcg", function() love.system.openURL(COMMUNITY_URL) end)
   end
   local cx = bx + dw
@@ -3704,9 +3757,8 @@ local function buildSingleProfileActionsModal(imp, m)
   if not pName then imp._singleProfileActions = nil return end
 
   local LauncherMods = require("src.mods.LauncherMods")
-  local SaveData = require("src.core.SaveData")
-  local options = SaveData.loadOptions()
-  local profiles, active = LauncherMods.getProfiles(options)
+  local prof = profileState(imp)
+  local options, profiles = prof.options, prof.list
 
   local pad = math.floor(18 * m.s)
   local w = math.min(math.floor(380 * m.s), m.w - 2 * m.pad)
@@ -3721,6 +3773,7 @@ local function buildSingleProfileActionsModal(imp, m)
       action = function()
         LauncherMods.duplicateProfile(pName, options)
         imp._singleProfileActions = nil
+        if imp._refreshMods then imp:_refreshMods() end
       end
     },
     {
@@ -3742,6 +3795,7 @@ local function buildSingleProfileActionsModal(imp, m)
         imp:pressDelete("profile", pName, nil, function()
           LauncherMods.deleteProfile(pName, options)
           imp._singleProfileActions = nil
+          if imp._refreshMods then imp:_refreshMods() end
         end)
       end
     }
@@ -3777,9 +3831,8 @@ end
 -- Modal for Mod Profiles (#593) - interactive profile manager (switch, edit, duplicate, delete)
 local function buildProfilesModal(imp, m)
   local LauncherMods = require("src.mods.LauncherMods")
-  local SaveData = require("src.core.SaveData")
-  local options = SaveData.loadOptions()
-  local profiles, active = LauncherMods.getProfiles(options)
+  local prof = profileState(imp)
+  local options, profiles, active = prof.options, prof.list, prof.active
 
   local pad = math.floor(18 * m.s)
   local w = math.min(math.floor(460 * m.s), m.w - 2 * m.pad)
@@ -5597,6 +5650,8 @@ end
 -- a click on the scrim lands on whatever button happens to be behind it.
 -- Keep this list in sync with buildModals below.
 local function modalUp(imp)
+  if Kit.FileBrowser and Kit.FileBrowser.active then return true end
+  if Kit.VirtualKeyboard and Kit.VirtualKeyboard.active then return true end
   return (imp._settingsText or imp._settings or imp._rename
     or imp._indexPrompt or imp._modConfirm or imp._modReleaseNotes
     or imp._appPatchNotes
@@ -5609,6 +5664,14 @@ local function modalUp(imp)
 end
 
 local function buildModals(imp, m)
+  if Kit.VirtualKeyboard and Kit.VirtualKeyboard.active then
+    Kit.VirtualKeyboard.draw(m)
+    return true
+  end
+  if Kit.FileBrowser and Kit.FileBrowser.active then
+    Kit.FileBrowser.draw(m)
+    return true
+  end
   if imp._profileRenamePrompt then
     buildPrompt(imp, m, {
       key = "profren", title = Strings("Rename profile"),
@@ -5780,6 +5843,10 @@ end
 
 local function drawPadCursor(imp)
   if not imp._padCursorActive then return end
+  if (Kit.FileBrowser and Kit.FileBrowser.active)
+      or (Kit.VirtualKeyboard and Kit.VirtualKeyboard.active) then
+    return
+  end
   -- Pixel-snap on NX: subpixel polygon edges shimmer on the 720p Switch
   -- framebuffer when the stick advances by fractional pixels each frame.
   local x, y = imp._padCursor.x, imp._padCursor.y
@@ -5963,6 +6030,25 @@ function LauncherView.draw(imp)
 
   Kit.endFrame()
   drawPadCursor(imp)
+
+  if imp._cursorModeToast and imp._cursorModeToastTime then
+    local elapsed = love.timer.getTime() - imp._cursorModeToastTime
+    if elapsed < 2.2 then
+      local alpha = 1.0
+      if elapsed > 1.7 then alpha = math.max(0, (2.2 - elapsed) / 0.5) end
+      local msg = imp._cursorModeToast
+      local tw = Kit.textWidth("small", msg) + 36 * m.s
+      local th = 34 * m.s
+      local tx = (m.W - tw) / 2
+      local ty = 16 * m.s
+      Theme.fillRounded(tx, ty, tw, th, PAL.surface, 0.95 * alpha, 6)
+      Theme.strokeRounded(tx - 2, ty - 2, tw + 4, th + 4, PAL.railBlue, 0.35 * alpha, 2, 8)
+      Theme.strokeRounded(tx, ty, tw, th, PAL.lineStrong, 0.85 * alpha, 1.5, 6)
+      Kit.textCenterBold("small", msg, tx, ty + 8 * m.s, tw, PAL.heading)
+    else
+      imp._cursorModeToast = nil
+    end
+  end
 end
 
 return LauncherView

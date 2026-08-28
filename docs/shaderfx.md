@@ -214,11 +214,98 @@ finally the bare name handed to the system loader. Per-OS names are
 `librashader_bridge.dylib` (macOS), and `liblibrashader_bridge.so` or
 `librashader_bridge.so` (Linux and Android). Android resolves the bare name
 because the `.so` ships as an ordinary `jniLibs` entry, so `dlopen` finds it
-without a path. The desktop path is still a developer build sitting in cargo's
-output directory; nothing packages it next to a shipped game yet.
-`ShaderFX.canConvert()` reports whether the library resolved on this machine,
+without a path. `ShaderFX.canConvert()` reports whether the library resolved on this machine,
 and `ShaderFX.bridgeError()` says why not. Activating an already-converted
 preset never needs any of this.
+
+**Shipped builds carry it.** `cargo` only ever emits the host's library, and
+the macOS release runner packs macOS, Windows and Linux in a single
+`scripts/build.sh all`, so release CI cross-builds one cdylib per platform on
+its own native runner (the `shaderfx-bridge` matrix in
+`.github/workflows/release.yml`) and stages it at `dist/native/<plat>/`.
+`bundle_shader_bridge` in `scripts/build.sh` reads that directory, and
+`SHADERFX_BRIDGE_<PLAT>` overrides it. Where each artifact puts the library:
+
+| Artifact | Location | Found by |
+| --- | --- | --- |
+| macOS .app | `Contents/MacOS/` | source base directory |
+| Windows zip | next to `love.exe` | source base directory |
+| Linux AppImage (both arches) | AppDir root, next to `game.love` | source base directory |
+| Flatpak | `/app/share/gen1recomp/` | source base directory |
+| RG34XXSP / ARM SBC ports | `libs.aarch64/` | bare name via `LD_LIBRARY_PATH` |
+| Android APK | `jniLibs/<abi>/` | bare name |
+| iOS | linked into the binary | `ffi.C` |
+
+The macOS library is a universal binary, because LÖVE.app is: an arm64-only
+bridge would fail `ffi.load` on Intel Macs the moment they hit CONVERT. The
+two Linux libraries are built with `cargo-zigbuild` against
+`{x86_64,aarch64}-unknown-linux-gnu.2.17`, below every consumer: the upstream
+x86_64 LÖVE AppImage floors at GLIBC_2.29, the arm64 AppImage's own gate is
+GLIBC_2.31, PortMaster's aarch64 LÖVE runtime floors at GLIBC_2.17, and ArkOS
+is glibc 2.30. 2.17 is the oldest glibc with aarch64 support, so one library
+per arch clears the whole fleet. `scripts/linux-arm64/verify_appimage.sh`
+discovers every ELF object in the AppDir rather than globbing `bin/love` and
+`lib/*.so*`, so the bridge is held to the same floor, resolution and
+dlopen-not-linked rules as everything else, then dlopened once to prove
+relocations and constructors run.
+
+Setting `SHADERFX_BRIDGE_REQUIRED=1` turns the packagers' "not found" warning
+into a hard error. Release CI sets it on every job that ships a bridge, so a
+release cannot silently go out without one again.
+
+**Where CONVERT is unavailable.** Switch and Xbox UWP ship without a bridge.
+The Switch build uses devkitPro's toolchain, which is not a rustc target; the
+UWP appcontainer is unproven for loading a desktop MSVC DLL. On both, presets
+converted elsewhere still activate and run normally, and `ShaderFX.canConvert()`
+returns false with `ShaderFX.bridgeError()` explaining why.
+
+**Statically linked bridges.** On iOS there is no loadable library at all:
+the bridge is linked straight into the app binary, so its symbols live in the
+main image and are reachable only through `ffi.C`. The candidate list is empty
+on iOS and, on every platform, a failed candidate walk falls back to probing
+`ffi.C` for `librashader_translate_preset` after the `ffi.cdef`. If the symbol
+is there, `ffi.C` becomes the library handle and `ShaderFX.translate` uses it
+unchanged. If it is not, `ShaderFX.bridgeError()` reports that `ffi.C` was
+probed as well, followed by the file paths that were tried (omitted on iOS,
+where none are).
+
+**Android ships the bridge inside the APK.** `scripts/build_android.sh`
+stages `liblibrashader_bridge.so` into
+`mobile/android/app/src/main/jniLibs/<abi>/` for the two ABIs the APK ships,
+arm64-v8a and armeabi-v7a, so `ffi.load("liblibrashader_bridge.so")` finds it
+by bare name in the app's native library directory. The build cross-compiles
+the crate with `cargo ndk` against the same NDK the gradle project uses
+(25.2.9519653), which needs `cargo install cargo-ndk` and
+`rustup target add aarch64-linux-android armv7-linux-androideabi`; the script
+names the exact command for any target that is missing. Set
+`SHADERFX_BRIDGE_ANDROID_DIR` to a directory holding
+`<abi>/liblibrashader_bridge.so` to bundle prebuilt libraries instead. As on
+desktop, the bridge is only needed to CONVERT a preset: a build without it
+still runs presets converted elsewhere, and the packager warns and continues
+rather than failing.
+
+**iOS links the bridge instead of loading it.** An iOS app cannot `dlopen` a
+dylib shipped beside its binary, so `tools/shaderfx-bridge` also builds as a
+`staticlib` and `scripts/build_ios.sh` links it into the app executable
+(`bundle_shader_bridge_ios`, mirroring `bundle_shader_bridge` in
+`scripts/build.sh`). `SHADERFX_BRIDGE_IOS` points at a prebuilt archive;
+otherwise cargo builds `aarch64-apple-ios` for device builds and every
+installed simulator target (`aarch64-apple-ios-sim`, `x86_64-apple-ios`) for
+the Simulator, with `IPHONEOS_DEPLOYMENT_TARGET=15.0`, and `ARCHS` is pinned to
+what got built. The archive is never linked directly: LÖVE 12 carries its own
+glslang for shader validation and the crate drags in a second, incompatible
+one, and linking both crashed inside `Shader::validateInternal` at startup.
+Each slice is therefore prelinked with `ld -r -all_load
+-exported_symbols_list` so only `_librashader_translate_preset` and
+`_librashader_free_string` stay external and every other symbol (glslang,
+spirv-cross, Rust std) becomes private to the object, then `rust-objcopy`
+drops the `__LLVM` bitcode sections rustup's prebuilt std carries, since
+Apple's `nm` cannot read them. `OTHER_LDFLAGS` adds `-Wl,-u` on both entry
+points to keep them past dead-stripping and `-lc++` for the C++ the crate
+needs; no Objective-C framework is involved. A build that linked the object
+fails if `nm` cannot find `_librashader_translate_preset` in the finished
+binary; a build that could not produce one only warns and lands where the
+desktop packages without cargo land: converted presets run, CONVERT does not.
 
 ### Fixup
 
@@ -656,7 +743,8 @@ None of these are theoretical.
   `bundle_shader_bridge`, building it with cargo when a prebuilt one is not
   supplied through `SHADERFX_BRIDGE`. A build host without cargo produces a
   package that can run converted presets but cannot CONVERT new ones, and says
-  so rather than failing. Android ships the `.so` via `jniLibs`.
+  so rather than failing. `scripts/build_android.sh` and `scripts/build_ios.sh`
+  follow the same rule with `cargo ndk` and the iOS static archive.
 - **The buildbot shortlist is a temporary trim.** `KEPT_PRESETS` reflects one
   manual pass over `handheld/` and is expected to change, most likely to shrink.
 - **Tilt direction is unverified.** Which way forward and back rocking moves the

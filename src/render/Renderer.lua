@@ -332,12 +332,14 @@ end
 
 -- transparent: the world pass shows through (UI pass draws overlays only)
 function Renderer:beginFrame(transparent)
+  self.uiOpaque = not transparent
   self.worldActive = false
   self.uprightActive = false
   self.worldOverride = nil
   -- warp-fade overlay from Transition (issue #121); cleared each frame so
   -- a popped transition cannot leave a sticky black veil
   self.worldFadeAlpha = nil
+  self.worldFadeColor = nil
   -- battle-transition wipe, drawn over the whole surface (BattleTransition)
   self.battleWipe = nil
   -- whole-surface veil in screen space (battle-transition flash, the
@@ -698,6 +700,18 @@ function Renderer:blitCanvas(canvas, sx, sy, zoneList, zoneSx, zoneSy,
     return
   end
   love.graphics.setShader(shader)
+  -- data/sgb/sgb_packets.asm:123-127: zone 1 is the whole-screen ATTR_BLK,
+  -- so the underpaint is only drawn when it leaves part of the box bare (#1866)
+  local first = zoneList[1]
+  if canvas == self.canvas and self.uiOpaque and first.colors
+      and not (bx + first.x * zoneSx <= boxX
+               and by + first.y * zoneSy <= boxY
+               and bx + (first.x + first.w) * zoneSx >= boxX + boxW
+               and by + (first.y + first.h) * zoneSy >= boxY + boxH) then
+    PaletteFX.sendColors(shader, first.colors)
+    love.graphics.setScissor(boxX, boxY, boxW, boxH)
+    love.graphics.draw(canvas, bx, by, 0, sx, sy)
+  end
   -- a colors == false zone is the trueColor opt-out: its rect draws with
   -- no shader at all.  Nothing sets one without a mod, so a vanilla zone
   -- list never toggles and issues exactly the calls it always did.
@@ -817,7 +831,7 @@ function Renderer:frameRects()
   -- GB pixel stops being a whole number of screen pixels, which is the trade
   -- the setting exists to offer.  Clamped on the horizontal too, so a narrow
   -- window scales to fit instead of overflowing off both sides.
-  if self.uiFill then
+  if self.uiFill and not FaithfulRes.scaleCap() then
     Up = math.min(ph / uih, pw / uiw)
   end
   if uiw * Up > pw or uih * Up > ph then
@@ -971,6 +985,13 @@ function Renderer:endFrame(zones, worldZones)
        and not FaithfulRes.scaleCap() then
       clearR, clearG, clearB = PaletteFX.paperShade(Game and Game.data)
     end
+    -- UI LETTERBOX overrides whatever the rules above settled on, except
+    -- under FAITHFUL RATIO's mobile lock, which promises black bars.
+    if not FaithfulRes.scaleCap() then
+      local Letterbox = require("src.render.Letterbox")
+      clearR, clearG, clearB = Letterbox.fill(clearR, clearG, clearB,
+        function() return PaletteFX.paperShade(Game and Game.data) end)
+    end
   end
   if cut then
     love.graphics.setColor(0, 0, 0, 1)
@@ -1045,7 +1066,8 @@ function Renderer:endFrame(zones, worldZones)
     -- the screen-space overlays the flat path draws over its composite
     local fade = self.worldFadeAlpha
     if fade and fade > 0 then
-      love.graphics.setColor(0, 0, 0, fade)
+      local c = self.worldFadeColor or { 0, 0, 0 }
+      love.graphics.setColor(c[1], c[2], c[3], fade)
       love.graphics.rectangle("fill", vux, vuy, vuw, vuh)
       love.graphics.setColor(1, 1, 1, 1)
     end
@@ -1132,7 +1154,8 @@ function Renderer:endFrame(zones, worldZones)
     -- composite normally if one is ever stacked that way.
     local fade = self.worldFadeAlpha
     if fade and fade > 0 then
-      love.graphics.setColor(0, 0, 0, fade)
+      local c = self.worldFadeColor or { 0, 0, 0 }
+      love.graphics.setColor(c[1], c[2], c[3], fade)
       love.graphics.rectangle("fill", vux, vuy, vuw, vuh)
       love.graphics.setColor(1, 1, 1, 1)
     end

@@ -309,6 +309,7 @@ Save.DEFAULT_OPTIONS = {
   -- Game Boy.  The Gen 1 save's equivalent key is `colors` (SGB packs), which
   -- means something different, hence the different name.
   color = "gbc",
+  palette = "",
   videoMode = "windowed",
   fpsCap = 60,
   -- BATTLE BG (#1709): white | black, the surround around the battle screen.
@@ -316,6 +317,7 @@ Save.DEFAULT_OPTIONS = {
   -- VOID FILL: fade | water | trees | black.  fade is each map header's own
   -- border block with the dissolve across a boundary (#1418).
   voidFill = "fade",
+  uiLetterbox = "auto",
   musicVol = 7,             -- 0-7, like the GB's NR50 master volume
   sfxVol = 7,               -- 0-7
   musicFilter = 0,          -- low-pass steps, 0 = off
@@ -343,6 +345,7 @@ Save.OPTIONS_KEY = "gold"
 
 local SHARED_KEYS = {
   touchControls = true, haptics = true, screenPos = true,
+  videoMode = true,
   mods = true, modsByVersion = true, modsGen2 = true,
   modOptions = true, modProfiles = true, modProfilesSeeded = true,
   activeProfile = true,
@@ -361,12 +364,9 @@ function Save.loadOptions(fs)
   end
   if type(loaded) == "table" then
     for key in pairs(SHARED_KEYS) do
-      if loaded[key] ~= nil then options[key] = loaded[key] end
-    end
-  end
-  if type(stored) == "table" then
-    for key in pairs(SHARED_KEYS) do
-      if options[key] == nil and stored[key] ~= nil then
+      if loaded[key] ~= nil then
+        options[key] = loaded[key]
+      elseif type(stored) == "table" and stored[key] ~= nil then
         options[key] = stored[key]
       end
     end

@@ -26,14 +26,10 @@ local WideBattle = {
   FIELD_BOTTOM = 104,
 }
 
--- The forced-mono display modes re-threshold the whole finished frame
--- through the shade shader, and picImage hands them raw DMG grays for that
--- (#207).  The wide layout has to know: it exposes a matching whole-surface
--- zone and leaves the HP bar fill gray, exactly like the zone pass does in
--- the classic layout (#229).  Keep in sync with picImage / ensureZones.
 local function monoMode()
   local m = PaletteFX.mode
   return m == "og" or m == "og_inv" or m == "classic"
+      or PaletteFX.forcesRawGrays()
 end
 
 local function shownHP(battler)
@@ -95,6 +91,19 @@ end
 local function battleIsTopState(battle)
   local stack = battle.game and battle.game.stack
   return not (stack and stack.top) or stack:top() == battle
+end
+
+-- engine/menus/party_menu.asm:4
+local function coveredByOpaqueState(battle)
+  local stack = battle.game and battle.game.stack
+  local states = stack and stack.states
+  if not states then return false end
+  local above = false
+  for i = 1, #states do
+    if above and states[i] and states[i].isOpaque then return true end
+    if states[i] == battle then above = true end
+  end
+  return false
 end
 
 local function anchorHUD(battle, x, y, w, h, anchor)
@@ -351,7 +360,7 @@ function WideBattle.draw(battle)
     g.rectangle("fill", 0, 0, WideBattle.WIDTH, WideBattle.HEIGHT)
   end
   -- AskName clears the field the same way the classic layout does
-  if battle.blankForAskName then return end
+  if battle.blankForAskName or coveredByOpaqueState(battle) then return end
 
   local fx = battle.fx
   local sx = (fx and fx.shakeX) or 0

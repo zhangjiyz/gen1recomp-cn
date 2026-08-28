@@ -350,6 +350,10 @@ function Game2:showTitle()
     onContinue = function()
       self:showMainMenu()
     end,
+    -- engine/menus/intro_menu.asm:848-889
+    onTimeout = function()
+      self:showCopyright()
+    end,
   })
 end
 
@@ -1022,6 +1026,11 @@ function Game2:load()
   require("src.core.gen2.Phone").useRegistry(self.data)
   require("src.core.gen2.Decorations").useRegistry(self.data)
   require("src.core.gen2.Apricorns").useRegistry(self.data)
+  -- data.gen2Pokedex is a separate table from the `pokemon` registry's own
+  -- merge target (data.pokemon): a translation mod's
+  -- mod.content.pokemon:patch(id, { dexEntry = ... }) would otherwise never
+  -- reach the #DEX screen. See src/core/gen2/PokedexText.lua.
+  require("src.core.gen2.PokedexText").apply(self.data)
 
   -- Rendering pipelines: the engine half of the render_pipelines registry
   -- (src/render/Pipelines.lua).  install() points it at GOLD's merged dataset
@@ -1787,6 +1796,7 @@ function Game2:hotkey(key)
     local GbcPalette = require("src.render.GbcPalette")
     GbcPalette.setMode(options.color or "gbc")
     options.color = GbcPalette.cycle(1)
+    options.palette = ""
     persist()
     return true
   elseif key == "3" then
@@ -2040,6 +2050,7 @@ function Game2:applyOptions()
   Zoom.allowSurvey = caps.survey
   if not caps.survey and Zoom.offset < 0 then Zoom.offset = 0 end
   require("src.render.Tilt").applyOptions(options)
+  require("src.render.Letterbox").applyOptions(options)
   require("src.render.GbcPalette").applyOptions(options)
   -- engine/gfx/load_font.asm:29 LoadFrame, off options.lua's wTextboxFrame.
   Font.setFrame(options.frame or 1)
@@ -2208,6 +2219,8 @@ end
 -- In-process return-to-launcher (Android / intent_game): drop session fields
 -- so a later Game2.new() + load is not sharing a live stack or mod loader.
 -- Methods live on the class table; pairs(self) only sees instance state.
+-- Same rule as Gen1: only release known GPU owners -- never fan out
+-- arbitrary field:release() (shared modules use :release as a handle API).
 function Game2:reset()
   if self.stack and self.stack.clear then
     pcall(function() self.stack:clear() end)
@@ -2220,17 +2233,13 @@ function Game2:reset()
       if canvas and canvas.release then pcall(canvas.release, canvas) end
     end
   end
-  if self.renderer and self.renderer.releaseCanvases then
-    pcall(function() self.renderer:releaseCanvases() end)
+  if self.renderer then
+    local release = self.renderer.releaseCanvases or self.renderer.release
+    if release then pcall(release, self.renderer) end
   end
   local keys = {}
   for key, value in pairs(self) do
     if type(value) ~= "function" then
-      if key ~= "world" and key ~= "renderer" and key ~= "_canvases" then
-        if type(value) == "table" and value.release then
-          pcall(value.release, value)
-        end
-      end
       keys[#keys + 1] = key
     end
   end

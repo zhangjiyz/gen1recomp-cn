@@ -551,6 +551,7 @@ function World.new(game)
     lastSfx = nil,
     pokePic = nil,
     pendingSceneScript = false,
+    startedOverworld = false,
     -- GBC color state (engine/gfx/color.asm).  `daytime` is the resolved
     -- MORN/DAY/NITE/DARK the map is currently lit by; clockHour overrides
     -- World:hour for drivers and tests, so the palette, the hour windows and
@@ -928,8 +929,8 @@ function World:load()
     -- `hold` is the same story one argument along: the cart `pause` a held box
     -- stands through (FindItemInBallScript's `pause 60`).  Dropping it made the
     -- box hand back the instant it finished typing.
-    showText = function(body, onDone, stay, hold)
-      self:showText(body, onDone, stay, hold)
+    showText = function(body, onDone, stay, hold, sfxWait)
+      self:showText(body, onDone, stay, hold, sfxWait)
     end,
     facePlayer = function()
       if self.talkNpc and self.player then
@@ -4223,7 +4224,7 @@ function World:tryWildEncounter()
   -- That is what keeps the Ruins chambers empty until a wall has been solved.
   local monOpts = nil
   if roll.species == Unown.SPECIES then
-    local flags = self:engineFlags()
+    local flags = self:unownUnlockFlags()
     if not Unown.anyUnlocked(flags) then return false end
     -- LoadEnemyMon's .GenerateDVs loop rerolls until CheckUnownLetter clears
     -- the form, so a chamber only ever produces letters its own puzzle
@@ -4845,6 +4846,19 @@ function World:engineFlagId(name, goldId)
   return ids[name] or goldId
 end
 
+-- Unown.UNLOCK_SETS keys the flags by pokegold's ids; Crystal's are one
+-- higher (../pokecrystal/constants/engine_flags.asm:57-60 vs ../pokegold:56-59).
+function World:unownUnlockFlags()
+  local engine = self:engineFlags()
+  local out = {}
+  for _, set in ipairs(Unown.UNLOCK_SETS) do
+    if engine[self:engineFlagId(set.name, set.flag)] then
+      out[set.flag] = true
+    end
+  end
+  return out
+end
+
 -- wBikeFlags' three bits are ENGINE_* ids like any other flag, so the map
 -- callbacks that set them (Route16AlwaysOnBikeCallback,
 -- Route17AlwaysOnBikeCallback) already land on save.engineFlags.
@@ -5337,7 +5351,7 @@ function World:sweetScentEncounter()
   -- stays empty for SWEET SCENT too.
   local monOpts = nil
   if roll.species == Unown.SPECIES then
-    local flags = self:engineFlags()
+    local flags = self:unownUnlockFlags()
     if not Unown.anyUnlocked(flags) then return false end
     monOpts = { dvs = Unown.wildDVs(flags, Mon.randomDVs) }
   end
@@ -5617,15 +5631,16 @@ end
 function World:runWhirlpool(result)
   self:setNickname(result.mon)
   self:showText(Strings(result.text), function()
-    self:replaceBlock(result.blockIndex, result.replacement)
-    self:playWhirlpoolSound()
+    self:playWhirlpoolSound(result.blockIndex, result.replacement)
   end)
 end
 
 -- PlayWhirlpoolSound is WaitSFX, SFX_SURF, WaitSFX, never a bare PlaySFX
--- -- engine/events/field_moves.asm:5-10 (#1717)
-function World:playWhirlpoolSound()
-  self.fieldMove = { phase = "whirlpoolsfx", waiting = true, left = 180 }
+-- -- engine/events/field_moves.asm:5-10 (#1717).  The block swap lands after
+-- it -- engine/events/overworld.asm:1157-1164
+function World:playWhirlpoolSound(blockIndex, replacement)
+  self.fieldMove = { phase = "whirlpoolsfx", waiting = true, left = 180,
+    blockIndex = blockIndex, replacement = replacement }
 end
 
 -- PlayerMovementPointers' .force_turn arm and the Script_ForcedMovement it
@@ -6192,6 +6207,8 @@ function World:updateFieldMove()
     end
     if Sound.sfxBusy() and st.left > 0 then return end
     self.fieldMove = nil
+    -- engine/events/overworld.asm:1163-1164
+    if st.blockIndex then self:replaceBlock(st.blockIndex, st.replacement) end
     return
   end
   if st.phase == "strength" then
@@ -7276,7 +7293,7 @@ end
 -- stack the overworld and the VM under it do not tick at all -- so the wait has
 -- to be counted by the box itself.  Frames, already doubled by Vm:pauseFrames
 -- the way Script_pause's `ld c, 2 / call DelayFrames` doubles the operand.
-function World:showText(body, onDone, stay, hold)
+function World:showText(body, onDone, stay, hold, sfxWait)
   local game = self.game
   -- The box a PREVIOUS `stay` left standing (TextBox's contract is "whoever
   -- pushed it owns the pop", src/render/TextBox.lua:40).  `yesorno` consumes it
@@ -7326,7 +7343,7 @@ function World:showText(body, onDone, stay, hold)
   game.stack:push(TextBox.new(game, body, function()
     self.textbox = nil
     if onDone then onDone() end
-  end))
+  end, sfxWait and { sfxWait = true } or nil))
 end
 
 function World:pooledNpc(mapId, obj)
@@ -8216,7 +8233,8 @@ function World:mapCacheKey(mapId)
   local daytime = self.daytime
   local flicker = (daytime == "DARK") and self.flickerPhase or 1
   return mapId .. "|" .. tostring(daytime)
-    .. "|" .. tostring(GbcPalette.mode) .. "|" .. tostring(flicker)
+    .. "|" .. tostring(GbcPalette.mode) .. "|" .. tostring(GbcPalette.customRamp)
+    .. "|" .. tostring(flicker)
 end
 
 function World:imageFor(mapId)
@@ -8439,7 +8457,8 @@ function World:borderImageFor(mapId)
   -- stale bake (#1418).
   local waterFrame = self:borderWaterFrame(def, tileset)
   local cacheKey = BorderFill.cacheKey(mapId .. "|" .. tostring(daytime)
-    .. "|" .. tostring(GbcPalette.mode) .. "|" .. tostring(flicker)
+    .. "|" .. tostring(GbcPalette.mode) .. "|" .. tostring(GbcPalette.customRamp)
+    .. "|" .. tostring(flicker)
     .. "|" .. tostring(BorderFill.voidFill or "fade")
     .. "|" .. tostring(blockId)
     .. "|" .. tostring(waterFrame and waterFrame.row or 0))
@@ -9045,10 +9064,9 @@ function World:setMap(mapId, cx, cy, facing, opts)
   if not opts.seamless then
     self.pendingSceneScript = true
   end
-  -- StartMap (engine/overworld/events.asm): `farcall InitCallReceiveDelay` on
-  -- every map entry, connections included -- which is why a player who keeps
-  -- warping is never rung (src/core/gen2/Phone.lua's receive timer).
-  if self.game and self.game.save then
+  -- engine/overworld/events.asm:98
+  if not self.startedOverworld and self.game and self.game.save then
+    self.startedOverworld = true
     require("src.core.gen2.Phone").onMapLoad(self.game.save,
       self:stepContext().phone)
   end
@@ -10500,12 +10518,12 @@ end
 -- The COLOR option can change under a standing world (the hotkey, or the
 -- OPTION screen closing), and the map is a baked canvas rather than a live
 -- draw -- so the cached references have to be re-fetched when it does.  The
--- bakes themselves are keyed by mode in imageFor, so this is a pointer swap
--- after the first time each mode is seen, not a re-bake.
 function World:refreshColorMode()
   local mode = GbcPalette.mode
-  if self.colorMode == mode then return end
+  local ramp = GbcPalette.customRamp
+  if self.colorMode == mode and self.colorRamp == ramp then return end
   self.colorMode = mode
+  self.colorRamp = ramp
   if not self.map then return end
   self.mapImage = self:imageFor(self.map.id)
   self:rebuildNeighbors()

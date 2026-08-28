@@ -48,6 +48,10 @@ local WILD_ENCOUNTER_GRACE_STEPS = 3
 -- of the GB screen center: FLY_ANCHOR is the pair where the original has
 -- the player's sprite, so path1 starts exactly on the player.
 local FLY_ANCHOR = { 0x3C, 0x48 }
+-- StopMusic's fade-out control byte and the 7 volume steps it waits out
+-- engine/overworld/player_animations.asm:123, home/fade_audio.asm:36
+local FLY_FADE_CONTROL = 4
+local FLY_FADE_FRAMES = FLY_FADE_CONTROL * 7
 local FLY_PATH1 = { -- FlyAnimationScreenCoords1: up and off to the right
   { 0x3C, 0x48 }, { 0x3C, 0x50 }, { 0x3B, 0x58 }, { 0x3A, 0x60 },
   { 0x39, 0x68 }, { 0x37, 0x70 }, { 0x37, 0x78 }, { 0x33, 0x80 },
@@ -1189,6 +1193,17 @@ function OverworldState:update(dt)
     end
     return
   end
+  -- StopMusic busy-waits on the fade before LoadBirdSpriteGraphics, so the
+  -- world holds and the bird is not on screen yet -- home/overworld.asm:772
+  if self.flyFade then
+    self.flyFade = self.flyFade - 1
+    if self.flyFade <= 0 then
+      self.flyFade = nil
+      self.flyAnim = { phase = "flap", t = 0 }
+    end
+    self.player:update()
+    return
+  end
   if self.flyAnim then
     -- DoFlyAnimation runs one coord pair every Delay3 (3 frames); the
     -- in-place flap is 8 pairs, then the two paths with a 40-frame beat
@@ -1231,6 +1246,10 @@ function OverworldState:update(dt)
       self.flyArrive = nil
       self.player.inputLocked = false
     end
+  end
+  if self.spinArrive and not self.player.spinFrames then
+    self.spinArrive = nil
+    self.player.inputLocked = false
   end
 
   -- EnterMapAnim's .done tail re-enables the companion once the swoop or the
@@ -1311,7 +1330,7 @@ function OverworldState:update(dt)
   local scripted = self.runner:isRunning() or #self.scriptMoves > 0
                    or (self.hopLand or 0) > 0
                    or self.engaging or self.emote or self.teleportOut
-                   or self.flyAnim or self.flyArrive
+                   or self.flyAnim or self.flyArrive or self.spinArrive
   if not scripted and not self.transitioning then
     self:checkTrainerSight()
     -- CheckFightingMapTrainers (home/trainers.asm) zeroes hJoyHeld and
@@ -1321,7 +1340,7 @@ function OverworldState:update(dt)
     scripted = self.runner:isRunning() or #self.scriptMoves > 0
                or (self.hopLand or 0) > 0
                or self.engaging or self.emote or self.teleportOut
-               or self.flyAnim or self.flyArrive
+               or self.flyAnim or self.flyArrive or self.spinArrive
   end
   -- a scriptMove's onDone can push a text box on the frame it retires, and
   -- DisplayTextID owns the loop from there (home/text_script.asm:3)
@@ -2066,7 +2085,9 @@ function OverworldState:flyTo(mapId)
   -- then SFX_FLY and the up-right path, a 40-frame beat off screen, and
   -- the exit over the top-left -- the warp fades only once the bird is
   -- gone (#702).  fxBird draws it; the player hides for the whole flight.
-  self.flyAnim = { phase = "flap", t = 0 }
+  -- engine/overworld/player_animations.asm:123, home/overworld.asm:772
+  require("src.core.Music").fadeOut(FLY_FADE_CONTROL)
+  self.flyFade = FLY_FADE_FRAMES
   self.player.inputLocked = true
   self.flyDest = { map = mapId, x = spot.x, y = spot.y }
 end
@@ -2089,6 +2110,9 @@ function OverworldState:beginTeleportOut(onDone)
     if onDone then onDone() end
     return
   end
+  -- StopMusic sits above both _LeaveMapAnim branches
+  -- engine/overworld/player_animations.asm:123
+  require("src.core.Music").fadeOut(FLY_FADE_CONTROL)
   require("src.core.Sound").play(Game.data, "Teleport_Exit1")
   self.player.surfing = false
   self:syncSurfingPikachu()
@@ -2311,6 +2335,15 @@ function OverworldState.benchGuyText(data, save, label)
   return data.text["_" .. label] or data.text[BENCH_GUY_TEXT[label] or ""]
 end
 
+-- HiddenCoins pays a BCD constant chosen by the argument, and the 40 case
+-- falls into .bcd20 -- engine/events/hidden_items.asm:79
+function OverworldState.hiddenCoinPayout(amount)
+  amount = tonumber(amount) or 0
+  if amount == 10 then return 10 end
+  if amount == 20 or amount == 40 then return 20 end
+  return 100
+end
+
 -- Hidden events at the faced cell (data/events/hidden_events.asm):
 -- HiddenItems give their item once, HiddenCoins fill the COIN CASE,
 -- StartSlotMachine seats open the minigame.  Taken spots persist in
@@ -2355,9 +2388,10 @@ function OverworldState:tryHiddenObject(fx, fy)
       if save.hiddenTaken[key] then return false end
       if not save.inventory.COIN_CASE then return false end
       save.hiddenTaken[key] = true
-      save.coins = math.min(9999, (save.coins or 0) + h.coins)
+      local paid = OverworldState.hiddenCoinPayout(h.coins)
+      save.coins = math.min(9999, (save.coins or 0) + paid)
       Game.stack:push(TextBox.new(Game,
-        Strings("%s found\n%d coins!", save.player.name, h.coins),
+        Strings("%s found\n%d coins!", save.player.name, paid),
         nil, TextBox.soundOpts(Game, "Get_Item2")))
       return true
     end
@@ -2387,7 +2421,19 @@ function OverworldState:tryHiddenObject(fx, fy)
       else
         -- one machine per visit is secretly lucky
         -- (wLuckySlotHiddenEventIndex, engine/slots/game_corner_slots.asm)
-        Screens.push(Game, "SlotMachine", seatIndex == self.luckySlot)
+        local lucky = seatIndex == self.luckySlot
+        -- PromptUserToPlaySlots: engine/slots/slot_machine.asm:9-23
+        Game.stack:push(TextBox.new(Game, txt._PlaySlotMachineText
+          or romText(Game.data, "_PlaySlotMachineText",
+                     "A slot machine!\nWant to play?"), nil, {
+          choice = function(yes)
+            if not yes then return end
+            self.emote = {
+              npc = self.player, frames = 60, bubble = 3,
+              onDone = function() Screens.push(Game, "SlotMachine", lucky) end,
+            }
+          end,
+        }))
       end
       return true
     end
@@ -3825,6 +3871,10 @@ function OverworldState:checkTrainerSight()
   if self.player.moving or self.engaging then return end
   if Game.stack:top() ~= self then return end
   local p = self.player
+  -- a map contribution opts a trainer out of CheckFightingMapTrainers with
+  -- `noSight = { TEXT_... = true }` -- home/trainers.asm:129
+  local view = mapScripts.get and mapScripts.get(self.map.id)
+  local noSight = view and view.noSight
   local cancelled = self.cancelledTrainerSight
   if cancelled and (cancelled.playerX ~= p.cellX
       or cancelled.playerY ~= p.cellY) then
@@ -3838,7 +3888,7 @@ function OverworldState:checkTrainerSight()
     if d.trainerClass and not npc.moving
        and not (cancelled and cancelled.npcId == npc.id)
        and not self:trainerDefeated(npc)
-       and not mapScripts.talkScript(self.map.id, d.text)
+       and not (noSight and d.text and noSight[d.text])
        and trainerSpriteOnScreen(npc, p) then
       local header = Game.data:trainerHeader(self.map.def.label, d.index)
       local range = header and header.range or 0
@@ -4802,6 +4852,10 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   self.doorWarp = nil
   local arriveWarp = self.arriveWarp
   self.arriveWarp = nil
+  if self.spinArrive then
+    self.spinArrive = nil
+    self.player.inputLocked = false
+  end
   -- PlayMapChangeSound (home/overworld.asm) plays before the tail-called
   -- GBFadeOutToBlack, so the SFX starts with the fade (#961)
   if doorWarp then
@@ -4810,6 +4864,15 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
     require("src.core.Sound").play(Game.data,
                                    outdoor and "Go_Outside" or "Go_Inside")
   end
+  -- Fly/Teleport/Dig/Escape Rope: GBFadeOutToWhite / GBFadeInFromWhite
+  -- (player_animations.asm).  Door warps stay black with no fade-in (#1644).
+  local Timing = require("src.core.Timing")
+  local specialWarp = arriveWarp == "fly" or arriveWarp == "teleport"
+  local fadeOpts = specialWarp and {
+    color = { 1, 1, 1 },
+    frames = Timing.FADE_OUT_TO_WHITE,
+    framesIn = Timing.FADE_IN_FROM_WHITE,
+  } or nil
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
     -- the departure-side hide from flyAnim/teleportOut ends here, on the new
@@ -4849,6 +4912,9 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       self.player.spinFrames = 48
       self.player.spinTotal = 48
       self.player.spinDrop = true
+      -- engine/overworld/player_animations.asm:19
+      self.spinArrive = true
+      self.player.inputLocked = true
     end
     if doorWarp then
       -- PlayerStepOutFromDoor (engine/overworld/auto_movement.asm): any
@@ -4873,7 +4939,7 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   end, function()
     self.transitioning = false
     if onDone then onDone() end
-  end, true))  -- warp shape: no fade back in (LoadGBPal restores in one write)
+  end, not specialWarp, fadeOpts))
 end
 
 -- Re-read a map record after its data changed (WorldAPI:invalidateMap,
@@ -5329,8 +5395,9 @@ function OverworldState:drawWorld()
     -- cry with no bubble still pauses the world for its beat)
     if self.emote.bubble == false then return end
     local npc = self.emote.npc
-    local ex = npc.px - cam.x + 4
-    local ey = npc.py - cam.y - 14
+    -- engine/overworld/emotion_bubbles.asm:41
+    local ex = npc.px - cam.x
+    local ey = npc.py - cam.y - 20
     local bubble = Game.data.field.emotionBubbles
     local drawn = false
     if bubble and bubble.path then

@@ -16,6 +16,7 @@ local Damage = require("src.battle.Damage")
 local EffectRegistry = require("src.battle.EffectRegistry")
 local Experience = require("src.battle.Experience")
 local Font = require("src.render.Font")
+local LevelDisplay = require("src.ui.LevelDisplay")
 local Logger = require("src.core.Logger")
 local MoveEffects = require("src.battle.MoveEffects")
 local Party = require("src.pokemon.Party")
@@ -33,6 +34,12 @@ local UIVisibility = require("src.battle.UIVisibility")
 local RomText = require("src.core.RomText")
 local Strings = require("src.core.Strings")
 local WideBattle = require("src.battle.WideBattle")
+
+local Chrome2
+do
+  local ok, v = pcall(require, "src.ui.gen2.Chrome")
+  Chrome2 = ok and v or nil
+end
 
 local romText = RomText
 
@@ -97,7 +104,7 @@ end
 -- space.
 function BattleState:extendedHUD()
   local options = self.game and self.game.save and self.game.save.options
-  local bg = options and options.battleBg
+  local bg = options and self:bgMode()
   return self:wideLayout()
      and options and options.battleHud == "extended"
      and ((options.battleFit == "fixed"
@@ -108,12 +115,12 @@ end
 function BattleState:extendedWorldHUD()
   local options = self.game and self.game.save and self.game.save.options
   return self:extendedHUD() and options
-     and options.battleFit == "fixed" and options.battleBg == "world"
+     and options.battleFit == "fixed" and self:bgMode() == "world"
 end
 
 function BattleState:extendedBlackHUD()
   local options = self.game and self.game.save and self.game.save.options
-  return self:extendedHUD() and options and options.battleBg == "black"
+  return self:extendedHUD() and options and self:bgMode() == "black"
 end
 
 -- BATTLE BG: what fills the screen AROUND the battle -- the letterbox voids
@@ -130,6 +137,10 @@ end
 -- opaque 160x144 field over the top, so only the surround changes.
 function BattleState:bgMode()
   local options = self.game and self.game.save and self.game.save.options
+  if options and self:wideLayout() and options.battleFit == "fill"
+     and options.battleHud == "extended" then
+    return "white"
+  end
   local mode = options and options.battleBg
   if mode == "black" or mode == "world" then return mode end
   return "white"
@@ -212,6 +223,13 @@ local BALL_ANIMS = {
   SHAKE_ANIM = true, SHOWPIC_ANIM = true,
 }
 
+-- engine/battle/effects.asm:552
+local ENEMY_STAT_DOWN_MISS = {
+  ATTACK_DOWN1_EFFECT = true, DEFENSE_DOWN1_EFFECT = true,
+  DEFENSE_DOWN2_EFFECT = true, SPEED_DOWN1_EFFECT = true,
+  ACCURACY_DOWN1_EFFECT = true,
+}
+
 local imageCache = {}
 -- The three tables below are keyed by the Image OBJECT, not by a path, and a
 -- running battle holds the pics it built at enter() (battler.sprite,
@@ -229,6 +247,11 @@ local imagePadLeft = setmetatable({}, WEAK_KEYS)
 -- image -> { path, pal } so palette-fade variants (see fadeImage) can be
 -- rebuilt for any battle pic, whatever code loaded it
 local imageMeta = setmetatable({}, WEAK_KEYS)
+local function mattedPic(path)
+  return path:sub(1, 17) == "assets/generated/"
+      or path:sub(1, 17) == "save/mod-derived/"
+end
+
 -- pal = { name, colors } recolors the 4 GB shades like the Super Game Boy.
 -- trueColor art (14 §the 4-shade contract) opts out of the quantize
 -- entirely, so its palette variant collapses back onto the plain path.
@@ -254,29 +277,31 @@ local function getImage(path, pal, trueColor)
         end)
       end
       local w, h = id:getDimensions()
-      local bottom = h - 1
-      while bottom >= 0 do
-        local opaque = false
-        for x = 0, w - 1 do
-          local _, _, _, a = id:getPixel(x, bottom)
-          if a > 0 then opaque = true break end
+      if mattedPic(Assets.resolve(path)) then
+        local bottom = h - 1
+        while bottom >= 0 do
+          local opaque = false
+          for x = 0, w - 1 do
+            local _, _, _, a = id:getPixel(x, bottom)
+            if a > 0 then opaque = true break end
+          end
+          if opaque then break end
+          bottom = bottom - 1
         end
-        if opaque then break end
-        bottom = bottom - 1
-      end
-      local left = 0
-      while left < w do
-        local opaque = false
-        for y = 0, h - 1 do
-          local _, _, _, a = id:getPixel(left, y)
-          if a > 0 then opaque = true break end
+        local left = 0
+        while left < w do
+          local opaque = false
+          for y = 0, h - 1 do
+            local _, _, _, a = id:getPixel(left, y)
+            if a > 0 then opaque = true break end
+          end
+          if opaque then break end
+          left = left + 1
         end
-        if opaque then break end
-        left = left + 1
+        pad = h - 1 - bottom
+        padL = left
       end
       img = love.graphics.newImage(id)
-      pad = h - 1 - bottom
-      padL = left
     else
       img = Assets.image(path) -- headless stub: no pixel access
     end
@@ -314,6 +339,22 @@ local function monPalette(data, species)
   -- prefix so GBC vs RED++ cache keys don't collide on shared names
   if PaletteFX.usesGbcPack() then name = "redpp:" .. name end
   return { name = name, colors = colors }
+end
+
+-- MarowakAnim OBJ pics under OAM_PAL1:
+-- engine/battle/ghost_marowak_anim.asm:3-5,77
+local function objPicPalette()
+  local PaletteFX = require("src.render.PaletteFX")
+  if not PaletteFX.usesSpriteObp() then return nil end
+  local colors, group = PaletteFX.ogObj()
+  if not colors then return nil end
+  return { name = "obp1:" .. tostring(group), colors = colors }
+end
+
+local function objPic(path, trueColor)
+  local pal = objPicPalette()
+  if not pal then return nil end
+  return getImage(path, pal, trueColor)
 end
 
 -- a named palette from the active COLORS pack as a getImage pal
@@ -443,7 +484,7 @@ function BattleState:picImage(img)
   -- palettes (CYANMON reds 0.678/0.451) already rendered correctly.  This mode
   -- set mirrors PaletteFX.ensureZones / effectiveColors -- keep them in sync.
   local mono = PaletteFX.mode == "og" or PaletteFX.mode == "og_inv"
-               or PaletteFX.mode == "classic"
+               or PaletteFX.mode == "classic" or PaletteFX.forcesRawGrays()
   if self.grayPics or mono then return grayImage(img) end
   -- SET_PAL_BATTLE_BLACK covers every battle palette slot, so the pics go
   -- dark with the HP bars while the blackout text is up (#292).  The intro
@@ -873,7 +914,8 @@ local function disguiseAsGhost(self)
   self.enemy.name = "GHOST"
   self.enemy.sprite = getImage("assets/generated/battle/front/ghost.png",
                                monPalette(self.data, self.enemy.mon.species))
-  self.introText = Strings("The GHOST\nappeared!")
+  -- _EnemyAppearedText (data/text/text_2.asm:1251-1255) has no article
+  self.introText = self:romText("_EnemyAppearedText", "%s\nappeared!", self.enemy.name)
 end
 
 -- Pokémon Tower ghosts (engine/battle/core.asm): without the Silph Scope
@@ -917,7 +959,11 @@ function BattleState:queueScopeReveal()
   local unveiled = self.data.text and self.data.text._UnveiledGhostText
   self:say(unveiled
            or Strings("SILPH SCOPE\nunveiled the\vGHOST's identity!"))
-  self:act(function() self.ghostReveal = { t = 0 } end)
+  self:act(function()
+    self.ghostReveal = { t = 0 }
+    local ghostObj = objPic("assets/generated/battle/front/ghost.png")
+    if ghostObj then self.enemy.sprite = ghostObj end
+  end)
   table.insert(self.queue, { wait = BattleState.GHOST_REVEAL_FRAMES })
   self:say(self:romText("_WildMonAppearedText", "Wild %s\nappeared!",
                    self.ghostReal and self.ghostReal.name or self.enemy.name))
@@ -2214,6 +2260,9 @@ function BattleState:update(dt)
       self.waitFrames = nil
       if destination == "menu" then
         self.introSlide = nil
+        -- engine/battle/core.asm:2007
+        self.msgHold = nil
+        self.shown = nil
         self.phase = "menu"
       elseif destination == "finish" then
         self:finish()
@@ -3041,14 +3090,29 @@ local BGP_INVERT   = { [0] = 3, 2, 1, 0 }              -- $1b (flash phase 1)
 local BGP_WHITE    = { [0] = 0, 0, 0, 0 }              -- $00 (flash phase 2)
 local BGP_DARK     = { [0] = 3, 3, 2, 1 }              -- $6f DarkScreenPalette
 local BGP_LIGHT    = { [0] = 0, 0, 1, 2 }              -- $90 LightScreenPalette
-local BGP_DARKEN   = { [0] = 0, 1, 3, 3 }              -- $f4 DarkenMonPalette (SGB)
+local BGP_DARKEN_SGB  = { [0] = 0, 1, 3, 3 }           -- $f4
+local BGP_DARKEN_MONO = { [0] = 1, 2, 3, 3 }           -- $f9
+
+-- engine/battle/animations.asm:1090
+local function onSgb()
+  local m = require("src.render.PaletteFX").mode
+  return m == "gbc" or m == "gbc_inv"
+end
 
 -- FlashScreenLongSGB (animations.asm:1010): 12 BGP values per cycle,
 -- 3 cycles; the first cycle holds each for 2 frames, the rest for 1
 -- (FlashScreenLongDelay)
-local FLASH_LONG_MAPS = {
+local FLASH_LONG_SGB = {
   { [0] = 0, 2, 3, 3 }, { [0] = 0, 3, 3, 3 }, { [0] = 3, 3, 3, 3 },
   { [0] = 0, 3, 3, 3 }, { [0] = 0, 2, 3, 3 }, { [0] = 0, 1, 2, 3 },
+  { [0] = 0, 0, 1, 2 }, { [0] = 0, 0, 0, 1 }, { [0] = 0, 0, 0, 0 },
+  { [0] = 0, 0, 0, 1 }, { [0] = 0, 0, 1, 2 }, { [0] = 0, 1, 2, 3 },
+}
+
+-- engine/battle/animations.asm:992
+local FLASH_LONG_MONO = {
+  { [0] = 1, 2, 3, 3 }, { [0] = 2, 3, 3, 3 }, { [0] = 3, 3, 3, 3 },
+  { [0] = 2, 3, 3, 3 }, { [0] = 1, 2, 3, 3 }, { [0] = 0, 1, 2, 3 },
   { [0] = 0, 0, 1, 2 }, { [0] = 0, 0, 0, 1 }, { [0] = 0, 0, 0, 0 },
   { [0] = 0, 0, 0, 1 }, { [0] = 0, 0, 1, 2 }, { [0] = 0, 1, 2, 3 },
 }
@@ -3186,7 +3250,7 @@ function BattleState:applyAnimEffect(ev)
   elseif e == "SE_LIGHT_SCREEN_PALETTE" then
     fx.bgp = BGP_LIGHT
   elseif e == "SE_DARKEN_MON_PALETTE" then
-    fx.bgp = BGP_DARKEN
+    fx.bgp = onSgb() and BGP_DARKEN_SGB or BGP_DARKEN_MONO
   elseif e == "SE_RESET_SCREEN_PALETTE" then
     fx.bgp = nil
   elseif e == "SE_DARK_SCREEN_FLASH" then
@@ -3196,8 +3260,9 @@ function BattleState:applyAnimEffect(ev)
                   idx = 1, left = 2 }
   elseif e == "SE_FLASH_SCREEN_LONG" then
     local steps = {}
+    local maps = onSgb() and FLASH_LONG_SGB or FLASH_LONG_MONO
     for cycle = 1, 3 do
-      for _, m in ipairs(FLASH_LONG_MAPS) do
+      for _, m in ipairs(maps) do
         steps[#steps + 1] = { map = m, frames = (cycle == 1) and 2 or 1 }
       end
     end
@@ -3221,9 +3286,9 @@ function BattleState:applyAnimEffect(ev)
     end
     fx.hudShakeProg = prog
   elseif e == "SE_WAVY_SCREEN" then
-    -- AnimationWavyScreen: 255 frames of per-scanline SCX offsets
-    -- walking WavyScreenLineOffsets
-    fx.wavy = { left = 255, phase = 0 }
+    -- AnimationWavyScreen: 255 outer passes, two per displayed frame
+    -- (animations.asm:1884-1903), walking WavyScreenLineOffsets
+    fx.wavy = { left = 128, phase = 0 }
 
   -- ---------------------------------------------- mon pic effects
   elseif e == "SE_SLIDE_MON_OFF" then
@@ -3607,7 +3672,7 @@ function BattleState:updateFx()
     end
     if fx.wavy then
       fx.wavy.left = fx.wavy.left - 1
-      fx.wavy.phase = fx.wavy.phase + 1
+      fx.wavy.phase = fx.wavy.phase + 2
       if fx.wavy.left <= 0 then fx.wavy = nil end
     end
   end
@@ -3661,12 +3726,22 @@ function BattleState:updateFx()
         local real = self.ghostReal
         if real then
           self.enemy.name = real.name or self.enemy.name
-          self.enemy.sprite = real.sprite or self.enemy.sprite
+          gr.bgSprite = real.sprite or self.enemy.sprite
+          local objReal
+          if objPicPalette() then
+            local Sprites = require("src.pokemon.Sprites")
+            local path, tc = Sprites.path(self.data, self.enemy.mon.species,
+              "front", { mon = self.enemy.mon, kind = "battle" })
+            objReal = path and objPic(path, tc)
+          end
+          self.enemy.sprite = objReal or gr.bgSprite
         end
       end
       pf.fade = math.min(1, math.ceil((gr.t - outEnd) / 10) / 4)
     end
     if gr.t >= BattleState.GHOST_REVEAL_FRAMES then
+      -- home/clear_sprites.asm:1
+      if gr.bgSprite then self.enemy.sprite = gr.bgSprite end
       self.ghostReveal, self.scopeReveal, pf.fade = nil, nil, nil
     end
   end
@@ -3782,6 +3857,9 @@ function BattleState:executeAction(user, target, action)
       -- EnemySendOutFirstMon (core.asm:1314-1315): clears player's trap
       clearTrapping(self.player)
       self:syncSides()
+      -- EnemySendOut (core.asm:1276-1289): only the mon on the field stays flagged
+      self.participants = {}
+      self:markParticipant()
       Runtime.emit("battle.battler_switched", {
         battle = self, side = self.sides[2], battler = self.enemy,
         previous = previous,
@@ -4139,6 +4217,12 @@ function BattleState:performMove(user, target, moveInst, isCalled)
 
   -- pure status moves
   if move.power == 0 and record and record.kind == "primary" and record.run then
+    if ENEMY_STAT_DOWN_MISS[move.effect] and not user.isPlayer
+       and self.kind ~= "link" and self.rng(0, 255) < 64 then
+      self:cancelMoveAnim()
+      self:sayNext(self:romText("_AttackMissedText", "%s's\nattack missed!", displayName(user)))
+      return
+    end
     -- accuracy-checked status effects run MoveHitTest, which has no
     -- 100%-accuracy early-out (even Thunder Wave misses on the 255
     -- roll) and misses outright against a mid-Fly/Dig target; the
@@ -4417,7 +4501,11 @@ function BattleState:awardExp()
       -- new current HP (house convention: potions drain the bar too, see
       -- itemUsed) so the bar grows instead.  Only the active player battler
       -- shares its table with the HUD; other party mons (EXP.ALL) have no bar.
-      if mon == self.player.mon then self:drainNext() end
+      if mon == self.player.mon then
+        -- engine/battle/experience.asm:236
+        self.player.badgeExtraBoosts = nil
+        self:drainNext()
+      end
       for _, moveId in ipairs(Experience.movesLearnedAt(
           self.data.pokemon[mon.species], lv)) do
         self:learnMove(mon, moveId)
@@ -4484,8 +4572,7 @@ function BattleState:enemyMonFainted()
       -- remaining HP); SET / single-mon / fainted active skip the prompt.
       local nextMon = self.enemyParty[self.enemyIndex]
       local nextName = nextMon.nickname or self.data.pokemon[nextMon.species].name
-      local style = tostring((self.game.save.options or {}).battleStyle or "shift")
-        :lower()
+      local style = self:battleStyle()
       local partyCount = #self:playerPartyView()
       -- ReplaceFaintedEnemyMon (core.asm:892-896): DrawEnemyPokeballs puts the
       -- foe's party ball row -- and the HUD chrome PlaceEnemyHUDTiles lays
@@ -5053,6 +5140,57 @@ function BattleState:ballMissMessage(shakes)
   return t._ItemUseBallText04 or self:romText("_ItemUseBallText04", "Shoot! It was so\nclose too!")
 end
 
+-- ------- battle rules a mode may own
+--
+-- Two decisions the OPTION screen and the cart make for the player that a
+-- game mode may want to make instead: whether a faint offers a free switch,
+-- and whether a catch asks for a nickname.  Each is a hook around the vanilla
+-- answer, so a mode can force it without touching the player's saved
+-- preference and without the player being able to change it mid-match.
+--
+-- The vanilla links are file-locals so an empty chain allocates no closure.
+
+local function styleFromOptions(battle)
+  return tostring(((battle.game.save or {}).options or {}).battleStyle or "shift")
+    :lower()
+end
+
+local function alwaysAsk() return true end
+
+-- "shift" or "set" for this battle.  battle.style wraps the OPTION row: a
+-- mod returns "set" or "shift"; anything else reads as the vanilla answer.
+function BattleState:battleStyle()
+  if not Runtime.wantsHook("battle.style") then return styleFromOptions(self) end
+  local style = Runtime.call("battle.style", styleFromOptions, self)
+  if style == "set" then return "set" end
+  if style == "shift" then return "shift" end
+  return styleFromOptions(self)
+end
+
+-- AskName for a catch (AddPartyMon / SendNewMonToBox).  Vanilla queues the
+-- yes/no prompt.  catch.nickname may answer for the player: false keeps the
+-- species name and shows nothing; a string is the nickname, shown nothing;
+-- anything else asks as usual.  Returns whether a prompt was queued.
+--
+-- The same verdict a script gift already takes from pokemon.before_give's
+-- gift.nickname, for the other way a Pokemon joins the party.
+function BattleState:offerNickname(mon, displayName)
+  if Runtime.wantsHook("catch.nickname") then
+    local verdict = Runtime.call("catch.nickname", alwaysAsk, mon,
+      { battle = self, name = displayName, game = self.game })
+    if verdict == false then return false end
+    if type(verdict) == "string" then
+      -- the naming grid's own limit, so a mod cannot hand the party a name
+      -- the summary screen has no room to draw
+      verdict = verdict:sub(1, 10)
+      if #verdict > 0 then mon.nickname = verdict end
+      return false
+    end
+  end
+  self:uiNext(function() return self:askNicknameUI(mon, displayName) end)
+  return true
+end
+
 -- AskName (engine/menus/naming_screen.asm): ClearSprites, wild field blank,
 -- PrintText, YES/NO while text stays (TextBox opts.choice). Shared by party
 -- AddPartyMon and SendNewMonToBox (#172).
@@ -5086,6 +5224,22 @@ end
 -- "New POKéDEX data will be added" + the dex entry page, then
 -- AddPartyMon or SendNewMonToBox (both call AskName), then the PC
 -- transfer text when the party was full.
+-- Where a caught mon goes when the party has no room for it (RFC 0018):
+-- "box", as AddPartyMon falling through to SendNewMonToBox always did, or
+-- "mod" when the catch.party_full hook claims it -- a game mode that has
+-- done away with storage hands the decision to the player instead of
+-- laundering the catch through a PC it has locked.  A method rather than
+-- an inline read, so a mod or a compatibility shim can tell a seam engine
+-- from a stock one by name.
+function BattleState:partyFullDestination(mon)
+  if not Runtime.wantsHook("catch.party_full") then return "box" end
+  local claimed = Runtime.call("catch.party_full", function() return false end,
+    { battle = self, mon = mon, name = self.enemy and self.enemy.name,
+      game = self.game })
+  if claimed then return "mod" end
+  return "box"
+end
+
 function BattleState:storeCaughtMon()
   -- ItemUseBall reloads the caught mon via LoadEnemyMonData
   -- (item_effects.asm:472-501), regenerating its move list from the
@@ -5117,28 +5271,26 @@ function BattleState:storeCaughtMon()
     end)
   end
   local function askCaughtNickname()
-    local caught = self.enemy.mon
-    local enemyName = self.enemy.name
-    self:uiNext(function()
-      return self:askNicknameUI(caught, enemyName)
-    end)
+    self:offerNickname(self.enemy.mon, self.enemy.name)
   end
   if Party.add(game.save.party, self.enemy.mon) then
     askCaughtNickname()
   else
-    destination = "box"
-    local boxNum = require("src.pokemon.Boxes").deposit(game.save, self.enemy.mon)
-    if boxNum then
-      askCaughtNickname()
-      -- _ItemUseBallText07/08 keyed on EVENT_MET_BILL
-      local metBill = game.save.flags and game.save.flags.EVENT_MET_BILL
-      self:sayNext(self:romText(
-        metBill and "_ItemUseBallText07" or "_ItemUseBallText08",
-        metBill and "%s was\ntransferred to\nBILL's PC!"
-                or "%s was\ntransferred to\nsomeone's PC!",
-        self.enemy.name))
-    else
-      self:sayNext(Strings("But every BOX\nis full!"))
+    destination = self:partyFullDestination(self.enemy.mon)
+    if destination == "box" then
+      local boxNum = require("src.pokemon.Boxes").deposit(game.save, self.enemy.mon)
+      if boxNum then
+        askCaughtNickname()
+        -- _ItemUseBallText07/08 keyed on EVENT_MET_BILL
+        local metBill = game.save.flags and game.save.flags.EVENT_MET_BILL
+        self:sayNext(self:romText(
+          metBill and "_ItemUseBallText07" or "_ItemUseBallText08",
+          metBill and "%s was\ntransferred to\nBILL's PC!"
+                  or "%s was\ntransferred to\nsomeone's PC!",
+          self.enemy.name))
+      else
+        self:sayNext(Strings("But every BOX\nis full!"))
+      end
     end
   end
   Runtime.emit("pokemon.caught", {
@@ -5833,8 +5985,7 @@ local WAVY_OFFSETS = { 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1,
                        0, 0, 0, 0, 0, -1, -1, -1, -2, -2, -2, -2, -2,
                        -1, -1, -1 }
 
--- wave the BG canvas one scanline at a time; the offset table walks
--- one entry per frame like the asm's advancing pointer
+-- WavyScreen_SetSCX: animations.asm:1916-1927
 function BattleState:applyWavy(src)
   local wavy = self.fx and self.fx.wavy
   if not wavy then return src end
@@ -5847,7 +5998,7 @@ function BattleState:applyWavy(src)
   for line = 0, 143 do
     self.waveQuad:setViewport(0, line, 160, 1)
     g.draw(src, self.waveQuad,
-           WAVY_OFFSETS[(line + wavy.phase) % 32 + 1], line)
+           WAVY_OFFSETS[(line * 2 + wavy.phase) % 32 + 1], line)
   end
   g.setCanvas(prev)
   return self.waveCanvas
@@ -5878,7 +6029,7 @@ function BattleState:drawZonePass(src, sx, sy)
   -- only the other two showed it.  Keep this mode set in sync with picImage /
   -- PaletteFX.ensureZones / WideBattle.monoMode.
   local mono = PaletteFX.mode == "og" or PaletteFX.mode == "og_inv"
-               or PaletteFX.mode == "classic"
+               or PaletteFX.mode == "classic" or PaletteFX.forcesRawGrays()
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.setShader(shader)
   local shaking = sx ~= 0 or sy ~= 0
@@ -5920,7 +6071,9 @@ function BattleState:animSpriteColors(s, px, py)
   local P
   -- engine/battle/animations.asm:551 (.notSGB)
   if PaletteFX.usesSpriteObp() then
-    P = PaletteFX.ogObj()
+    -- engine/battle/init_battle_variables.asm:18
+    P = require("src.core.GameVersion").isBlue() and PaletteFX.GBC_OBJ_BLUE
+        or PaletteFX.GBC_OBJ
     if key == "f0" then key = "e4" elseif key == "f0x" then key = "e4x" end
   else
     P = self:zoneColorsAt(px or (s.x - 8 + 4), py or (s.y - 16 + 4))
@@ -6185,7 +6338,7 @@ function BattleState:drawHUDs(slide)
     end
     if self.enemy.shownStatus then
       Font.draw(self:statusLabel({ status = self.enemy.shownStatus }), 40, 8)
-    else
+    elseif LevelDisplay.visible(self.enemy.mon, "battle.enemy", self.game) then
       hudTile(0x6E, 32, 8) -- <LV>
       Font.draw(tostring(self.enemy.mon.level), 40, 8)
     end
@@ -6269,7 +6422,7 @@ function BattleState:drawHUDs(slide)
     Font.draw(self.player.name, nameX(10, self.player.name), 56)
     if self.player.shownStatus then
       Font.draw(self:statusLabel({ status = self.player.shownStatus }), 120, 64)
-    else
+    elseif LevelDisplay.visible(self.player.mon, "battle.player", self.game) then
       hudTile(0x6E, 112, 64) -- <LV>
       Font.draw(tostring(self.player.mon.level), 120, 64)
     end
@@ -6286,8 +6439,35 @@ end
 
 function BattleState:drawTextArea()
   if not self:bottomUIVisible() then return end
-  Font.drawBox(0, 12, 20, 6)
-  love.graphics.setColor(0, 0, 0, 1)
+  -- Gold only: routes the command box and its labels through GbcPalette,
+  -- the same fix TextBox.lua got for dialogue. moveSelect/mimicSelect below
+  -- aren't migrated yet since they need their own interior-patch handling
+  -- (see #240).
+  local gold = self.game and self.game.save
+    and (self.game.save.generation == 2 or self.game.save.version == "gold")
+  local Chrome = gold and Chrome2 or nil
+  local function box(tx, ty, tw, th)
+    if Chrome then
+      Chrome.paletteBox(tx, ty, tw, th)
+    else
+      Font.drawBox(tx, ty, tw, th)
+      love.graphics.setColor(0, 0, 0, 1)
+    end
+  end
+  local drawGlyph, finishGlyph = Font.drawCode, nil
+  if Chrome then
+    local _, dg, fg = Chrome.paletteGlyphs(Chrome.DEFAULT_BOX_PALETTE)
+    drawGlyph, finishGlyph = dg, fg
+  end
+  local function text(str, x, y)
+    local pen = x
+    for _, code in ipairs(Font.encode(str)) do
+      drawGlyph(code, pen, y)
+      pen = pen + Font.advanceOf(code)
+    end
+  end
+
+  box(0, 12, 20, 6)
   if self.phase == "messages"
      and (self.current or self.animPlaying or self.msgHold) then
     -- during the move animation self.current is nil but shown still holds
@@ -6306,48 +6486,47 @@ function BattleState:drawTextArea()
     for li, line in ipairs(self.shown or {}) do
       local y = (ys[li] or 128) + off
       for i = 1, #line do
-        Font.drawCode(line[i], 8 + (i - 1) * 8, y)
+        drawGlyph(line[i], 8 + (i - 1) * 8, y)
       end
     end
     -- the blinking down arrow ('▼', glyph $EE) while a \v CONT wait
     -- (_ContText) or a typed-out page (PromptText) holds the box; both write
     -- it at (18,16), bottom-right, like TextBox / home/text.asm (#317)
     if (self.msgWaiting or self.msgPrompt) and self.frame % 60 < 30 then
-      Font.drawCode(0xEE, (0 + 20 - 2) * 8, (12 + 6 - 1) * 8 - 4)
+      drawGlyph(0xEE, (0 + 20 - 2) * 8, (12 + 6 - 1) * 8 - 4)
     end
   elseif self.phase == "menu" and self.demo then
     -- the old-man script (DisplayBattleMenu, core.asm:2038-2049): the
     -- standard menu, with the '▶' hand drawn by the scripted keystrokes
     -- -- next to FIGHT (9,14) for the first 80 frames, then ITEM (9,16)
-    Font.drawBox(8, 12, 12, 6)
-    love.graphics.setColor(0, 0, 0, 1)
-    Font.draw(Strings("FIGHT", "battle"), 80, 112)
-    Font.drawCode(0xE1, 128, 112); Font.drawCode(0xE2, 136, 112)
-    Font.draw(Strings("ITEM", "battle"), 80, 128); Font.draw(Strings("RUN", "battle"), 128, 128)
-    Font.drawCode(0xED, 72, (self.demoTimer or 0) <= 80 and 112 or 128)
+    box(8, 12, 12, 6)
+    text(Strings("FIGHT", "battle"), 80, 112)
+    drawGlyph(0xE1, 128, 112); drawGlyph(0xE2, 136, 112)
+    text(Strings("ITEM", "battle"), 80, 128); text(Strings("RUN", "battle"), 128, 128)
+    drawGlyph(0xED, 72, (self.demoTimer or 0) <= 80 and 112 or 128)
   elseif self.phase == "menu" then
     local col = (self.menuIndex - 1) % 2
     local row = math.floor((self.menuIndex - 1) / 2)
     if self.safari then
       -- SAFARI_BATTLE_MENU_TEMPLATE: full-width box, "BALLx  BAIT /
       -- THROW ROCK  RUN" from (2,14)
-      Font.drawBox(0, 12, 20, 6)
-      Font.draw(Strings("BALLx"), 16, 112); Font.draw(Strings("BAIT"), 112, 112)
-      Font.draw(Strings("THROW ROCK"), 16, 128); Font.draw(Strings("RUN", "battle"), 112, 128)
+      box(0, 12, 20, 6)
+      text(Strings("BALLx"), 16, 112); text(Strings("BAIT"), 112, 112)
+      text(Strings("THROW ROCK"), 16, 128); text(Strings("RUN", "battle"), 112, 128)
       -- DisplayBattleMenu .safariLeftColumn / .safariRightColumn print
       -- wNumSafariBalls at hlcoord 7,14 with `lb bc, 1, 2` -- one byte, two
       -- digits, space padded -- right after the "BALLx" label at columns
       -- 2..6 (engine/battle/core.asm:2074-2079, 2107-2112) (#540)
-      Font.draw(("%2d"):format(self.safari.balls), 56, 112)
-      Font.drawCode(0xED, (col == 0 and 8 or 104), 112 + row * 16)
+      text(("%2d"):format(self.safari.balls), 56, 112)
+      drawGlyph(0xED, (col == 0 and 8 or 104), 112 + row * 16)
     else
       -- BATTLE_MENU_TEMPLATE: box (8,12)-(19,17), "FIGHT <PK><MN> /
       -- ITEM  RUN" from (10,14); cursor columns 9 / 15
-      Font.drawBox(8, 12, 12, 6)
-      Font.draw(Strings("FIGHT", "battle"), 80, 112)
-      Font.drawCode(0xE1, 128, 112); Font.drawCode(0xE2, 136, 112)
-      Font.draw(Strings("ITEM", "battle"), 80, 128); Font.draw(Strings("RUN", "battle"), 128, 128)
-      Font.drawCode(0xED, (col == 0 and 72 or 120), 112 + row * 16)
+      box(8, 12, 12, 6)
+      text(Strings("FIGHT", "battle"), 80, 112)
+      drawGlyph(0xE1, 128, 112); drawGlyph(0xE2, 136, 112)
+      text(Strings("ITEM", "battle"), 80, 128); text(Strings("RUN", "battle"), 128, 128)
+      drawGlyph(0xED, (col == 0 and 72 or 120), 112 + row * 16)
     end
   elseif self.phase == "moveSelect" then
     -- pokered MoveSelectionMenu: move list in a box at (4,12) 16x6,
@@ -6422,6 +6601,7 @@ function BattleState:drawTextArea()
     Font.drawCode(0xED, 8, (7 + self.mimicIndex) * 8)
     Font.draw(Strings("WHICH TECHNIQUE?"), 8, 112)
   end
+  if finishGlyph then finishGlyph() end
 end
 
 function BattleState:draw()
