@@ -185,7 +185,26 @@ PY
 
 make_ico() { # $1 = output .ico path
   [ -f "$ICON_SRC" ] || fail "missing icon source: $ICON_SRC"
-  magick "$ICON_SRC" -define icon:auto-resize=256,128,64,48,32,16 "$1"
+  if command -v magick >/dev/null 2>&1; then
+    magick "$ICON_SRC" -define icon:auto-resize=256,128,64,48,32,16 "$1"
+  else
+    warn "ImageMagick is unavailable; generating the Windows icon with Pillow"
+    python3 - "$ICON_SRC" "$1" <<'PY'
+from pathlib import Path
+import sys
+
+from PIL import Image
+
+source, output = map(Path, sys.argv[1:3])
+image = Image.open(source).convert("RGBA")
+image.save(
+    output,
+    format="ICO",
+    sizes=[(16, 16), (32, 32), (48, 48), (64, 64),
+           (128, 128), (256, 256)],
+)
+PY
+  fi
 }
 
 # --------------------------------------------------------------- macOS
