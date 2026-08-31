@@ -12,20 +12,19 @@ Gen1Recomp 中文版是 [bryanthaboi/gen1recomp](https://github.com/bryanthaboi/
 
 ## 中文版做了什么
 
-这个分支以尽量减少上游代码改动、方便后续同步官方 `main` 分支为原则，主要进行应用界面的中文本地化：
+这个分支以尽量减少上游代码改动、方便后续同步官方 `main` 分支为原则，主要提供中文界面和游戏文本汉化运行支持：
 
 - 应用默认显示简体中文，不再提供语言选择项。
 - 汉化启动器、ROM 导入、模组管理、设置、存档同步等应用界面。
 - 增加中文字体支持，解决中文显示为方框的问题。
+- 保留并扩展 `Strings()` 多语言接口，让游戏内文本可以由 translation Mod 覆盖。
+- 支持导入简体中文 translation Mod，用于汉化红／蓝／黄／金／银／水晶的游戏文本。
 - 保留上游模组系统、ROM 提取流程和游戏运行逻辑。
 - 保留 RG34XXSP Stock OS 64 位掌机支持。
 
-目前的汉化范围不包括：
+需要注意的是，游戏正文汉化不直接写进主程序，也不会修改 ROM。主程序负责读取和应用 translation Mod；具体的剧情、对话、招式、道具、地图等翻译内容由独立的汉化 Mod 包提供。
 
-- ROM 中的游戏剧情、对话、招式、道具和地图文本。
-- 第三方模组自行提供的英文内容。
-
-因此，使用美版原版 ROM 时，启动器等应用界面会显示中文，但游戏内部文本仍然是英文。
+第三方模组自行绘制或硬编码的英文内容不一定会被普通 translation Mod 覆盖，需要对应模组自己接入 `Strings()` 或提供专门适配。
 
 ## 它是模拟器吗
 
@@ -64,7 +63,8 @@ Gen1Recomp 中文版是 [bryanthaboi/gen1recomp](https://github.com/bryanthaboi/
 2. 选择要导入的游戏版本。
 3. 点击“导入 ROM”，选择对应的 `.gb` 或 `.gbc` 文件。
 4. 等待校验和数据提取完成。
-5. 点击“开始游戏”。
+5. 如需游戏正文中文，在“模组”中导入并启用对应的简体中文 translation Mod。
+6. 点击“开始游戏”。
 
 同一份应用可以并排导入红、蓝、黄、金、银和水晶版，各版本使用独立存档。
 
@@ -200,6 +200,21 @@ Gen1Recomp 原工程提供的是模组平台和运行能力，并不默认开启
 
 模组有自己的许可证和兼容范围。应用汉化、游戏文本汉化与视觉模组是三个不同层级，不能互相替代。
 
+## 游戏文本汉化 Mod
+
+游戏内剧情、菜单、招式、道具、图鉴和地图文本通过独立的 translation Mod 提供。当前简体中文汉化包由 [gen1recomp-translation-mod-generator-cn](https://github.com/zhangjiyz/gen1recomp-translation-mod-generator-cn) 生成，主程序只负责加载这些 Mod 并在运行时应用翻译 catalog。
+
+当前推荐安装：
+
+| 游戏 | 汉化 Mod |
+| --- | --- |
+| 红／蓝／黄 | `translation-zh-hans-0.8.1.zip` |
+| 金／银／水晶 | `translation-zh-hans-gen2-0.8.1.zip` |
+
+使用方式与普通 Mod 相同：在启动器打开“模组”，导入 ZIP 并启用。两个汉化包的 Mod ID 不同，可以同时安装；运行时会根据当前游戏版本加载对应内容。
+
+这些汉化包不包含 ROM、ROM patch 或 ROM 提取物。它们只包含字体、翻译 catalog 和少量运行时注册逻辑。
+
 ## RG34XXSP 掌机
 
 上游发布版提供面向 Anbernic RG34XXSP Stock OS 64-bit MOD 的 PortMaster 风格安装包。详细安装方式、目录结构、操作说明和故障排查见：
@@ -222,7 +237,9 @@ Gen1Recomp 原工程提供的是模组平台和运行能力，并不默认开启
 
 ### 为什么应用是中文，游戏对话仍是英文？
 
-当前汉化的是 Gen1Recomp 应用界面。游戏对话来自 ROM 提取的数据，不属于同一套应用本地化文本。
+请确认已经导入并启用了对应游戏版本的简体中文 translation Mod。主程序自带中文应用界面和多语言运行支持，但游戏正文翻译由汉化 Mod 提供；未启用汉化 Mod 时，原版美版 ROM 的游戏文本会继续显示英文。
+
+如果启用后仍有少量英文，通常是因为那段文字没有走 `Strings()` 多语言接口，或者来自第三方模组自己的硬编码文本。这类内容需要在主工程或对应模组中继续适配。
 
 ### 为什么安装后没有 3D？
 
@@ -250,7 +267,13 @@ src/locales/zh_CN.lua
 src/locales/zh_CN_app.lua
 ```
 
-应用新增英文文案时，应优先通过 `Strings()` 接入翻译表，而不是在公共绘制层全局替换字符串。
+游戏文本 translation Mod 由独立工程维护：
+
+```text
+https://github.com/zhangjiyz/gen1recomp-translation-mod-generator-cn
+```
+
+应用或游戏界面新增英文文案时，应优先通过 `Strings()` 接入翻译表，而不是在公共绘制层全局替换字符串。只有接入 `Strings()` 的文本，才能被主工程内置中文 catalog 或外部 translation Mod 稳定覆盖。
 
 ## 法律与安全说明
 
@@ -263,6 +286,7 @@ src/locales/zh_CN_app.lua
 ## 相关链接
 
 - [中文分支](https://github.com/zhangjiyz/gen1recomp-cn)
+- [简体中文 translation Mod 生成工程](https://github.com/zhangjiyz/gen1recomp-translation-mod-generator-cn)
 - [上游项目](https://github.com/bryanthaboi/gen1recomp)
 - [上游开发者指南](https://github.com/bryanthaboi/gen1recomp/wiki/Guide-Developer-Setup)
 - [模组开发 Wiki](https://github.com/bryanthaboi/gen1recomp/wiki)
