@@ -908,6 +908,11 @@ R.moves = {
   gen2ReservedIds = movesGen2ReservedIds,
   fields = {
     id = f.str, name = f.str,
+    -- Gen 2's summary screen and TM/HM pockets render this ROM text.  Gen 1
+    -- records simply omit it, so keeping it optional makes the shared
+    -- registry backward-compatible while allowing translation mods to patch
+    -- the field the Gen 2 UI actually reads.
+    description = f.opt(f.str),
     index = f.opt(f.int(0, 255)),
     type = f.id("type_chart"),
     power = f.int(0, 255),
@@ -934,6 +939,10 @@ R.items = {
   gen2ReservedIds = itemsGen2ReservedIds,
   fields = {
     id = f.str, name = f.str,
+    -- Gold/Silver/Crystal carry one description per item.  PackMenu,
+    -- MartMenu and ItemPcMenu already read this field from the merged item
+    -- record; expose it so a content mod can replace the extracted ROM text.
+    description = f.opt(f.str),
     index = f.opt(f.int(0, 255)),
     price = f.int(0),
     machine = f.opt(f.rec{ kind = f.str, move = f.id("moves"),

@@ -311,6 +311,12 @@ check("STATUS/ at hlcoord 0,12", at(pink, 0, 12), "STATUS/")
 check("TYPE/ two rows below it, not one", at(pink, 0, 14), "TYPE/")
 check("nothing sits between them", at(pink, 0, 13), nil)
 check("a healthy mon reads OK at hlcoord 6,13", at(pink, 6, 13), "OK")
+local oldStatuses, oldStatus = DATA.gen2Statuses, CYNDA.status
+DATA.gen2Statuses = { poison = { label = "毒", hudLabel = "中毒" } }
+CYNDA.status = "poison"
+check("summary status reads the merged status registry",
+  at(newSummary():pinkPlacements(), 6, 13), "中毒")
+CYNDA.status, DATA.gen2Statuses = oldStatus, oldStatuses
 -- PrintMonTypes writes type 2 two rows down, and LoadPinkPage then copies row
 -- 17 up onto row 16 -- so the second type ends one row under the first.
 check("type 1 at hlcoord 1,15", at(pink, 1, 15), "FIRE")
@@ -468,8 +474,8 @@ check("the move's power at hlcoord 16,12", at(detail, 16, 12), " 35")
 -- is two rows down -- so line two is on row 16, not row 15.
 check("the description at hlcoord 1,14", at(detail, 1, 14),
   "A physical attack")
-check("nothing on row 15", at(detail, 1, 15), nil)
-check("its second line on row 16", at(detail, 1, 16), "using full body")
+check("three-line translation uses row 15", at(detail, 1, 15), "using full body")
+check("three-line translation uses row 16", at(detail, 1, 16), "weight.")
 
 -- Up and down pick the move the description belongs to.
 input:press("down")

@@ -16,6 +16,7 @@
 -- the submenu is opt-in through `opts.submenu` and not the default.
 
 local Assets = require("src.render.Assets")
+local Battle = require("src.battle.gen2.Battle")
 local Chrome = require("src.ui.gen2.Chrome")
 local Font = require("src.render.Font")
 local GbcPalette = require("src.render.GbcPalette")
@@ -113,6 +114,7 @@ function PartyMenu.new(game, opts)
   self.save = save
   self.party = opts.party or (save and save.party) or {}
   local data = game and game.data or {}
+  self.data = data
   -- engine/pokemon/move_mon.asm:1402
   for i = 1, #self.party do
     Mon.refreshStats(self.party[i], data)
@@ -764,11 +766,13 @@ end
 
 -- PlaceStatusString (engine/pokemon/mon_stats.asm): three letters, and a mon
 -- with no HP reads FNT whatever its status byte says.
-local function statusString(mon, hp)
+local function statusString(mon, hp, data)
   if hp == nil then hp = mon.hp end
   if (hp or 0) <= 0 then return "FNT" end
   local status = mon.status
   if not status then return nil end
+  local record = Battle.statusRecordFor(data, status)
+  if record then return record.hudLabel or record.label end
   local class = ItemEffects.STATUS_CLASS[tostring(status):lower()]
   return class and class:upper()
 end
@@ -779,14 +783,14 @@ end
 -- name and an icon alone: no HP digits, no bar, no level, no FNT.  The name
 -- itself is String_Egg -- GiveEgg writes "EGG" over the nickname slot -- so
 -- it never reads as the species hiding inside.
-function PartyMenu.rowFor(mon, hp)
+function PartyMenu.rowFor(mon, hp, data)
   if mon.isEgg then return { name = "EGG" } end
   local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 0
   if hp == nil then hp = mon.hp end
   return {
     name = mon.nickname or mon.name or mon.species or "?",
     hp = num3(hp) .. "/" .. num3(maxHp),
-    status = statusString(mon, hp),
+    status = statusString(mon, hp, data),
     -- <LV> is one font glyph ($6e), not the two characters ":L".
     level = "<LV>" .. tostring(mon.level or 1),
   }
@@ -841,7 +845,7 @@ function PartyMenu:drawPanel()
     end
     self:drawIcon(mon, self:iconX(i), 4 + (i - 1) * 16 + self:iconBob(i))
     local hp = self:shownHpFor(i, mon)
-    local row = PartyMenu.rowFor(mon, hp)
+    local row = PartyMenu.rowFor(mon, hp, self.data)
     Chrome.print(row.name, 3, nameY)
     if self.tmhm then
       local able = self:tmhmAble(mon)

@@ -211,6 +211,11 @@ check("a healthy mon has no status", row.status, nil)
 
 local fnt = mon("TOTODILE", 10, { fields = { hp = 0 } })
 check("a fainted mon reads FNT", PartyMenu.rowFor(fnt).status, "FNT")
+local poisoned = mon("TOTODILE", 10, { fields = { status = "poison" } })
+check("a party row reads the merged status registry",
+  PartyMenu.rowFor(poisoned, nil,
+    { gen2Statuses = { poison = { label = "毒", hudLabel = "中毒" } } }).status,
+  "中毒")
 
 -- PartyMenuCheckEgg: every quality routine skips an EGG's row, and the name
 -- is String_Egg -- never the species hiding inside.

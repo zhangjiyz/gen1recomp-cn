@@ -2159,8 +2159,8 @@ Battle.MOVE_EFFECTS.EFFECT_FORESIGHT = function(self, attacker, defender,
   if target.vanished or target.identified then return fail(self) end
   target.identified = true
   self:emit({ kind = "message",
-    text = self:monName(attacker) .. " identified "
-      .. self:monName(defender) .. "!" })
+    text = Strings("%s identified %s!", self:monName(attacker),
+      self:monName(defender)) })
 end
 
 -- BattleCommand_CheckHit's .LockOn: the flag is read AND cleared by the next
@@ -4676,15 +4676,16 @@ local function runTurn(self, action, enemyAction)
       if not charging and not bideLocked
           and not self:hasUsableMoves(self.enemy) then
         self:emit({ kind = "message",
-          text = self:monName(self.enemy) .. " has no moves left!" })
+          text = Strings("%s has no moves left!", self:monName(self.enemy)) })
         enemyMoveId = Battle.STRUGGLE
       end
       if not enemyMoveId then enemyMoveId = Battle.STRUGGLE end
       if self:moveDisabled(self.enemy, enemyMoveId) then
         local state = self:volatile(self.enemy)
         state.chargeMove, state.vanished = nil, nil
-        self:emit({ kind = "message", text = self:monName(self.enemy)
-          .. "'s " .. enemyMoveId .. " is DISABLED!" })
+        self:emit({ kind = "message",
+          text = Strings("%s's %s is DISABLED!",
+            self:monName(self.enemy), enemyMoveId) })
         return
       end
       self:useMove(self.enemy, self.player, enemyMoveId)
@@ -5107,8 +5108,8 @@ function Battle:forcedReplacement(side, index)
     self:emit({ kind = "send", side = "enemy", mon = mon, replacement = true,
       hp = mon.hp or 0, status = mon.status or false,
       level = mon.level, experience = mon.experience,
-      text = ((self.trainer and self.trainer.name) or "Foe") .. " sent out "
-        .. self:monName(mon) .. "!" })
+      text = Strings("%s sent out %s!",
+        (self.trainer and self.trainer.name) or "Foe", self:monName(mon)) })
     Runtime.emit("battle.battler_switched", {
       battle = self, side = self:sideRecord(mon), battler = mon,
       previous = previous,

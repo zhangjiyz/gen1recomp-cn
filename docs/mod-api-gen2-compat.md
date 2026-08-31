@@ -300,6 +300,13 @@ choke point Gen 1 uses.
 family (`audio`, `music`, `sfx`, `cries`, `map_songs`). These keep their Gen 1
 target path, so one mod source targets both generations.
 
+For translation mods, `moves` and `items` accept an optional `description`
+string in addition to `name`. Gold, Silver and Crystal read the merged value
+in the move-detail, PACK, PC-item and Mart description panels. The original
+two-line `<NEXT>` form remains valid; a three-line value separated by `\n` or
+`<NEXT>` uses all three rows of the Gen 2 description box. Older mods that
+only patch names are unchanged.
+
 The last two are the newest and each carries one caveat worth stating before
 you write against it:
 

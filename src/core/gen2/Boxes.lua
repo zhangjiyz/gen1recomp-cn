@@ -16,6 +16,7 @@
 
 local Mail = require("src.core.gen2.Mail")
 local Save = require("src.core.gen2.Save")
+local Strings = require("src.core.Strings")
 
 local Boxes = {}
 
@@ -25,7 +26,7 @@ Boxes.PARTY_SIZE = Save.PARTY_SIZE
 
 -- SetDefaultBoxNames (engine/menus/intro_menu.asm): "BOX" then 1..14.
 function Boxes.defaultName(index)
-  return "BOX" .. tostring(index)
+  return Strings("BOX%d", index)
 end
 
 function Boxes.name(save, index)

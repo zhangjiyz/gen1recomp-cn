@@ -459,6 +459,13 @@ do
   eq(screen:statusTag({ status = "burn" }), "BRN", "BRN for burn")
   eq(screen:statusTag({ status = "freeze" }), "FRZ", "FRZ for freeze")
   eq(screen:statusTag({ status = "sleep" }), "SLP", "SLP for sleep")
+  local previousStatuses = DATA.gen2Statuses
+  DATA.gen2Statuses = {
+    paralyze = { label = "麻", hudLabel = "麻痹" },
+  }
+  eq(screen:statusTag(wild), "麻痹",
+    "the battle HUD reads the merged status registry")
+  DATA.gen2Statuses = previousStatuses
   eq(screen:statusTag({ status = "confuse" }), nil,
     "confusion is a substatus on the cart and shows no tag")
   eq(screen:statusTag({}), nil, "no status, no tag: the level prints")

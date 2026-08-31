@@ -941,14 +941,9 @@ function MartMenu:drawDescription()
   if self:isCancel() then return end
   local description = self:description()
   if not description then return end
-  -- The extractor leaves the description's own '<NEXT>' in place, and $4e
-  -- steps SCREEN_WIDTH * 2 from the line's start (home/text.asm
-  -- NextLineChar) -- which is the TEXT_LINE both rows already use.  '\n'
-  -- covers hand-written data.
-  local first, second = description:match("^(.-)<NEXT>(.*)$")
-  if not first then first, second = description:match("^(.-)\n(.*)$") end
-  Chrome.print(first or description, TEXT_X, TEXT_Y)
-  if second then Chrome.print(second, TEXT_X, TEXT_Y + TEXT_LINE) end
+  for _, row in ipairs(Chrome.descriptionRows(description)) do
+    Chrome.print(row.text, TEXT_X, TEXT_Y + row.row)
+  end
 end
 
 function MartMenu:drawQuantityBox(total)

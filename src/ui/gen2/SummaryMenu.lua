@@ -61,6 +61,7 @@ local Assets = require("src.render.Assets")
 local Chrome = require("src.ui.gen2.Chrome")
 local Font = require("src.render.Font")
 local GbcPalette = require("src.render.GbcPalette")
+local Battle = require("src.battle.gen2.Battle")
 local HpBar = require("src.battle.gen2.HpBar")
 local ItemEffects = require("src.core.gen2.ItemEffects")
 local Mon = require("src.battle.gen2.Mon")
@@ -226,10 +227,12 @@ end
 -- PlaceStatusString (engine/pokemon/mon_stats.asm): three letters, and a mon
 -- with no HP reads FNT whatever its status byte says.  Same lookup the party
 -- list makes; both screens call the same routine on the cart.
-local function statusText(mon)
+local function statusText(data, mon)
   if (mon.hp or 0) <= 0 then return "FNT" end
   local status = mon.status
   if not status then return nil end
+  local record = Battle.statusRecordFor(data, status)
+  if record then return record.hudLabel or record.label end
   local class = ItemEffects.STATUS_CLASS[tostring(status):lower()]
   return class and class:upper()
 end
@@ -520,7 +523,7 @@ function SummaryMenu:pinkPlacements()
     put(out, "POKéRUS", 1, 13)
   else
     if pokerus == "immune" then put(out, ".", 8, 8) end
-    put(out, statusText(mon) or "OK", 6, 13)
+    put(out, statusText(self.game and self.game.data, mon) or "OK", 6, 13)
   end
 
   -- PrintMonTypes writes type 1 at (1,15) and type 2 two rows below it, and
@@ -666,15 +669,11 @@ function SummaryMenu:moveDetailPlacements()
     put(out, "---", 16, 12)
   end
 
-  -- PrintMoveDescription at (1,14).  Descriptions join their lines with
-  -- <NEXT>, which is two rows down at the same column, so the second line is
-  -- at row 16 and not row 15.
+  -- PrintMoveDescription at (1,14).  Two-line cartridge descriptions retain
+  -- their blank middle row; a three-line translation uses rows 14-16.
   local description = def and def.description or ""
-  local ty = 14
-  for line in (tostring(description) .. "<NEXT>"):gmatch("(.-)<NEXT>") do
-    if ty > 16 then break end
-    if line ~= "" then put(out, line, 1, ty) end
-    ty = ty + 2
+  for _, row in ipairs(Chrome.descriptionRows(description)) do
+    put(out, row.text, 1, 14 + row.row)
   end
   return out
 end

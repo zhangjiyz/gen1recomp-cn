@@ -119,7 +119,7 @@ local function cursorStore(game)
 end
 
 -- home/text.asm:424
-local PAGE, SCROLL, LINE = "\f", "\v", "\n"
+local PAGE, SCROLL = "\f", "\v"
 
 -- home/text.asm:397
 local function messagePages(lines)
@@ -1092,11 +1092,11 @@ function PackMenu:drawDescription(ty)
   -- leaves in place, and $4e steps SCREEN_WIDTH * 2 from the line's own
   -- start (home/text.asm NextLineChar) -- TWO rows, the same metric every
   -- text box uses.  PrintItemDescription writes them from decoord 1, 14, so
-  -- the second line is row 16.  '\n' covers hand-written data.
-  local first, second = description:match("^(.-)<NEXT>(.*)$")
-  if not first then first, second = description:match("^(.-)" .. LINE .. "(.*)$") end
-  Chrome.printThrough(first or description, 1, ty, Chrome.DEFAULT_BOX_PALETTE)
-  if second then Chrome.printThrough(second, 1, ty + 2, Chrome.DEFAULT_BOX_PALETTE) end
+  -- the second line is row 16.  A three-line translation uses the otherwise
+  -- blank middle row as well; '\n' covers hand-written data.
+  for _, row in ipairs(Chrome.descriptionRows(description)) do
+    Chrome.printThrough(row.text, 1, ty + row.row, Chrome.DEFAULT_BOX_PALETTE)
+  end
 end
 
 -- The submenu box.  Every one of the seven headers is `menu_coords 0, top,

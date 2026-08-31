@@ -346,6 +346,25 @@ function Chrome.wrap(text, width)
   return lines
 end
 
+-- Description records on the original cart contain two lines separated by
+-- <NEXT> and leave a blank tile row between them.  Simplified Chinese can
+-- express the same official description in three shorter rows.  Keep the
+-- cartridge spacing for one/two-line records, but use all three available
+-- rows when a translation supplies a third line.
+function Chrome.descriptionRows(description)
+  local text = tostring(description or ""):gsub("<NEXT>", "\n")
+  local lines = {}
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    if line ~= "" then lines[#lines + 1] = line end
+  end
+  local step = #lines >= 3 and 1 or 2
+  local rows = {}
+  for i = 1, math.min(#lines, 3) do
+    rows[#rows + 1] = { text = lines[i], row = (i - 1) * step }
+  end
+  return rows
+end
+
 -- Print wrapped text from (tx, ty) downward, at most `rows` lines.
 function Chrome.printWrapped(text, tx, ty, width, rows)
   local lines = Chrome.wrap(text, width)

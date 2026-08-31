@@ -608,11 +608,10 @@ function ItemPcMenu:drawList()
   local def = row and self:def(row.id)
   local description = def and def.description
   if description then
-    local first, second = description:match("^(.-)<NEXT>(.*)$")
-    if not first then first, second = description:match("^(.-)\n(.*)$") end
     Chrome.box(0, 12, 20, 6)
-    Chrome.print(first or description, 1, 14)
-    if second then Chrome.print(second, 1, 16) end
+    for _, textRow in ipairs(Chrome.descriptionRows(description)) do
+      Chrome.print(textRow.text, 1, 14 + textRow.row)
+    end
   else
     Chrome.box(0, 12, 20, 6)
   end

@@ -112,6 +112,13 @@ check("wrap loses no words", rejoined, "What will CYNDAQUIL do?")
 check("empty wraps to nothing", #Chrome.wrap("", 8), 0)
 check("wrap keeps a single word whole", #Chrome.wrap("CYNDAQUIL", 2), 1)
 
+check("two-line description preserves cart spacing",
+  Chrome.descriptionRows("first<NEXT>second")[2].row, 2)
+check("three-line translation uses middle row",
+  Chrome.descriptionRows("甲\n乙\n丙")[2].row, 1)
+check("three-line translation reaches bottom row",
+  Chrome.descriptionRows("甲\n乙\n丙")[3].row, 2)
+
 -- Chrome.number pads the way PrintNum does.
 check("number pads with spaces", Chrome.number(5, 3), "  5")
 check("number pads with zeroes", Chrome.number(5, 3, true), "005")

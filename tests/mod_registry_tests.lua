@@ -212,7 +212,10 @@ return function(mod)
   mod.content.items:remove("THUNDER_STONE")
   mod.content.items:register("THUNDER_STONE",
     { id = "THUNDER_STONE", name = "THUNDER STONE", price = 9999 })
-  mod.content.items:register("NEW_ITEM", { id = "NEW_ITEM", name = "NEW ITEM", price = 10 })
+  mod.content.items:register("NEW_ITEM", {
+    id = "NEW_ITEM", name = "NEW ITEM", price = 10,
+    description = "A translated description."
+  })
 end
 ]],
 }
@@ -228,6 +231,8 @@ check(removeLoader.content.items:has("POTION") == false,
 check(removeData.items.THUNDER_STONE ~= nil
   and removeData.items.THUNDER_STONE.price == 9999,
   "register after remove resurrects the id")
+check(removeData.items.NEW_ITEM.description == "A translated description.",
+  "item descriptions are accepted by the shared registry schema")
 local itemIds = {}
 for id in removeLoader.content.items:each() do itemIds[#itemIds + 1] = id end
 table.sort(itemIds)

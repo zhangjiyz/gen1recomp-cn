@@ -3824,7 +3824,12 @@ local STATUS_TAGS = {
 }
 
 function BattleState:statusTag(mon, side)
-  return mon and STATUS_TAGS[self:hudStatus(mon, side)] or nil
+  if not mon then return nil end
+  local status = self:hudStatus(mon, side)
+  local data = self.game and self.game.data
+  local record = Battle.statusRecordFor(data, status)
+  if record and record.substatus then return nil end
+  return (record and (record.hudLabel or record.label)) or STATUS_TAGS[status]
 end
 
 -- ♂ / ♀ after the level, or nil for a genderless species (PrintPlayerHUD
