@@ -358,9 +358,7 @@ local options = OptionsMenu.new(optionsGame, {
 })
 -- The cart's seven rows, then the port's: CONTROLS, audio, PERFORMANCE,
 -- speed, display, SHADER FX + SHADER FX 2 (the second slot added alongside
--- the dual-shader feature), video mode, screen position, the mobile-gated
--- touch three (buildRows), MAX FPS, BATTLE BG and CANCEL.
-check("twenty-eight rows", #OptionsMenu.ROWS, 28)
+check("thirty-one rows", #OptionsMenu.ROWS, 31)
 check("the cart's rows come first", OptionsMenu.ROWS[7].key, "frame")
 check("then the rebind screen", OptionsMenu.ROWS[8].id, "controls")
 check("then the port's audio group", OptionsMenu.ROWS[9].key, "musicVol")
@@ -1499,10 +1497,10 @@ local expnGear = newGear({ landmark = "LANDMARK_PALLET_TOWN",
   clock = { hour = 14, minute = 0, weekday = 1 } })
 check("and airs with it", expnGear:stations()[7].station, "POKE_FLUTE_RADIO")
 
--- .EvolutionRadio wants STATUSFLAGS_ROCKET_SIGNAL_F and one of three
--- landmarks around the Lake of Rage.
+-- .EvolutionRadio wants STATUSFLAGS_ROCKET_SIGNAL_F.
+-- pokegold constants/engine_flags.asm
 local rageGear = newGear({ landmark = "LANDMARK_LAKE_OF_RAGE",
-  save = { flags = { ROCKET_SIGNAL = true } },
+  save = { engineFlags = { [14] = true } },
   clock = { hour = 14, minute = 0, weekday = 1 } })
 check("20.5 airs by the Lake of Rage", rageGear:stations()[8].station,
   "EVOLUTION_RADIO")

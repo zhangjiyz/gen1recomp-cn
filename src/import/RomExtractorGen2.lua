@@ -40,6 +40,7 @@ local PAL_BG_NAMES = {
   "GRAY", "RED", "GREEN", "WATER", "YELLOW", "BROWN", "ROOF", "TEXT",
 }
 local PAL_BG_ROOF = 6 -- 0-based slot index
+local PAL_BG_WATER, PAL_BG_YELLOW = 3, 4
 -- Time-of-day palette sets, in wTimeOfDayPal order (MORN_F..DARKNESS_F).
 local DAYTIMES = { "MORN", "DAY", "NITE", "DARK" }
 -- gfx/tilesets/bg_tiles.pal: morn/day/nite/dark/indoor (8 each) plus the two
@@ -422,6 +423,9 @@ end
 local UNOWN_FONT_TILES = 27
 local UNOWN_FONT_WIDE = 3
 
+-- ../pokecrystal/engine/events/map_name_sign.asm:129
+local MAP_SIGN_TILES = 14
+
 function RomExtractorGen2:extractFont()
   self:beginStage("Fonts")
   local font = self:symbol("Font")
@@ -546,6 +550,18 @@ function RomExtractorGen2:extractFont()
     data.unownBase = 0x40 -- FIRST_UNOWN_CHAR
     data.source = data.source .. ", UnownFont"
   end
+  -- ../pokecrystal/gfx/font.asm:60
+  -- ../pokecrystal/engine/events/map_name_sign.asm:127-132
+  if self.symbols["MapEntryFrameGFX"] then
+    local sign = self:symbol("MapEntryFrameGFX")
+    self:write2bpp(
+      self.rom:bytes(sign.bank, sign.address, MAP_SIGN_TILES * 16),
+      MAP_SIGN_TILES * 8, 8, "fonts/map_entry_sign.png")
+    data.imageMapSign = "assets/generated/fonts/map_entry_sign.png"
+    data.mapSignTiles = MAP_SIGN_TILES
+    data.mapSignBase = 0x60
+    data.source = data.source .. ", MapEntryFrameGFX"
+  end
   self:tick("Fonts", 4, 5)
 
   self:write("font", data)
@@ -610,6 +626,41 @@ function RomExtractorGen2:readPalMap(address)
   for i, byte in ipairs(raw) do
     out[(i - 1) * 2 + 1] = byte % 8 + 1
     out[(i - 1) * 2 + 2] = math.floor(byte / 16) % 8 + 1
+  end
+  return out
+end
+
+-- engine/tilesets/tileset_palettes.asm:1
+local SPECIAL_TILESET_PALETTES = {
+  TILESET_POKECOM_CENTER = "PokeComPalette",
+  TILESET_BATTLE_TOWER_INSIDE = "BattleTowerInsidePalette",
+  TILESET_ICE_PATH = "IcePathPalette",
+  TILESET_HOUSE = "HousePalette",
+  TILESET_RADIO_TOWER = "RadioTowerPalette",
+  TILESET_MANSION = "MansionPalette1",
+}
+
+function RomExtractorGen2:specialTilesetPalettes()
+  if self.edition ~= "crystal" then return nil end
+  local out = nil
+  for tileset, label in pairs(SPECIAL_TILESET_PALETTES) do
+    local at = self.symbols[label]
+    if at then
+      local set = {}
+      for slot = 0, 7 do
+        set[slot + 1] = self:colors(at[1], at[2] + slot * 8, 4)
+      end
+      out = out or {}
+      out[tileset] = set
+    end
+  end
+  -- MansionPalette1's ninth palette -- engine/tilesets/tileset_palettes.asm:113
+  local one, two = self.symbols["MansionPalette1"], self.symbols["MansionPalette2"]
+  local mansion = out and out.TILESET_MANSION
+  if mansion and one and two then
+    mansion[PAL_BG_YELLOW + 1] = self:colors(two[1], two[2], 4)
+    mansion[PAL_BG_WATER + 1] = self:colors(one[1], one[2] + 6 * 8, 4)
+    mansion[PAL_BG_ROOF + 1] = self:colors(one[1], one[2] + 8 * 8, 4)
   end
   return out
 end
@@ -723,6 +774,7 @@ function RomExtractorGen2:extractPalettes()
     roofSlot = PAL_BG_ROOF + 1,
     bg = bg,
     environments = environments,
+    specialTilesets = self:specialTilesetPalettes(),
     objects = objects,
     roofs = roofs,
     pokemon = pokemon,
@@ -1171,6 +1223,11 @@ function RomExtractorGen2:readMapEvents(bank, address, spriteOrder)
 
   local objectCount = self.rom:byte(bank, cursor)
   cursor = cursor + 1
+  -- The bus address of the first object_event, which is exactly the pointer
+  -- ReadObjectEvents (home/map.asm) leaves in wCurMapObjectEventsPointer: DE
+  -- after the count byte. A .sav export re-anchoring a save onto this map
+  -- writes it back so a later ReloadMapEvents reads the right list.
+  local objectEventsAddr = cursor
   local objects = {}
   for i = 1, objectCount do
     local spriteId = self.rom:byte(bank, cursor)
@@ -1204,6 +1261,7 @@ function RomExtractorGen2:readMapEvents(bank, address, spriteOrder)
   return {
     warps = warps, coordEvents = coordEvents,
     bgEvents = bgEvents, objects = objects,
+    objectEventsAddr = objectEventsAddr,
   }
 end
 
@@ -1322,6 +1380,7 @@ function RomExtractorGen2:extractMaps()
       coordEvents = events.coordEvents,
       bgEvents = events.bgEvents,
       objects = events.objects,
+      objectEventsAddr = events.objectEventsAddr,
       sceneScripts = sceneScripts,
       callbacks = callbacks,
       scripts = { bank = eventsBank, address = scriptsAddr },
@@ -2390,7 +2449,9 @@ function RomExtractorGen2:extractCredits()
       CREDITS_THEEND_TILES * 16), 64, 16, "credits/theend.png")
     data.theEnd = "assets/generated/credits/theend.png"
     -- Credits_TheEnd: hlcoord 6, 8 and 6, 9, eight tiles apiece.
-    data.theEndX, data.theEndY, data.theEndWidth = 6, 8, 8
+    -- ../pokecrystal/engine/movie/credits.asm:595
+    data.theEndX, data.theEndWidth = 6, 8
+    data.theEndY = (self.edition == "crystal") and 9 or 8
   end
   self:tick("Credits", 2, steps)
 
@@ -2415,11 +2476,15 @@ function RomExtractorGen2:extractCredits()
 
   if self.symbols["CreditsPalettes"] then
     local pal = self:symbol("CreditsPalettes")
+    -- ../pokecrystal/engine/movie/credits.asm:502
+    local crystal = (self.edition == "crystal")
+    local setCount = crystal and 12 or 6
     local palettes = {}
-    for set = 0, 5 do
+    for set = 0, setCount - 1 do
       palettes[set + 1] = self:colors(pal.bank, pal.address + set * 8, 4)
     end
     data.palettes = palettes
+    data.palettesPerScene = crystal and 3 or 1
   end
   self:tick("Credits", steps, steps)
 
@@ -5875,6 +5940,20 @@ function RomExtractorGen2:extractMenuGfx()
       8, 8, "emotes/grass_rustle.png", true)
     emotes.grassRustle = "assets/generated/emotes/grass_rustle.png"
   end
+  -- data/sprites/emotes.asm:19, engine/overworld/map_objects.asm:1995
+  local jumpShadow = self.symbols["JumpShadowGFX"]
+  if jumpShadow then
+    self:write2bpp(self.rom:bytes(jumpShadow[1], jumpShadow[2], 16),
+      8, 8, "emotes/jump_shadow.png", true)
+    emotes.jumpShadow = "assets/generated/emotes/jump_shadow.png"
+  end
+  -- engine/events/field_moves.asm:390-407
+  local cutGrass = self.symbols["CutGrassGFX"]
+  if cutGrass then
+    self:write2bpp(self.rom:bytes(cutGrass[1], cutGrass[2], 4 * 16),
+      32, 8, "emotes/cut_grass.png", true)
+    emotes.cutGrass = "assets/generated/emotes/cut_grass.png"
+  end
   -- LoadFishingGFX (engine/events/fishing_gfx.asm:1-21): three 16x8 pose rows
   -- over the standing frames' bottom tiles, then the rod tiles $fc/$fd (#1708).
   local fishing = self.symbols["FishingGFX"]
@@ -6491,6 +6570,14 @@ function RomExtractorGen2:pokegearGfx()
   self:write2bpp(sprites, 16, 40, "pokegear/sprites.png", true)
   gear.sprites = "assets/generated/pokegear/sprites.png"
   gear.spritesWide = 2
+
+  -- engine/pokegear/pokegear.asm:2298
+  if self.symbols["PokedexNestIconGFX"] then
+    local nest = self:symbol("PokedexNestIconGFX")
+    self:write2bpp(self.rom:bytes(nest.bank, nest.address, 16), 8, 8,
+      "pokegear/nest_icon.png", true)
+    gear.nestIcon = "assets/generated/pokegear/nest_icon.png"
+  end
 
   local cells = SCREEN_AREA
   gear.cards = {

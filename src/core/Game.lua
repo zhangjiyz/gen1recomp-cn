@@ -21,6 +21,12 @@ local function renderVisible(stack, state)
   return state and (not stack.renderVisible or stack:renderVisible(state))
 end
 
+-- Vanilla defaults for ModRuntime.call, hoisted to module level: called from
+-- the 60Hz logic step / per-frame speed resolution, an inline closure here
+-- allocated a fresh function every tick for no behavioral gain.
+local function noop() end
+local function resolveLogicSpeedVanilla(g) return g:_resolveLogicSpeed() end
+
 -- dev-mode gate for the F5/backtick hotkeys; false keeps every src/dev
 -- module unloaded, so a player boot never touches a byte of dev code
 local devMode = os.getenv("POKEPORT_DEV") == "1" or _G.POKEPORT_DEV_MODE == true
@@ -32,7 +38,9 @@ local function bootScreens(game)
   return (boot and boot.screens) or {}
 end
 
-function Game:load()
+function Game:load(opts)
+  opts = opts or {}
+  local arena = opts.arena
   self.data = Data
   self.sessionStartedAt = os.time()
   Data:load()
@@ -42,7 +50,15 @@ function Game:load()
   -- the rest of the game consumes.  A broken mod is reported and skipped by
   -- the loader without preventing the base game from booting.
   self.mods = ModLoader.new()
-  self.mods:load(Data)
+  if arena then
+    self.mods:load(Data, {
+      mode = (arena.profile and arena.profile.kind == "cart")
+        and "cartOnly" or "disableAll",
+      cartId = opts.cartId,
+    })
+  else
+    self.mods:load(Data)
+  end
   self.modStatus = self.mods:status()
   -- render pipelines dispatch off the merged dataset; point them at the
   -- one the mods just merged into before anything can draw a frame
@@ -106,7 +122,9 @@ function Game:load()
   -- boot into the title screen (engine/movie/title.asm); NEW GAME runs
   -- the Oak speech + naming, CONTINUE restores the save.  The headless
   -- autopilot skips straight into the overworld.
-  if os.getenv("POKEPORT_AUTOPILOT") then
+  if arena then
+    self:enterArena(arena)
+  elseif os.getenv("POKEPORT_AUTOPILOT") then
     StateStack:push(OverworldState, self.save.player.map,
                     self.save.player.x, self.save.player.y, self.save.player.facing)
   else
@@ -180,6 +198,28 @@ function Game:startNewGame(opts)
   end
 end
 
+function Game:enterArena(spec)
+  local version = require("src.core.GameVersion").get()
+  if spec.slotId then pcall(SaveData.setActiveSlot, version, spec.slotId) end
+  local loaded = SaveData.load()
+  if loaded then
+    local activeMods = self.modStatus and self.modStatus.loaded
+    SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+    self.saveReport = SaveData.validate(loaded, self.data)
+    self.save = loaded
+    loaded.startMenuIndex = nil
+    self.startMenuIndex = nil
+    self:adoptSave(loaded)
+    self:applyOptions(loaded.options)
+    local stamp = require("src.battle.BattleState").stampOT
+    for _, mon in ipairs(loaded.party or {}) do stamp(loaded, mon) end
+  else
+    Logger.warn("arena: save slot %s could not be loaded", tostring(spec.slotId))
+  end
+  self.linkSession = true
+  StateStack:push(require("src.ui.ArenaState").new(self, spec))
+end
+
 -- the title screen with its NEW GAME / CONTINUE wiring; used at boot
 -- and by the START-menu QUIT confirmation
 function Game:makeTitleState()
@@ -243,8 +283,12 @@ function Game:touchSkinHotkey(action, pressed)
   end
 end
 
-function Game:breakLink(err)
-  Logger.error("link: torn down after an error\n%s", tostring(err))
+function Game:breakLink(err, source)
+  if source == "engine" then
+    Logger.error("link: engine error, link torn down\n%s", tostring(err))
+  else
+    Logger.error("link: torn down after an error\n%s", tostring(err))
+  end
   self.linkSession = nil
   local net = self.linkNet
   self.linkNet = nil
@@ -259,7 +303,9 @@ function Game:breakLink(err)
   pcall(function()
     local Strings = require("src.core.Strings")
     local TextBox = require("src.render.TextBox")
-    stack:push(TextBox.new(self, Strings("The link was\nbroken.")))
+    stack:push(TextBox.new(self, source == "engine"
+      and Strings("Something broke\nduring the link.")
+      or Strings("The link was\nbroken.")))
   end)
 end
 
@@ -268,7 +314,7 @@ function Game:step(dt)
   -- the same fixed-step boundary as a physical controller.  Run them before
   -- Input:step promotes queued edges so a button chosen here is visible to
   -- this logic tick, not one tick later.  With no wrapper this is a no-op.
-  ModRuntime.call("input.step", function() end, self, dt)
+  ModRuntime.call("input.step", noop, self, dt)
   self.input:step()
   -- A+B+SELECT+START held for 16 steps: SoftReset (home/init.asm) stops the
   -- audio, whites the palettes out and falls through into Init, i.e. the
@@ -292,7 +338,7 @@ function Game:step(dt)
   if self.linkNet and not self.linkNet.closed then
     local ok, err = pcall(self.linkNet.update, self.linkNet)
     if not ok then
-      self:breakLink(err)
+      self:breakLink(err, "transport")
       return
     end
   end
@@ -300,7 +346,7 @@ function Game:step(dt)
     local ok, err = xpcall(function() self.stack:update(dt) end,
       function(e) return debug.traceback(tostring(e), 2) end)
     if not ok then
-      self:breakLink(err)
+      self:breakLink(err, "engine")
       return
     end
   else
@@ -354,7 +400,7 @@ function Game:logicSpeed()
   -- returns a bad value, so an unclamped result would flow straight into
   -- the FixedStep accumulator math below and freeze or destabilize logic.
   return GameSpeed.clamp(ModRuntime.call("core.logic_speed",
-    function(g) return g:_resolveLogicSpeed() end, self))
+    resolveLogicSpeedVanilla, self))
 end
 
 function Game:update(dt)
@@ -362,11 +408,13 @@ function Game:update(dt)
   -- Give the accumulator room for one full frame at the current speed,
   -- or the anti-spiral clamp quietly caps every level above ~15X.
   local speed = self:logicSpeed()
-  FixedStep.maxAccum = math.max(0.25, speed * FixedStep.STEP * 1.5)
-  FixedStep:update(dt * speed)
+  FixedStep.maxAccum = FixedStep.catchupLimit(speed)
+  FixedStep:update(dt, speed)
   -- Audio runs off real time at a fixed 60Hz regardless of game speed or
   -- display refresh, so fades and chip synthesis keep their intended tempo
-  -- whether we are at 1X, 10X, or running with vsync disabled.
+  -- whether we are at 1X, 10X, or running with vsync disabled.  One-shot
+  -- SFX stay at natural pitch too (#1990/#1991/#1997); WaitForSoundToFinish
+  -- gates still release early at high speed via their logic-frame budget.
   local step = FixedStep.STEP
   self.audioAccum = math.min((self.audioAccum or 0) + dt, 0.25)
   while self.audioAccum >= step do
@@ -382,12 +430,15 @@ function Game:update(dt)
   pcall(function() require("src.core.DiscordPresence").update(dt) end)
   self:updateSync(dt)
   -- Steady-state memory backstop: advance the incremental collector one
-  -- small step every rendered frame.  The heavy GPU objects are now freed
-  -- explicitly (map eviction, battle exit, canvas/renderer swaps), so this
-  -- only has to keep ordinary Lua-heap garbage (per-frame tables/closures)
-  -- from drifting upward over a long session, and to spread collection out
-  -- so the default lazy schedule never batches it into a visible pause.
-  if collectgarbage then collectgarbage("step", 1) end
+  -- small step every few rendered frames.  The heavy GPU objects are now
+  -- freed explicitly (map eviction, battle exit, canvas/renderer swaps), so
+  -- this only has to keep ordinary Lua-heap garbage (per-frame tables) from
+  -- drifting upward over a long session, and to spread collection out so the
+  -- default lazy schedule never batches it into a visible pause.  Every 4th
+  -- frame (not every frame) so the stepping itself does not compete with
+  -- the frame budget on weak single-core handhelds.
+  self.gcStepFrame = (self.gcStepFrame or 0) + 1
+  if collectgarbage and self.gcStepFrame % 4 == 0 then collectgarbage("step", 1) end
 end
 
 -- render.zones' identity default: unhooked, the zone list reaches the blit
@@ -882,26 +933,20 @@ function Game:gamepadpressed(joystick, button)
     end)
     selectHeld = ok and down == true
   end
-  -- shoulder buttons and analog triggers cycle GAME SPEED (R1/RB or
-  -- R2/RT = faster, L1/LB or L2/LT = slower; same as keyboard hotkey
-  -- 1).  LÖVE reports an analog trigger as gamepadpressed once it
-  -- crosses the press threshold, so a trigger pull lands here like any
-  -- other pad button.  Skip while Select is held so Select+L can reach
-  -- displayChordDigit ("7").
-  if not selectHeld then
-    if button == "rightshoulder" or button == "righttrigger" then
-      self:_cycleSpeed(1)
-      return
-    elseif button == "leftshoulder" or button == "lefttrigger" then
-      self:_cycleSpeed(-1)
-      return
-    end
-  end
-  -- BindingsMenu's pad capture rides the same top-state routing as keys
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then
     top:onGamepadPressed(button)
     return
+  end
+  if not selectHeld then
+    local action = Input:padAction(button)
+    if action == "speedUp" then
+      self:_cycleSpeed(1)
+      return
+    elseif action == "speedDown" then
+      self:_cycleSpeed(-1)
+      return
+    end
   end
   -- Select+face display chords → same digit path as Game:keypressed
   -- (COLORS/TILT/pipelines). Intercept before Input so face does not
@@ -1280,9 +1325,9 @@ function Game:applyOptions(opts)
   -- it has to be the last word on the window (it drops fullscreen to hold)
   require("src.core.FaithfulRes").applyOptions(opts)
   require("src.core.ScreenPosition").applyOptions(opts)
-  -- normalizes a nil/garbage cap to the 60 default, so old saves with no
-  -- fpsCap key pace at the standard rate (issue #88)
+  require("src.core.VSync").applyOptions(opts)
   require("src.core.FrameCap").applyOptions(opts)
+  require("src.core.PresentSync").applyFixedStepPeriod()
   -- Scale the optional presentation extras to the device's performance
   -- tier.  Every heavy feature was just applied from the stored options
   -- above; here we clamp the *live* state down for a weaker device without
@@ -1297,8 +1342,7 @@ function Game:applyOptions(opts)
   Zoom.allowSurvey = caps.survey
   if not caps.survey and Zoom.offset < 0 then Zoom.offset = 0 end
   if caps.fpsMax then
-    local FrameCap = require("src.core.FrameCap")
-    if FrameCap.current > caps.fpsMax then FrameCap.apply(caps.fpsMax) end
+    require("src.core.FrameCap").clampToPerformance(caps.fpsMax)
   end
   Input:applyBindings(opts.bindings)
   TouchControls:applyOptions(opts)

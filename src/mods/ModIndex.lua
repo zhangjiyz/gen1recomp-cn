@@ -521,7 +521,18 @@ function ModIndex.matches(entry, query)
   return true
 end
 
--- filter(entries, opts) -> a new array.  opts = { query, category, base, tag }.
+function ModIndex.targets(entry)
+  local ModTargets = require("src.mods.ModTargets")
+  return (ModTargets.normalize(type(entry) == "table" and entry.games or nil))
+end
+
+function ModIndex.targetLabel(entry)
+  local ModTargets = require("src.mods.ModTargets")
+  local ids = ModIndex.targets(entry)
+  if #ids == 0 then return nil end
+  return ModTargets.chip({ games = ids })
+end
+
 -- Category, base and tag compare case-insensitively; feed order (already
 -- sorted by title) is preserved.  `base` is the cart-side equivalent of a
 -- mod's category: a cart plays as exactly one game and has no categories.
@@ -530,9 +541,31 @@ function ModIndex.filter(mods, opts)
   local want = opts.category and tostring(opts.category):lower() or nil
   local wantBase = opts.base and tostring(opts.base):lower() or nil
   local wantTag = opts.tag and tostring(opts.tag):lower() or nil
+  local wantGames = nil
+  if opts.game and opts.game ~= "all" then
+    local ModTargets = require("src.mods.ModTargets")
+    local ids = ModTargets.expand(opts.game)
+    if ids then
+      wantGames = {}
+      for _, id in ipairs(ids) do wantGames[id] = true end
+    end
+  end
   local out = {}
   for _, entry in ipairs(mods or {}) do
     local keep = ModIndex.matches(entry, opts.query)
+    if keep and wantGames then
+      if ModIndex.isCart(entry) then
+        keep = wantGames[tostring(entry.base or ""):lower()] == true
+      else
+        local ids = ModIndex.targets(entry)
+        if #ids > 0 then
+          keep = false
+          for _, id in ipairs(ids) do
+            if wantGames[id] then keep = true; break end
+          end
+        end
+      end
+    end
     if keep and want then
       keep = false
       for _, c in ipairs(entry.categories or {}) do
@@ -878,6 +911,42 @@ end
 function ModIndex.fetchText(url)
   if type(url) ~= "string" or url == "" then return nil, "no description" end
   return ModIndex.httpGet(url)
+end
+
+function ModIndex.beginFetchText(url)
+  local h = { url = url, stage = "start" }
+  if type(url) ~= "string" or url == "" then
+    h.stage, h.err = "done", "no description"
+  end
+  return h
+end
+
+function ModIndex.pumpFetchText(h)
+  if not h then return true, nil, "no handle" end
+  if h.stage == "done" then return true, h.body, h.err end
+  local Fetch = require("src.net.Fetch")
+  if h.stage == "start" then
+    h.job = Fetch.get(h.url, { userAgent = "gen1recomp-mod-index" })
+    h.stage = "fetching"
+    return false
+  end
+  local st = Fetch.poll(h.job)
+  if st.status == "pending" then return false end
+  Fetch.release(h.job)
+  h.job, h.stage = nil, "done"
+  if st.status == "ok" and type(st.body) == "string" and st.body ~= "" then
+    h.body = st.body
+    return true, h.body
+  end
+  h.err = st.err or "description fetch failed"
+  return true, nil, h.err
+end
+
+function ModIndex.cancelFetchText(h)
+  if not h or not h.job then return end
+  local Fetch = require("src.net.Fetch")
+  pcall(Fetch.cancel, h.job)
+  h.job, h.stage = nil, "done"
 end
 
 -- Download a thumbnail into the save directory and return the love.filesystem

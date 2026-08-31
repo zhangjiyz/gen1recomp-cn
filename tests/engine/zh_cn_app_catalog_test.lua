@@ -41,6 +41,17 @@ eq(Strings("SHADER FX 2"), "着色器效果2", "port-added shader row")
 eq(Strings("%d INSTALLED", 3), "已安装3个模组", "port-added mod count")
 eq(Strings("%d OPTIONS", 4), "4 个选项", "grouped option count")
 eq(Strings("BATTLE OPTIONS"), "战斗选项", "grouped battle options")
+eq(Strings("Connected to the lobby."), "已连接到大厅。",
+  "online lobby status")
+eq(Strings("Host a battle"), "主持对战", "online host action")
+eq(Strings("Waiting for the other trainer to pick"),
+  "等待另一位训练家选择", "dynamic online trade stage")
+eq(Strings("%d players online, %d open lobbies", 3, 2),
+  "3 名玩家在线，2 个公开房间", "formatted online player counts")
+eq(Strings("Link desync! %s differs. Are both games the same version and mods?",
+  "rng"), "连接不同步！rng 存在差异。双方的游戏版本和模组是否一致？",
+  "online desync error")
+eq(Strings("VSYNC"), "垂直同步", "new video option")
 eq(Strings("Select Mod (.zip)"), "选择模组（.zip）", "mod file picker title")
 eq(Strings("Choose a\nPOKéMON BOX."), "请选择一个\n宝可梦盒子。",
   "box selection prompt")

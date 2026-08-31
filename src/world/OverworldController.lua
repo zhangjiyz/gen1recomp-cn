@@ -85,6 +85,25 @@ local HEAL_BALL_XY = {
 -- swaps the two middle shades of the monitor/ball art in place
 local HEAL_FLASH_MAP = { [0] = 0, [1] = 2, [2] = 1, [3] = 3 }
 
+-- engine/overworld/healing_machine.asm:54
+local HEAL_FLASH_MAP_GBC = { [0] = 0, [1] = 0, [2] = 1, [3] = 2 }
+
+-- engine/overworld/healing_machine.asm:74
+local function healMachineShader(visible)
+  local base = PaletteFX.usesGbcPack() and PaletteFX.healMachineObp() or nil
+  if not base and visible then return nil end
+  local shader = PaletteFX.shader()
+  if not shader then return nil end
+  local colors = base or PaletteFX.GRAYS
+  if not visible then
+    colors = PaletteFX.permute(colors,
+      base and HEAL_FLASH_MAP_GBC or HEAL_FLASH_MAP)
+  end
+  PaletteFX.sendColors(shader, colors)
+  love.graphics.setShader(shader)
+  return shader
+end
+
 -- scripts/VermilionDock.asm:39 VermilionDockSSAnneLeavesScript: her hull is
 -- the four blocks (5..8, 1..2) of VermilionDock.blk
 local SS_ANNE_BLOCK = { x = 5, y = 1, w = 4, h = 2 }
@@ -528,6 +547,8 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- one-shot set by play_music opts.keep.
   local keepMusic = (opts and opts.keepMusic) or self.keepMusicOnce
   self.keepMusicOnce = nil
+  -- home/overworld.asm ln 2340, player_animations.asm ln 64
+  if opts and opts.via == "fly" then keepMusic = true end
   if not keepMusic then
     -- ..(home/overworld.asm ln 2346)
     local Music = require("src.core.Music")
@@ -975,7 +996,7 @@ end
 
 -- Start a battle behind the into-battle transition: flash, then the
 -- wipe picked by trainer/level/dungeon (GetBattleTransitionID).
-function OverworldState:pushBattle(battle)
+function OverworldState:pushBattle(battle, trainerNpc)
   local BattleTransition = require("src.render.BattleTransition")
   local lead
   for _, mon in ipairs(Game.save.party) do
@@ -992,13 +1013,24 @@ function OverworldState:pushBattle(battle)
   -- job now -- the one choke point every battle passes through on exit,
   -- guaranteed regardless of which caller pushed the battle -- so this
   -- function only owns the entry wipe.
+  -- engine/battle/battle_transitions.asm:28
+  self.battleOamKeep = trainerNpc or false
+  self.wipeSpritesFn = function() self:drawWipeSprites() end
   Game.stack:push(BattleTransition.new(Game, function()
+    self.battleOamKeep = nil
+    self.wipeSpritesFn = nil
     Game.stack:push(battle)
   end, {
     trainer = battle.kind == "trainer",
     stronger = lead ~= nil and enemyLevel >= lead.level + 3,
     dungeon = self:isDungeonTransitionMap(),
   }))
+end
+
+-- engine/battle/battle_transitions.asm:28
+function OverworldState:oamCulled(e)
+  if self.battleOamKeep == nil then return false end
+  return e ~= self.player and e ~= self.battleOamKeep
 end
 
 -- -------------------------------------------------------------------------
@@ -1107,6 +1139,8 @@ function OverworldState:updateParallel()
 end
 
 function OverworldState:update(dt)
+  self.battleOamKeep = nil
+  self.wipeSpritesFn = nil
   -- deferred cutscene launch (see queueScript): run a queued script only
   -- once the triggering warp's transition has finished, its runner has gone
   -- dead, and no scripted walk is mid-step.  This is how the HALL_OF_FAME
@@ -1133,6 +1167,7 @@ function OverworldState:update(dt)
       if da.onDone then da.onDone() end
     end
   end
+  self:tickPoisonFlash()
   -- scripts/VermilionDock.asm:80 .shift_columns_up
   if self.shipAnim and not self.shipAnim.gone then
     local sa = self.shipAnim
@@ -1245,6 +1280,9 @@ function OverworldState:update(dt)
     if self.flyArrive.t >= #FLY_PATH_IN * 3 then
       self.flyArrive = nil
       self.player.inputLocked = false
+      -- engine/overworld/player_animations.asm ln 64
+      require("src.core.Music").playMap(
+        Game.data, self.map.id, Game.save.onBike, self.player.surfing, nil)
     end
   end
   if self.spinArrive and not self.player.spinFrames then
@@ -2753,13 +2791,14 @@ function OverworldState:billsHouseBillExits()
   local ctx = { game = Game, save = Game.save, overworld = self }
   Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
   require("src.world.PikachuFollower").onBillExitedMachine(Game, self)
+  local bill
   local function done()
     Game.save.flags.EVENT_MET_BILL = true
     Game.save.flags.EVENT_MET_BILL_2 = true
     require("src.core.Music").playMap(Game.data, self.map.id,
                                       Game.save.onBike, self.player.surfing)
+    self:billsHouseSSTicketScene(bill)
   end
-  local bill
   for _, n in ipairs(self.npcs) do
     if n.def and n.def.name == "BILLSHOUSE_BILL1" then bill = n break end
   end
@@ -2775,6 +2814,22 @@ function OverworldState:billsHouseBillExits()
       self:scriptMove(bill, "down", 1, done)
     end)
   end)
+end
+
+-- pokeyellow scripts/BillsHouse.asm:211, :232
+function OverworldState:billsHouseSSTicketScene(bill)
+  if not GameVersion.isYellow() then return end
+  local function talk()
+    self.player.facing = "up"
+    if bill then bill.facing = "down" end
+    self:showMapText("TEXT_BILLSHOUSE_BILL_SS_TICKET", bill)
+  end
+  if not bill then
+    talk()
+    return
+  end
+  -- RLE_1e219, pokeyellow scripts/BillsHouse.asm:228
+  self:scriptMove(self.player, "right", 3, talk)
 end
 
 -- Any hidden item still unfound NEAR the player? (the ITEMFINDER,
@@ -3564,7 +3619,8 @@ end
 -- caller already showed the box, so the battle starts without a second
 -- one (#869).
 function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText,
-                                      endBattleSound, endBattleIsReward)
+                                      endBattleSound, endBattleIsReward,
+                                      endBattleSoundPage)
   local d = npc.def
   Runtime.emit("world.trainer_engaged", { npc = npc, trainerClass = d.trainerClass,
                                           partyIndex = d.trainerParty })
@@ -3616,9 +3672,9 @@ function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText
     -- cuts (#282).  Substituted here because BattleState:say takes finished
     -- text, while TextBox expanded the {PLAYER}/{RIVAL} tokens itself.
     battle.endBattleText = wonText and TextBox.substitute(Game, wonText) or nil
-    -- the badge jingle rides the armed line's first page on the battle
-    -- screen (sound_get_item_1 in _TX_PRE dialogue; see gyms.lua) (#1606)
+    -- scripts/PewterGym.asm:156-159
     battle.endBattleSound = endBattleText ~= nil and endBattleSound or nil
+    battle.endBattleSoundPage = endBattleText ~= nil and endBattleSoundPage or nil
     -- one truth for both checkVictoryRewards call sites; endBattleIsReward
     -- = false marks an armed line that is NOT the victories dialogue (#1606)
     battle.rewardDialogueShown = endBattleText ~= nil
@@ -3641,7 +3697,7 @@ function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText
         if onDone then onDone() end
       end
     end
-    self:pushBattle(battle)
+    self:pushBattle(battle, npc)
   end
   local function prepareBattle()
     if not Runtime.wantsHook("trainer.before_battle") then
@@ -3998,6 +4054,28 @@ end
 
 -- -------------------------------------------------------------------------
 -- step events
+-- engine/gfx/screen_effects.asm:7-8
+function OverworldState:tickPoisonFlash()
+  if (self.poisonFlash or 0) > 0 then
+    self.poisonFlash = self.poisonFlash - 1
+  end
+end
+
+-- engine/events/poison.asm:57, :93
+function OverworldState:poisonFlashLive()
+  if (self.poisonFlash or 0) <= 0 then return false end
+  return not (Game and Game.stack) or Game.stack:top() == self
+end
+
+function OverworldState:poisonShadeMap()
+  if not self:poisonFlashLive() then return nil end
+  if PaletteFX.usesGbcPack() and self.map and self.map.renderer
+     and self.map.renderer.gbcAtlas then
+    return nil
+  end
+  return PaletteFX.POISON_BGP
+end
+
 -- Field poison (engine/events/poison.asm ApplyOutOfBattlePoisonDamage):
 -- every 4th step, 1 HP per poisoned mon; the BG flickers dark with
 -- SFX_POISONED; fainted mons get their message; a whole-party faint
@@ -4025,8 +4103,16 @@ function OverworldState:applyFieldPoison()
     end
   end
   if not anyPoisoned then return false end
-  require("src.core.Sound").play(Game.data, "Poisoned")
-  self.poisonFlash = 12
+  -- engine/events/poison.asm:75-91 .countPoisonedLoop
+  local stillPoisoned = false
+  for _, mon in ipairs(save.party) do
+    if mon.status == "PSN" then stillPoisoned = true break end
+  end
+  if stillPoisoned then
+    require("src.core.Sound").play(Game.data, "Poisoned")
+    -- engine/gfx/screen_effects.asm:7-8
+    self.poisonFlash = 4
+  end
   local queue = {}
   for _, mon in ipairs(fainted) do
     local name = mon.nickname or Game.data.pokemon[mon.species].name
@@ -5160,6 +5246,35 @@ local function zoneColorsAt(zones, fx, fy)
   return zones[1] and zones[1].colors or nil
 end
 
+-- engine/battle/battle_transitions.asm:28
+function OverworldState:drawWipeSprites()
+  local cam = self.camera
+  local ogObp = PaletteFX.usesSpriteObp()
+  local zw = not ogObp and self:sgbWorldZones() or nil
+  local prevPass = PaletteFX.pass()
+  if ogObp then PaletteFX.setPass("world") end
+  local function replay(e)
+    local colors = zoneColorsAt(zw, e.px - cam.x + 8, e.py - cam.y + 16)
+    local shader = colors and PaletteFX.shader() or nil
+    if shader then
+      PaletteFX.sendColors(shader, colors)
+      love.graphics.setShader(shader)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    e:draw(cam.x, cam.y)
+    if shader then love.graphics.setShader() end
+  end
+  local ok, err = pcall(function()
+    local keep = self.battleOamKeep
+    if keep and keep.draw then replay(keep) end
+    if not (self.flyAnim or self.flyArrive or self.playerHidden) then
+      replay(self.player)
+    end
+  end)
+  if ogObp then PaletteFX.setPass(prevPass) end
+  if not ok then error(err, 0) end
+end
+
 -- Draw a standing thing as an upright billboard (tilt mode only).  ONLY the
 -- ground tilts: a standing thing draws UPRIGHT and UNSCALED -- pixel-identical
 -- to flat mode (same crisp nearest-neighbour art, nothing sheared, resized or
@@ -5207,8 +5322,9 @@ function OverworldState:drawWorld()
   -- original's saved offset means.
   local battleOverWorld = Game and Game.stack
                           and Game.worldBgBattleInStack(Game.stack)
+  -- home/fade.asm:66
   PaletteFX.setShadeMap((self.dark and not battleOverWorld)
-                        and PaletteFX.DARK_BGP or nil)
+                        and PaletteFX.DARK_BGP or self:poisonShadeMap())
   -- advance the water/flower tile animation (runs under dialogs too).
   -- TileRenderer.tick uses wall-clock 60Hz steps so display refresh rate
   -- does not speed or slow the cycle (issue #4).
@@ -5222,6 +5338,10 @@ function OverworldState:drawWorld()
   -- hSCY, which scrolls the BG layer only -- tiles bounce while OAM
   -- sprites stay put.  ElevatorShake drives bgShakeY; zero elsewhere.
   local bgY = cam.y + (self.bgShakeY or 0)
+  -- engine/battle/battle_transitions.asm:28
+  if self.battleOamKeep ~= nil and Game.renderer then
+    Game.renderer.wipeSprites = self.wipeSpritesFn
+  end
   -- border block tiled behind everything the ring doesn't reach
   local vw, vh = Game.renderer:worldViewSize()
   -- Only things that actually stand (player, NPCs, ghosts, items and the FX
@@ -5296,19 +5416,7 @@ function OverworldState:drawWorld()
           love.graphics.newQuad(0, 8, 8, 8, w, h), -- ball ($7d)
         }
       end
-      -- the jingle flash recolors the machine sprites in place
-      -- (FlashSprite8Times XORs rOBP1; the sprites never disappear):
-      -- ha.visible == false is the flashed half of each beat, drawn with
-      -- the light/dark shades swapped instead of skipped
-      local shader
-      if not ha.visible then
-        shader = PaletteFX.shader()
-        if shader then
-          PaletteFX.sendColors(shader,
-            PaletteFX.permute(PaletteFX.GRAYS, HEAL_FLASH_MAP))
-          love.graphics.setShader(shader)
-        end
-      end
+      local shader = healMachineShader(ha.visible)
       -- TileRenderer windows with -floor(cam), so the overlay must use the
       -- same snap or a fractional camera (odd fill/tilt view sizes) parks
       -- the balls a pixel off the machine tiles
@@ -5422,6 +5530,10 @@ function OverworldState:drawWorld()
           self.emoteQuads[bi] = q
         end
         love.graphics.draw(img, q, ex, ey)
+        -- engine/overworld/emotion_bubbles.asm:18
+        if PaletteFX.usesSpriteObp() and PaletteFX.spriteRedrawPassActive() then
+          PaletteFX.markSpriteRedraw(img, q, ex, ey, 1)
+        end
         drawn = true
       end
     end
@@ -5625,11 +5737,13 @@ function OverworldState:drawWorld()
     local grassColors = PaletteFX.usesSpriteObp()
       and PaletteFX.pal(Game.data, self:paletteNameFor(self.map)) or nil
     for _, g in ipairs(self.ghosts) do
-      g.npc:draw(cam.x - g.ox, cam.y - g.oy)
+      if self.battleOamKeep == nil then
+        g.npc:draw(cam.x - g.ox, cam.y - g.oy)
+      end
     end
     for _, e in ipairs(self.entities) do
       if not ((self.flyAnim or self.flyArrive or self.playerHidden)
-              and e == self.player) then
+              and e == self.player) and not self:oamCulled(e) then
         e:draw(cam.x, cam.y)
         -- tall grass overdraws the sprite's feet (GB sprite priority);
         -- the overdraw is BG tiles, so it rides the shake offset too
@@ -5677,11 +5791,13 @@ function OverworldState:drawWorld()
     -- baseline y.
     local items = {}
     for _, g in ipairs(self.ghosts) do
-      items[#items + 1] = { y = g.npc.py + g.oy + 16, kind = "ghost", g = g }
+      if self.battleOamKeep == nil then
+        items[#items + 1] = { y = g.npc.py + g.oy + 16, kind = "ghost", g = g }
+      end
     end
     for _, e in ipairs(self.entities) do
       if not ((self.flyAnim or self.flyArrive or self.playerHidden)
-              and e == self.player) then
+              and e == self.player) and not self:oamCulled(e) then
         items[#items + 1] = { y = e.py + 16, kind = "entity", e = e }
       end
     end
@@ -5777,12 +5893,18 @@ function OverworldState:drawUI()
     end
   end
 
-  -- poison step flicker (ChangeBGPalColor0_4Frames: dark for two
-  -- 4-frame pulses)
-  if self.poisonFlash and self.poisonFlash > 0 then
-    self.poisonFlash = self.poisonFlash - 1
-    local pulse = math.floor(self.poisonFlash / 4) % 2 == 1
-    if pulse then
+  -- engine/gfx/screen_effects.asm:1-12
+  if self:poisonFlashLive() then
+    local r = Game and Game.renderer
+    local map = self:poisonShadeMap()
+    if PaletteFX.shader() and map then
+      -- home/fade.asm:66
+      if not PaletteFX.shadeMap() then
+        PaletteFX.setShadeMap(map)
+      end
+    elseif r then
+      r.screenVeil = { 0, 0.45 }
+    else
       love.graphics.setColor(0, 0, 0, 0.45)
       love.graphics.rectangle("fill", 0, 0, 160, 144)
       love.graphics.setColor(1, 1, 1, 1)

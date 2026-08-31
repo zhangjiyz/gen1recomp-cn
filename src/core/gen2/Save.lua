@@ -79,7 +79,11 @@ local Save = {}
 --           that already has savings banked therefore starts buying from the
 --           bottom of the list, which is what a cartridge whose owner had
 --           saved that much would also do.
-Save.FORMAT = 7
+--   7 -> 8  Crystal caught data: a mon carrying a caught level but no landmark
+--           is zeroed, so the Seer takes ReadCaughtData's `.error` arm
+--           (../pokecrystal/engine/events/poke_seer.asm:103-104) instead of
+--           GetCaughtLocation's "Unknown".  #1929
+Save.FORMAT = 8
 
 Save.MAX_MONEY = 999999
 Save.MAX_COINS = 9999
@@ -312,7 +316,8 @@ Save.DEFAULT_OPTIONS = {
   palette = "",
   videoMode = "windowed",
   fpsCap = 60,
-  -- BATTLE BG (#1709): white | black, the surround around the battle screen.
+  -- BATTLE SIZE (#1709): fixed | fill
+  battleFit = "fixed",
   battleBg = "white",
   -- VOID FILL: fade | water | trees | black.  fade is each map header's own
   -- border block with the dissolve across a boundary (#1418).
@@ -409,6 +414,22 @@ local function normalizePokerus(mons)
   end
 end
 
+-- constants/pokemon_data_constants.asm:79, :90
+local function normalizeMoves(mons)
+  for _, mon in ipairs(mons or {}) do
+    if type(mon) == "table" and type(mon.moves) == "table" then
+      local rebuilt = false
+      for i, entry in ipairs(mon.moves) do
+        if type(entry) ~= "table" then
+          mon.moves[i] = { id = entry, pp = (mon.pp or {})[i] }
+          rebuilt = true
+        end
+      end
+      if rebuilt then mon.pp = nil end
+    end
+  end
+end
+
 -- ../pokecrystal/ram/sram.asm:140 sGSBallFlag.  nil is the cleared byte.
 Save.GS_BALL_STATES = { have = true, given = true, used = true }
 
@@ -433,6 +454,8 @@ function Save.crystalState(save)
   if crystal.moveTutor.used == nil then crystal.moveTutor.used = false end
   -- ../pokecrystal/ram/wram.asm:3445 wUnlockedUnowns.
   crystal.unownWords = crystal.unownWords or {}
+  -- ../pokecrystal/engine/menus/intro_menu.asm:69-70
+  crystal.mapSign = crystal.mapSign or { prev = "LANDMARK_NEW_BARK_TOWN" }
   return crystal
 end
 
@@ -558,8 +581,12 @@ function Save.normalize(save)
     table.remove(save.party)
   end
   normalizePokerus(save.party)
+  normalizeMoves(save.party)
   for _, box in pairs(save.boxes) do
-    if type(box) == "table" then normalizePokerus(box) end
+    if type(box) == "table" then
+      normalizePokerus(box)
+      normalizeMoves(box)
+    end
   end
   -- move_mon.asm:143-149: a mon the player owns carries wPlayerID; saves
   -- written before the stamp existed get it here.
@@ -626,6 +653,30 @@ Save.MIGRATIONS = {
     if save.mom.whichItem == nil then save.mom.whichItem = 0 end
     if save.mom.triggerBalance == nil then
       save.mom.triggerBalance = MomShopping.MOM_MONEY
+    end
+  end,
+  -- ../pokecrystal/engine/events/poke_seer.asm:103-104
+  [7] = function(save)
+    local Mon = require("src.battle.gen2.Mon")
+    if not Mon.hasCaughtData(save.version) then return end
+    local function clear(mon)
+      if type(mon) ~= "table" or mon.isEgg then return end
+      if (tonumber(mon.caughtLocation) or 0) ~= 0 then return end
+      mon.caughtTime, mon.caughtLevel = 0, 0
+      mon.caughtLocation, mon.caughtByGender = 0, "boy"
+    end
+    for _, mon in ipairs(save.party or {}) do clear(mon) end
+    for _, box in pairs(save.boxes or {}) do
+      if type(box) == "table" then
+        for _, mon in ipairs(box) do clear(mon) end
+      end
+    end
+    local dc = save.dayCare
+    if type(dc) == "table" then
+      for _, which in ipairs({ "man", "lady" }) do
+        local side = dc[which]
+        if type(side) == "table" then clear(side.mon) end
+      end
     end
   end,
 }

@@ -22,6 +22,13 @@ local TextBox = {}
 TextBox.__index = TextBox
 TextBox.isTextBox = true
 
+-- home/delay.asm:14
+local function sfxWaitFrames(src)
+  local Sound = require("src.core.Sound")
+  if not Sound.waitFrames then return 180 end
+  return Sound.waitFrames(src)
+end
+
 -- theme-free fallbacks; geometry resolves against Theme.textBox at
 -- construction time, so an unthemed boot stays byte-identical
 local BOX_TX, BOX_TY, BOX_TW, BOX_TH = 0, 12, 20, 6
@@ -109,6 +116,8 @@ function TextBox.new(game, text, onDone, opts)
   self.choiceLabels = opts and opts.choiceLabels
   self.choiceBox = opts and opts.choiceBox
   self.money = opts and opts.money
+  -- scripts/MtMoonPokecenter.asm:30
+  self.moneyWithChoice = opts and opts.moneyWithChoice
   self.auto = opts and opts.auto
   self.stay = opts and opts.stay
   -- engine/events/hidden_events/cinnabar_gym_quiz.asm:119
@@ -343,6 +352,23 @@ function TextBox:sfxHeld()
   return false
 end
 
+-- TextCommand_PROMPT_BUTTON's LoadBlinkingCursor (home/text.asm:749)
+function TextBox:arrowVisible()
+  if self.sfxWait then return false end
+  if self.waiting then return true end
+  return not not (self.done and not self.choice
+    and (not self.auto
+         or (self.auto.promptFirst and not self.autoPrompted))
+    and (not self.stay
+         or (self.stay.prompt and not self.stayShown)))
+end
+
+-- scripts/MtMoonPokecenter.asm:30
+function TextBox:moneyVisible()
+  if not self.money then return false end
+  return not self.moneyWithChoice or not not self.choicePushed
+end
+
 function TextBox:update(dt)
   local input = self.game.input
   self.blink = (self.blink + 1) % 60
@@ -351,11 +377,13 @@ function TextBox:update(dt)
     if not self.preStarted then
       self.preStarted = true
       self.preSrc = self.preSound()
+      self.preSrcLeft = sfxWaitFrames(self.preSrc)
     end
-    if self.preSrc and self.preSrc.isPlaying and self.preSrc:isPlaying() then
-      return
-    end
-    self.preSound, self.preSrc = nil, nil
+    self.preSrcLeft = (self.preSrcLeft or 0) - 1
+    local playing = self.preSrc and self.preSrc.isPlaying and self.preSrc:isPlaying()
+    if playing and self.preSrcLeft > 0 then return end
+    if playing then pcall(self.preSrc.stop, self.preSrc) end
+    self.preSound, self.preSrc, self.preSrcLeft = nil, nil, nil
   end
   -- A page or CONT advance blocks the whole box while the original's scroll
   -- and clear run (src/core/Timing.lua TEXT_SCROLL_PAIR / TEXT_PAGE_CLEAR).
@@ -399,9 +427,17 @@ function TextBox:update(dt)
       return
     end
     if self.auto then
+      -- engine/items/item_effects.asm:1794 (#1880)
+      if self.auto.promptFirst and not self.autoPrompted then
+        if not (input:wasPressed("a") or input:wasPressed("b")) then return end
+        require("src.core.Sound").play(self.game.data, "Press_AB")
+        self.autoPrompted = true
+        return
+      end
       if not self.autoStarted then
         self.autoStarted = true
         self.autoSrc = self.auto.sound and self.auto.sound() or nil
+        self.autoSrcLeft = sfxWaitFrames(self.autoSrc)
         self.autoTimer = 0
       end
       -- auto.tick: one call per frame for as long as the box is held open,
@@ -411,8 +447,13 @@ function TextBox:update(dt)
       -- the overworld underneath is frozen (the Pewter JIGGLYPUFF spin,
       -- #249).
       if self.auto.tick then self.auto.tick() end
-      if self.autoSrc and self.autoSrc.isPlaying and self.autoSrc:isPlaying() then
-        return -- the cry is still sounding (WaitForSoundToFinish)
+      -- home/delay.asm:14
+      if self.autoSrc then
+        self.autoSrcLeft = (self.autoSrcLeft or 0) - 1
+        if self.autoSrc.isPlaying and self.autoSrc:isPlaying() then
+          if self.autoSrcLeft > 0 then return end
+          pcall(self.autoSrc.stop, self.autoSrc)
+        end
       end
       -- auto.wait: the pet-NPC cries (PewterNidoranHouseNidoranText,
       -- ViridianNicknameHouseSpearowText) have nothing queued behind the
@@ -461,7 +502,8 @@ function TextBox:update(dt)
     end
     if self:sfxHeld() then return end
     if input:wasPressed("a") or input:wasPressed("b") then
-      require("src.core.Sound").play(self.game.data, "Press_AB")
+      -- home/joypad.asm:292
+      require("src.core.Sound").playPress(self.game.data)
       self.game.stack:pop()
       if self.onDone then self.onDone() end
     end
@@ -606,14 +648,22 @@ function TextBox:draw()
       pen = pen + Font.advanceOf(code)
     end
   end
-  if self.money then
+  if self:moneyVisible() then
     -- money box (engine/menus/text_box.asm:130): DisplayMoneyBox at
     -- hlcoord 11,0, the amount right-aligned on its middle row
     if Chrome then
       Chrome.paletteBox(11, 0, 9, 3, Chrome.DEFAULT_BOX_PALETTE)
     else
       Font.drawBox(11, 0, 9, 3)
+      -- data/text_boxes.asm:35
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.rectangle("fill", 13 * 8, 0, 5 * 8, 8)
       love.graphics.setColor(0, 0, 0, 1)
+      local cap = 13 * 8
+      for _, code in ipairs(Font.encode("MONEY")) do
+        drawGlyph(code, cap, 0)
+        cap = cap + Font.advanceOf(code)
+      end
     end
     local money = ("¥%d"):format(self.money() or 0)
     local pen = 152 - Font.width(money)
@@ -622,10 +672,7 @@ function TextBox:draw()
       pen = pen + Font.advanceOf(code)
     end
   end
-  if (self.waiting or (self.done and not self.choice and not self.auto
-                       and (not self.stay
-                            or (self.stay.prompt and not self.stayShown))))
-     and self.blink < 30 then
+  if self:arrowVisible() and self.blink < 30 then
     -- page-advance cursor: glyph $EE by default, the blinking down arrow
     -- the original prints via `ld a, "▼"` (home/text.asm)
     drawGlyph(Theme.moreArrow or 0xEE,

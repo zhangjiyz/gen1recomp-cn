@@ -1270,15 +1270,28 @@ do
   magWild.hp = 200
   magWild.maxHp = 200
   local magEvents = magBattle:takeTurn({ kind = "move", move = "MAGNITUDE" })
-  local announced
+  local announced, announceEvent, usedEvent
   for _, ev in ipairs(magEvents) do
+    if ev.kind == "move" and ev.move == "MAGNITUDE" and not usedEvent then
+      usedEvent = ev
+    end
     if ev.kind == "message" and type(ev.text) == "string"
-        and ev.text:match("^Magnitude %d+") then
+        and ev.text:match("^Magnitude %d+") and not announced then
       announced = ev.text
-      break
+      announceEvent = ev
     end
   end
   check("magnitude announces rolled number", announced, "Magnitude 8!")
+  check("magnitude used-move line defers the animation",
+    usedEvent and usedEvent.deferAnim, true)
+  check("magnitude used-move line burns the move delay",
+    usedEvent and usedEvent.animDelay, true)
+  check("magnitude used-move line owns no animation",
+    usedEvent and usedEvent.moveAnim, nil)
+  check("magnitude line carries the animation",
+    announceEvent and announceEvent.moveAnim, "MAGNITUDE")
+  check("magnitude line carries the attacking side",
+    announceEvent and announceEvent.side, "player")
   check("magnitude deals more than power-1 would",
     magWild.hp < 200, true)
 end
@@ -2256,6 +2269,23 @@ check("RIVAL2's first battle too",
 check("...but from RIVAL2_2 on it is the Champion's",
   BattleMusic.battleSong({ class = "RIVAL2", member = "RIVAL2_2_CHIKORITA",
     members = RIVAL2_MEMBERS, landmark = 80 }), "Music_ChampionBattle")
+
+-- ../pokecrystal/engine/battle/start_battle.asm:60-66
+check("a Crystal roaming battle plays Suicune's theme",
+  BattleMusic.battleSong({ crystal = true, battleType = 5, landmark = 1,
+    daytime = "NITE" }), "Music_SuicuneBattle")
+check("...and so does the Tin Tower Suicune",
+  BattleMusic.battleSong({ crystal = true, battleType = 12, landmark = 1 }),
+  "Music_SuicuneBattle")
+check("...ahead of even the trainer class",
+  BattleMusic.battleSong({ crystal = true, battleType = 5, class = "FALKNER",
+    landmark = 1 }), "Music_SuicuneBattle")
+check("Gold's roamers keep the ordinary wild theme",
+  BattleMusic.battleSong({ battleType = 5, landmark = 1, daytime = "DAY" }),
+  "Music_JohtoWildBattle")
+check("...as does an ordinary Crystal wild battle",
+  BattleMusic.battleSong({ crystal = true, landmark = 1, daytime = "DAY" }),
+  "Music_JohtoWildBattle")
 
 check("a wild win plays the wild jingle",
   BattleMusic.victorySong({}), "Music_WildPokemonVictory")

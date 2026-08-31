@@ -165,14 +165,17 @@ local function needsCanvas(runner)
 end
 
 -- The battle background is BG colour 0 everywhere the two pic boxes and the
-function BattleAnimView:fillBackground()
-  Chrome.paletteFill(0, 0, SCREEN_W, SCREEN_H)
+function BattleAnimView:fillBackground(palByte)
+  local previousBgp = GbcPalette.setBgp(palByte)
+  local ok, err = pcall(Chrome.paletteFill, 0, 0, SCREEN_W, SCREEN_H)
+  GbcPalette.setBgp(previousBgp)
+  if not ok then error(err, 0) end
 end
 
 -- One reusable quad, re-aimed per scanline.  A row shifted by `dx` is drawn
 -- CLIPPED to the 160-pixel screen rather than allowed to hang over the edge:
 -- the cart's BG map wraps, so a scrolled scanline never spills past the LCD.
-function BattleAnimView:blitRow(row, dx, dy)
+function BattleAnimView:blitRowAt(srcRow, destRow, dx)
   local canvas = self.canvas
   if not self.blitQuad then
     self.blitQuad = love.graphics.newQuad(0, 0, SCREEN_W, 1, SCREEN_W, SCREEN_H)
@@ -184,8 +187,12 @@ function BattleAnimView:blitRow(row, dx, dy)
     srcX, width, destX = -dx, SCREEN_W + dx, 0
   end
   if width <= 0 then return end
-  self.blitQuad:setViewport(srcX, row, width, 1, SCREEN_W, SCREEN_H)
-  love.graphics.draw(canvas, self.blitQuad, destX, row + dy)
+  self.blitQuad:setViewport(srcX, srcRow, width, 1, SCREEN_W, SCREEN_H)
+  love.graphics.draw(canvas, self.blitQuad, destX, destRow)
+end
+
+function BattleAnimView:blitRow(row, dx, dy)
+  self:blitRowAt(row, row + dy, dx)
 end
 
 -- Draw the battle panel into the blit canvas, optionally with an rBGP byte
@@ -207,7 +214,10 @@ function BattleAnimView:bake(drawBg, palByte)
   end
   local previousCanvas = G.getCanvas()
   local previousBgp = GbcPalette.setBgp(palByte)
+  local sx, sy, sw, sh
+  if G.getScissor then sx, sy, sw, sh = G.getScissor() end
   G.setCanvas(self.canvas)
+  G.setScissor()
   G.clear(0, 0, 0, 0)
   -- A love canvas does NOT reset the transform: without this the panel is
   -- drawn at whatever scale and offset the caller was already under, and then
@@ -217,6 +227,7 @@ function BattleAnimView:bake(drawBg, palByte)
   local ok, err = pcall(drawBg)
   G.pop()
   G.setCanvas(previousCanvas)
+  if sx then G.setScissor(sx, sy, sw, sh) end
   GbcPalette.setBgp(previousBgp)
   if not ok then error(err, 0) end
 end
@@ -255,35 +266,28 @@ local function bgpBands(bg)
   return order
 end
 
--- engine/battle_anims/anim_commands.asm:1293 BattleAnim_SetBGPals
-function BattleAnimView:panelPalettes(battle)
-  local list = {}
-  local shades = {}
-  for index = 1, 4 do shades[index] = GbcPalette.color(nil, index) end
-  list[#list + 1] = shades
-  local function bracket(pair)
-    if not (pair and pair[1] and pair[2]) then return end
-    list[#list + 1] = {
-      { 255, 255, 255 },
-      { pair[1][1], pair[1][2], pair[1][3] },
-      { pair[2][1], pair[2][2], pair[2][3] },
-      { 0, 0, 0 },
-    }
+-- engine/battle_anims/bg_effects.asm:2638
+function BattleAnimView.scanlines(bg)
+  local lines = {}
+  local scy = signed(bg.scy)
+  for row = 0, SCREEN_H - 1 do
+    local dx, src = 0, row + scy
+    local inWindow = bg.lcdc and bg.lcdc ~= "BGP"
+      and row >= bg.lyStart and row < bg.lyEnd
+    local byte = bg.lyBackup[row] or 0
+    if inWindow then
+      local value = signed(byte)
+      if bg.lcdc == "SCX" then dx = -value else src = src + value end
+      -- home/lcd.asm:3
+      if byte ~= 0x90 and scy == 0 then
+        if src < 0 then src = 0 elseif src >= SCREEN_H then src = SCREEN_H - 1 end
+      end
+    end
+    if (not inWindow or byte ~= 0x90) and src >= 0 and src < SCREEN_H then
+      lines[#lines + 1] = { src = src, dest = row, dx = dx }
+    end
   end
-  for _, side in ipairs({ "player", "enemy" }) do
-    local mon = battle and battle[side]
-    local colors = mon
-      and Palettes.monColors(self.palettes, mon.species, mon.shiny)
-    if colors then list[#list + 1] = colors end
-  end
-  local hpBar = self.palettes and self.palettes.hpBar
-  if hpBar then
-    bracket(hpBar.green)
-    bracket(hpBar.yellow)
-    bracket(hpBar.red)
-  end
-  bracket(self.palettes and self.palettes.expBar)
-  return list
+  return lines
 end
 
 -- Runs `drawBg` (the battle panel) and puts it on screen through the
@@ -291,9 +295,10 @@ end
 function BattleAnimView:present(runner, drawBg, battle)
   if not (love and love.graphics) then return end
   local bg = runner.bg
-  local invert = bg.bgp and bg.bgp ~= GbcPalette.BGP_IDENTITY
-    and bg.lcdc ~= "BGP" and GbcPalette.remapShader() ~= nil
-  if not invert and not needsCanvas(runner) then
+  -- engine/battle_anims/anim_commands.asm:1293
+  local byte = bg.bgp ~= GbcPalette.BGP_IDENTITY and GbcPalette.available()
+    and bg.bgp or nil
+  if not byte and not needsCanvas(runner) then
     drawBg()
     return
   end
@@ -311,7 +316,7 @@ function BattleAnimView:present(runner, drawBg, battle)
     for _, band in ipairs(bands) do
       self:bake(drawBg, band.byte)
       if not filled then
-        self:fillBackground()
+        self:fillBackground(band.byte)
         filled = true
       end
       G.setColor(1, 1, 1, 1)
@@ -322,32 +327,18 @@ function BattleAnimView:present(runner, drawBg, battle)
     return
   end
 
-  self:bake(drawBg, nil)
+  self:bake(drawBg, byte)
 
-  local remapped = invert
-    and GbcPalette.useRemap(self:panelPalettes(battle), bg.bgp)
   -- A shifted scanline exposes the blank tile beside the pic boxes; without
   -- this the exposed strip is the canvas's own transparency.
-  self:fillBackground()
+  self:fillBackground(byte)
   G.setColor(1, 1, 1, 1)
   -- hSCX / hSCY move the whole background; the per-scanline overrides only
   -- apply inside the effect's own window.
-  local baseX, baseY = -signed(bg.scx), -signed(bg.scy)
-  for row = 0, SCREEN_H - 1 do
-    local dx, dy = baseX, baseY
-    local inWindow = bg.lcdc and row >= bg.lyStart and row < bg.lyEnd
-    if inWindow and bg.lcdc ~= "BGP" then
-      local value = signed(bg.lyBackup[row] or 0)
-      if bg.lcdc == "SCX" then dx = -value else dy = -value end
-    end
-    -- A row scrolled to $90 is showing a blank part of the map: skip it, which
-    -- is what makes Withdraw and Dig look like the mon sinking out of sight.
-    if (bg.lyBackup[row] or 0) ~= 0x90 or not bg.lcdc or bg.lcdc == "BGP"
-        or not inWindow then
-      self:blitRow(row, dx, dy)
-    end
+  local baseX = -signed(bg.scx)
+  for _, line in ipairs(BattleAnimView.scanlines(bg)) do
+    self:blitRowAt(line.src, line.dest, baseX + line.dx)
   end
-  if remapped then GbcPalette.clear() end
   -- Shaderless boot: the panel is raw grayscale, so there are no palettes to
   -- permute and the entry's BRIGHTNESS is the only thing left to reproduce.
   if bg.lcdc == "BGP" then

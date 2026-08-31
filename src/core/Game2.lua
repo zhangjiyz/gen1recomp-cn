@@ -173,6 +173,7 @@ function Game2.new()
     options = Save.loadOptions(),
   }, Game2)
   self.save.options = self.options
+  self.sessionStartedAt = os.time()
   anchorNewGameClock(self.save)
   return self
 end
@@ -203,6 +204,28 @@ function Game2:adoptSave(save, seedBuckets)
     end
   end
   loader.modSave = save.modData
+end
+
+function Game2:enterArena(spec)
+  local version = GameVersion.get()
+  if spec and spec.slotId then
+    pcall(SaveData.setActiveSlot, version, spec.slotId)
+  end
+  local ok, loaded = pcall(Save.load, version)
+  if ok and loaded then
+    local activeMods = self.modStatus and self.modStatus.loaded
+    SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+    self.save = loaded
+    self.save.options = self.options
+    self:adoptSave(loaded)
+    require("src.battle.gen2.Mon").syncSaveIdentity(loaded, self.data)
+  else
+    require("src.core.Logger").warn("arena2: save slot %s could not be loaded",
+      tostring(spec and spec.slotId))
+  end
+  self.phase = "boot"
+  self.stack:clear()
+  self.stack:push(require("src.ui.gen2.ArenaState").new(self, spec))
 end
 
 function Game2:startWorld()
@@ -238,6 +261,7 @@ end
 function Game2:newGame()
   self.save = Save.newGame({ playerName = self.save.player.name })
   self.save.options = self.options
+  self.sessionStartedAt = os.time()
   -- InitClock re-anchors this the moment the player answers Oak; the default
   -- only has to hold for a run that skips the screen.
   anchorNewGameClock(self.save)
@@ -275,6 +299,7 @@ function Game2:continueGame(save)
   SaveData.runMigrations(save, self.mods and self.mods.migrations, activeMods)
   local modsDiff = SaveData.modsDiff(save, activeMods)
   self.save = save
+  self.sessionStartedAt = os.time()
   self:adoptSave(save)
   -- Editor species swaps used to leave mon.name on the previous species.
   -- CONTINUE rewrites party, boxes, and Day-Care copies from the live record.
@@ -406,6 +431,10 @@ end
 -- the start menu, matching .MenuReturns (most entries reopen it; SAVE and EXIT
 -- close it).
 function Game2:openStartMenu()
+  -- ../pokecrystal/engine/overworld/events.asm:284-285
+  if self.world and self.world.cancelMapNameSign then
+    self.world:cancelMapNameSign()
+  end
   Screens.push(self, "Gen2StartMenu", {
     save = self.save,
     onClose = function() self.stack:pop() end,
@@ -530,12 +559,12 @@ function Game2:learnMoveOn(mon, moveId, onDone)
         return askForget()
       end }))
   end
-  -- The four-slot list ForgetMove draws under MoveAskForgetText, which is the
-  -- Blackthorn deleter's own SetUpMoveList box (learn.asm:135-146).
+  -- engine/pokemon/learn.asm:135-166
   local function pushList()
     Screens.push(self, "Gen2MoveDeleter", {
       mon = mon,
       moves = self.data.moves,
+      layout = "forget",
       onCancel = function()
         self.stack:pop() -- the move list
         self.stack:pop() -- the question it stood on
@@ -636,6 +665,12 @@ function Game2:consumeItem(itemId)
   self.save.inventory[itemId] = left > 0 and left or nil
 end
 
+-- engine/pokemon/evolve.asm:333
+function Game2:restartMapMusicAfterEvolution()
+  local world = self.world
+  if world and world.restoreMapMusic then world:restoreMapMusic() end
+end
+
 -- RareCandyEffect's tail (engine/items/item_effects.asm): LearnLevelMoves at
 -- the new level, then EvolvePokemon.  LearnLevelMoves' .learn arm is `predef
 -- LearnMove` (engine/pokemon/evolve.asm), so a full set gets ForgetMove's ask
@@ -672,6 +707,7 @@ function Game2:afterRareCandy(mon, result, onDone)
       save = self.save,
       onDone = function()
         self.stack:pop()
+        self:restartMapMusicAfterEvolution()
         if onDone then onDone() end
       end,
     })
@@ -705,12 +741,20 @@ function Game2:usePartyItem(itemId)
     self:say(Strings("You don't have a\n#MON!"))
     return
   end
-  local function finish(result, mon)
+  -- engine/items/item_effects.asm:1748
+  local function openMenu()
+    local menu = self.stack.top and self.stack:top()
+    if menu and menu.showItemResult then return menu end
+    return nil
+  end
+  local function finish(result, mon, slot, before)
+    local menu = openMenu()
     if not result.used then
-      self:say(result.text)
+      self:say(result.text, menu and function() self.stack:pop() end or nil)
       return
     end
     if action == "stone" then
+      if menu then self.stack:pop() end
       local party = (self.save and self.save.party) or {}
       local index
       for i, member in ipairs(party) do
@@ -723,43 +767,61 @@ function Game2:usePartyItem(itemId)
         onDone = function(evolution)
           if evolution and evolution.evolved then self:consumeItem(itemId) end
           self.stack:pop()
+          self:restartMapMusicAfterEvolution()
         end,
       })
-    elseif action == "candy" then
-      self:consumeItem(itemId)
-      -- data/text/common_1.asm:86
-      self:say(result.text, function() self:afterRareCandy(mon, result) end,
-        result.sfx and TextBox.soundOpts(self, result.sfx) or nil)
-    else
-      self:consumeItem(itemId)
-      self:say(result.text)
+      return
     end
+    self:consumeItem(itemId)
+    if not menu then
+      if action == "candy" then
+        -- data/text/common_1.asm:86
+        self:say(result.text, function() self:afterRareCandy(mon, result) end,
+          result.sfx and TextBox.soundOpts(self, result.sfx) or nil)
+      else
+        self:say(result.text)
+      end
+      return
+    end
+    -- engine/items/item_effects.asm:1663
+    local climbs = (action == "heal" or action == "revive")
+      and before and mon.hp and mon.hp ~= before
+    menu:showItemResult(slot, {
+      fromHp = climbs and before or nil,
+      toHp = climbs and mon.hp or nil,
+      sfx = climbs and "Sfx_Potion" or result.sfx,
+      text = result.text,
+      onDone = function()
+        self.stack:pop()
+        if action == "candy" then self:afterRareCandy(mon, result) end
+      end,
+    })
   end
   Screens.push(self, "Gen2PartyMenu", {
     prompt = "useItem",
     onCancel = function() self.stack:pop() end,
-    onChoose = function(_, mon)
+    onChoose = function(slot, mon)
+      local before = mon and mon.hp
       if action ~= "pp" then
-        self.stack:pop()
-        finish(ItemEffects.useOnMon(itemId, mon, self.data), mon)
+        finish(ItemEffects.useOnMon(itemId, mon, self.data), mon, slot, before)
         return
       end
       -- RestorePPEffect: the ELIXER pair needs no move pick; an EGG refuses
       -- before the move list ever opens (UseItem_SelectMon's `cp EGG`).
       local row = ItemEffects.RESTORE_PP[itemId] or {}
       if row.each or mon.isEgg then
-        self.stack:pop()
-        finish(ItemEffects.usePpItem(itemId, mon, nil, self.data), mon)
+        finish(ItemEffects.usePpItem(itemId, mon, nil, self.data), mon, slot,
+          before)
         return
       end
       Screens.push(self, "Gen2MoveDeleter", {
         mon = mon,
         moves = self.data.moves,
         onCancel = function() self.stack:pop() end,
-        onChoose = function(slot)
+        onChoose = function(moveSlot)
           self.stack:pop() -- the move list
-          self.stack:pop() -- the party list
-          finish(ItemEffects.usePpItem(itemId, mon, slot, self.data), mon)
+          finish(ItemEffects.usePpItem(itemId, mon, moveSlot, self.data), mon,
+            slot, before)
         end,
       })
     end,
@@ -878,17 +940,41 @@ function Game2:writeSave()
     return false
   end
   local save = self:snapshotSave()
-  -- The snapshot is complete, so this payload carries exactly the table the
-  -- file gets; mods stash runtime state into their own keys now.  `meta` is
-  -- the Gen 1 key, absent rather than renamed: a Gold save stamps no meta
-  -- block yet (see save.loaded in continueGame).
+  save.meta = SaveData.buildMeta(
+    self.modStatus and self.modStatus.loaded, save.meta, self.sessionStartedAt)
   if ModRuntime.wants("save.writing") then
     ModRuntime.emit("save.writing", { save = save, meta = save.meta })
   end
-  return Save.save(save)
+  local written, err = Save.save(save)
+  if written then
+    local eng = self:syncEngine()
+    if eng then pcall(eng.noteSaveWritten, eng) end
+  end
+  return written, err
 end
 
-function Game2:load()
+function Game2:syncEngine()
+  if self._syncOff then return nil end
+  local eng = self._syncEngineRef
+  if not eng then
+    local ok, SyncEngine = pcall(require, "src.sync.SyncEngine")
+    if not ok or type(SyncEngine) ~= "table" then
+      self._syncOff = true
+      return nil
+    end
+    eng = SyncEngine.shared()
+    if not eng then
+      self._syncOff = true
+      return nil
+    end
+    self._syncEngineRef = eng
+  end
+  return eng
+end
+
+function Game2:load(opts)
+  opts = opts or {}
+  local arena = opts.arena
   Input:init()
   -- Before applyOptions, which is what pushes options.touchControls into it:
   -- init() decides whether the platform wants the overlay at all and loads the
@@ -992,13 +1078,18 @@ function Game2:load()
   -- self.data and the ones without report instead of silently vanishing.  The
   -- whole thing is behind a pcall so a mod problem can never cost Gold its
   -- boot.
+  local modOpts = arena and {
+    mode = (arena.profile and arena.profile.kind == "cart")
+      and "cartOnly" or "disableAll",
+    cartId = opts.cartId,
+  } or nil
   local ok, loader = pcall(function()
     local mods = require("src.mods.Loader").new()
     -- the live service owner, before load: mod.world and mod.input resolve
     -- through this, and without it the facade would bind to the Gen 1
     -- src/core/Game.lua singleton that a Gold boot never loads
     mods.game = self
-    mods:load(self.data)
+    mods:load(self.data, modOpts)
     return mods
   end)
   if ok and loader then
@@ -1071,12 +1162,15 @@ function Game2:load()
   -- a mod to hold).  Emitted where Gen 1 emits it -- every service up, the
   -- stack still empty -- so a listener that pushes a state lands underneath
   -- the boot cinema rather than being buried by it.
+  pcall(function() require("src.core.DiscordPresence").init(self) end)
   ModRuntime.emit("game.ready", { game = self })
 
   -- Drivers that walk the overworld skip boot cinema so smoke stays stable.
   -- POKEPORT_BOOT_CINEMA=1 opts back in, which is how the boot-chain driver
   -- exercises copyright -> title -> intro menu -> Oak -> naming.
-  if os.getenv("POKEPORT_DRIVER")
+  if arena then
+    self:enterArena(arena)
+  elseif os.getenv("POKEPORT_DRIVER")
       and os.getenv("POKEPORT_BOOT_CINEMA") ~= "1" then
     self:startWorld()
   else
@@ -1170,22 +1264,23 @@ function Game2:update(dt)
   -- reason and at the same place Gen 1 ticks them (src/core/Game.lua:265):
   -- they are presentational, so fast-forward must not speed them up.
   require("src.render.Pipelines").update(dt)
+  pcall(function() require("src.core.DiscordPresence").update(dt) end)
   -- GAME SPEED scales the logic clock only, exactly as the Gen 1 path does:
   -- audio runs off its own real-time accumulator, so music and sfx keep their
-  -- tempo at every multiplier.  speedOverride is the driver/CLI hook and wins
-  -- over the saved option.
+  -- tempo at every multiplier (#1990/#1991/#1997).  speedOverride is the
+  -- driver/CLI hook and wins over the saved option.
   -- pokegold engine/menus/intro_menu.asm:848 IntroSequence: boot cinema runs on the same clock as the overworld
   local speed = math.max(1,
     tonumber(self.speedOverride) or tonumber(self.options and self.options.speed)
     or 1)
   if self.phase == "boot" then
-    FixedStep.maxAccum = math.max(0.25, speed / 60 + 0.05)
-    FixedStep:update(dt * speed)
+    FixedStep.maxAccum = FixedStep.catchupLimit(speed)
+    FixedStep:update(dt, speed)
     return
   end
   if not self.world or not self.world.map then return end
-  FixedStep.maxAccum = math.max(0.25, speed / 60 + 0.05)
-  FixedStep:update(dt * speed)
+  FixedStep.maxAccum = FixedStep.catchupLimit(speed)
+  FixedStep:update(dt, speed)
 end
 
 -- The screen-pixels-per-GB-pixel scale the post passes need so their grid and
@@ -1573,21 +1668,42 @@ function Game2:drawContained(w, h)
   if not ok then error(err, 0) end
 end
 
--- BATTLE BG (#1709): the surround around the centred GB screen, taken from
--- whichever state in the stack owns a battle.
-function Game2:paintBattleSurround(w, h)
-  local states = self.stack and self.stack.states or {}
-  local mode
+local function panelBlit(stack, w, h)
+  local states = stack and stack.states or {}
   for i = #states, 1, -1 do
     local state = states[i]
-    if state and state.bgMode then mode = state:bgMode() break end
+    if state then
+      if state.battlePanelScale then
+        local scale = state:battlePanelScale(w, h)
+        if scale then return scale, Chrome.fitOrigin(w, h, scale) end
+      end
+      if state.drawsWidescreen and state:drawsWidescreen() then break end
+    end
   end
-  if mode ~= "black" then return end
-  local G = love.graphics
   local scale = Chrome.fitScale(w, h)
   local ox, oy = Chrome.fitOrigin(w, h, scale)
+  return scale, ox, oy
+end
+
+local function battleSurround(stack)
+  local states = stack and stack.states or {}
+  for i = #states, 1, -1 do
+    local state = states[i]
+    if state and state.bgMode then
+      return state:bgMode(), state.BG_WORLD_DIM or 0.55
+    end
+  end
+end
+
+function Game2:paintBattleSurround(w, h)
+  local mode, dim = battleSurround(self.stack)
+  if mode ~= "black" and mode ~= "world" then return end
+  local alpha = mode == "world" and dim or 1
+  if not alpha or alpha <= 0 then return end
+  local G = love.graphics
+  local scale, ox, oy = panelBlit(self.stack, w, h)
   local pw, ph = 160 * scale, 144 * scale
-  G.setColor(0, 0, 0, 1)
+  G.setColor(0, 0, 0, alpha)
   if oy > 0 then G.rectangle("fill", 0, 0, w, oy) end
   if oy + ph < h then G.rectangle("fill", 0, oy + ph, w, h - oy - ph) end
   if ox > 0 then G.rectangle("fill", 0, oy, ox, ph) end
@@ -1600,6 +1716,7 @@ function Game2:drawScene(w, h)
   -- render.compose reads this after the scene is drawn; the plain overworld
   -- branch below is the only one where Gen 1 would call the world pass live.
   self.frameWorldActive = false
+  Chrome.worldSurround = false
 
   if self:inFillBoot() then
     local top = self.stack:top()
@@ -1663,14 +1780,18 @@ function Game2:drawScene(w, h)
       or (base and base.drawsWidescreen and base:drawsWidescreen()
         and base.drawWidescreen and base)
     if wide then
+      if battleSurround(self.stack) == "world" then
+        self.frameWorldActive = true
+        self:letterbox(w, h, true)
+        self.world:draw()
+        Chrome.worldSurround = true
+      end
       wide:drawWidescreen(w, h)
       self:paintBattleSurround(w, h)
+      Chrome.worldSurround = false
       self:letterbox(w, h, false)
       if wide ~= top then
-        -- The pushed box blits at the same integer fit the widescreen layer
-        -- used, or it lands on a different grid than the panel underneath it.
-        local scale = Chrome.fitScale(w, h)
-        local ox, oy = Chrome.fitOrigin(w, h, scale)
+        local scale, ox, oy = panelBlit(self.stack, w, h)
         G.push()
         G.translate(ox, oy)
         G.scale(scale, scale)
@@ -2062,10 +2183,13 @@ function Game2:applyOptions()
   TouchControls:applyOptions({
     touchControls = options.touchControls,
     haptics = options.haptics,
+    hotbar = options.hotbar,
   })
   require("src.core.VideoMode").applyOptions(options)
   require("src.core.ScreenPosition").applyOptions(options)
+  require("src.core.VSync").applyOptions(options)
   require("src.core.FrameCap").applyOptions(options)
+  require("src.core.PresentSync").applyFixedStepPeriod()
   require("src.world.gen2.BorderFill").applyOptions(options)
   -- returns true when a persisted preset name no longer resolves (deleted
   -- from the drop-in folder, or failed to (re)translate) and had to be
@@ -2082,8 +2206,7 @@ function Game2:applyOptions()
   Zoom.allowSurvey = caps.survey
   if not caps.survey and Zoom.offset < 0 then Zoom.offset = 0 end
   if caps.fpsMax then
-    local FrameCap = require("src.core.FrameCap")
-    if FrameCap.current > caps.fpsMax then FrameCap.apply(caps.fpsMax) end
+    require("src.core.FrameCap").clampToPerformance(caps.fpsMax)
   end
   if shaderfxCleared and self.save then
     -- applyOptions returns true when it had to clear an unresolved preset.
@@ -2119,20 +2242,20 @@ function Game2:gamepadpressed(joystick, button)
     end)
     selectHeld = ok and down == true
   end
-  -- shoulders and triggers cycle GAME SPEED, as in src/core/Game.lua:881
-  if not selectHeld then
-    if button == "rightshoulder" or button == "righttrigger" then
-      self:_cycleSpeed(1)
-      return
-    elseif button == "leftshoulder" or button == "lefttrigger" then
-      self:_cycleSpeed(-1)
-      return
-    end
-  end
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then
     top:onGamepadPressed(button)
     return
+  end
+  if not selectHeld then
+    local action = Input:padAction(button)
+    if action == "speedUp" then
+      self:_cycleSpeed(1)
+      return
+    elseif action == "speedDown" then
+      self:_cycleSpeed(-1)
+      return
+    end
   end
   if selectHeld then
     local digit = GamepadMap.displayChordDigit(button)

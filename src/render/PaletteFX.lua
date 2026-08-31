@@ -416,6 +416,10 @@ function PaletteFX.spriteRedrawPassActive()
   return currentPass == "world"
 end
 
+function PaletteFX.pass()
+  return currentPass
+end
+
 function PaletteFX.spriteRedraws()
   return spriteRedraws
 end
@@ -737,6 +741,16 @@ function PaletteFX.spriteObp(spriteDef, seed)
   return PaletteFX.darkObp(w.spritePalettes[group], group)
 end
 
+-- engine/overworld/healing_machine.asm:74
+-- color/data/spritepalettes.asm:2
+PaletteFX.HEAL_MACHINE_GROUP = 4
+
+function PaletteFX.healMachineObp()
+  local w = PaletteFX.worldPack()
+  return w and w.spritePalettes
+     and w.spritePalettes[PaletteFX.HEAL_MACHINE_GROUP] or nil
+end
+
 -- GetHealthBarColor (home/palettes.asm) on the standard 48px bar.  It reads
 -- the bar's own length, so a caller mid-drain passes the animated `pixels`
 -- rather than let it be re-derived from hp.
@@ -786,6 +800,9 @@ end
 -- out lit, exactly like init_battle_variables.asm's `ld [wMapPalOffset], a`
 -- leaves the original.
 PaletteFX.DARK_BGP = { [0] = 2, [1] = 3, [2] = 3, [3] = 3 }
+
+-- engine/gfx/screen_effects.asm:1-12
+PaletteFX.POISON_BGP = { [0] = 2, [1] = 1, [2] = 2, [3] = 3 }
 
 local shadeMap = nil
 

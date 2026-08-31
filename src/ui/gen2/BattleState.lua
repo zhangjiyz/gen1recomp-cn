@@ -27,6 +27,7 @@ local Evolution = require("src.core.gen2.Evolution")
 local GbcPalette = require("src.render.GbcPalette")
 local Gen2Save = require("src.core.gen2.Save")
 local Font = require("src.render.Font")
+local ForgetMoveList = require("src.ui.gen2.ForgetMoveList")
 local HpBar = require("src.battle.gen2.HpBar")
 local ItemEffects = require("src.core.gen2.ItemEffects")
 local Mon = require("src.battle.gen2.Mon")
@@ -136,6 +137,9 @@ local TEXT_ASK_FORGET_SLOT = Strings.source("Which move should\nbe forgotten?")
 local TEXT_CANT_FORGET_HM = Strings.source("HM moves can't be\nforgotten now.")
 local TEXT_STOP_LEARNING = Strings.source("Stop learning\n%s?")
 
+-- engine/pokemon/learn.asm:135-166
+BattleState.FORGET_LIST = ForgetMoveList
+
 -- BattleText_EnemyIsAboutToUseWillPlayerChangeMon (data/text/battle.asm:222-231).
 local TEXT_ENEMY_ABOUT_TO_USE = Strings.source(
   "%s\nis about to use\v%s.\fWill %s\nchange POKéMON?")
@@ -206,14 +210,44 @@ local function paginate(text)
   return pages
 end
 
-function BattleState:wantsFillScale() return true end
+function BattleState.fillScale(winW, winH)
+  local w, h = winW or 0, winH or 0
+  local ok, Playfield = pcall(require, "src.render.Playfield")
+  if ok and Playfield.rect then
+    local okv, _, _, pw, ph = pcall(Playfield.rect, winW, winH)
+    if okv and pw and pw >= 1 and ph and ph >= 1 then
+      w, h = pw, ph
+    end
+  end
+  return math.max(1, math.min(w / (Chrome.SCREEN_W * 8),
+    h / (Chrome.SCREEN_H * 8)))
+end
+
+function BattleState.panelScale(winW, winH, fill)
+  if not fill then return Chrome.fitScale(winW, winH) end
+  return BattleState.fillScale(winW, winH)
+end
+
+function BattleState:wantsFillScale()
+  local options = self.game and self.game.options
+  return (options and options.battleFit) == "fill"
+end
+
+function BattleState:battlePanelScale(winW, winH)
+  return BattleState.panelScale(winW, winH, self:wantsFillScale())
+end
+
 function BattleState:drawsWidescreen() return true end
 
--- BATTLE BG (#1709): WHITE is the cart's paper surround, BLACK plain bars.
+-- engine/battle/core.asm:8754
 function BattleState:bgMode()
   local options = self.game and self.game.options
-  return (options and options.battleBg) == "black" and "black" or "white"
+  local mode = options and options.battleBg
+  if mode == "black" or mode == "world" then return mode end
+  return "white"
 end
+
+BattleState.BG_WORLD_DIM = 0.55
 
 function BattleState:bottomUIVisible()
   if not Runtime.wantsHook("battle.bottom_ui_visible") then return true end
@@ -251,6 +285,7 @@ function BattleState.new(game, opts)
   self.pokemon = data.pokemon
   self.battle = opts.battle
   self.onDone = opts.onDone
+  self.link = opts.link
   -- What PlayVictoryMusic needs to know about the opponent (the class the
   -- trainer belongs to); nil for a wild battle.
   self.music = opts.music
@@ -355,9 +390,9 @@ function BattleState.new(game, opts)
   self.showEnemyHud = false
   self.showPlayerHud = false
 
-  -- BattleStart_TrainerHuds, farcalled from BattleStartMessage before the
-  -- opening line (engine/battle/trainer_huds.asm:1-9, core.asm:8733).
-  self.ballRows = {
+  -- engine/battle/trainer_huds.asm:1-9
+  self.ballRows = { player = false, enemy = false }
+  self.startHuds = {
     player = true,
     enemy = not (self.battle and self.battle.wild),
   }
@@ -462,6 +497,15 @@ function BattleState.new(game, opts)
   self.shownLevel = (player and player.level) or 1
   self.shownExp = player
     and self:expPixels(player, player.level, player.experience) or 0
+  local enemy = self.battle and self.battle.enemy
+  Runtime.emit("battle.started", {
+    battle = self,
+    kind = (self.battle and self.battle.wild and "wild")
+      or (self.link and "link") or "trainer",
+    trainerId = self.battle and self.battle.trainer and self.battle.trainer.id,
+    species = enemy and enemy.species,
+    level = enemy and enemy.level,
+  })
   return self
 end
 
@@ -878,6 +922,8 @@ function BattleState:drawPic(mon, back)
     colors = Palettes.trainerColors(self.palettes, self.enemyTrainerClass)
       or colors
   end
+  -- ../pokecrystal/engine/gfx/cgb_layouts.asm:67
+  if self:introGrayscale() then colors = Palettes.BLACKOUT end
   if anim and anim.shade then
     colors = BattleAnimView.shadeColors(colors, anim.shade)
   end
@@ -1023,17 +1069,8 @@ function BattleState:stepHpAnim()
   -- replacement's rate.
   local mon = self:activeMon(anim.side)
   local maxHp = (mon and (mon.maxHp or (mon.stats and mon.stats.hp))) or 0
-  local step = 1
-  if maxHp >= HpBar.LENGTH_PX then
-    step = math.max(1, math.ceil(maxHp / HpBar.LENGTH_PX))
-  end
-  local shown = self.shownHp[anim.side] or 0
   local target = anim.to or 0
-  if shown < target then
-    shown = math.min(target, shown + step)
-  else
-    shown = math.max(target, shown - step)
-  end
+  local shown = HpBar.stepToward(self.shownHp[anim.side] or 0, target, maxHp)
   self.shownHp[anim.side] = shown
   if shown == target then self.hpAnim = nil end
   return true
@@ -1716,12 +1753,19 @@ function BattleState:advanceQueue()
   end
   if event.text then
     self.message = event.text
+    -- engine/battle/core.asm:8733
+    if self.startHuds then
+      self.ballRows.player = self.startHuds.player
+      self.ballRows.enemy = self.startHuds.enemy
+      self.startHuds = nil
+    end
     -- move/level lines do not hold for A/B (battle.asm:336-343); experience
     -- keeps the wait (common_1.asm:1660-1665).
     if event.kind == "move" or event.kind == "level" then
       self.messageTimer = 0
       -- engine/battle/effect_commands.asm:1958-1961
-      if event.kind == "move" and event.missed then
+      -- engine/battle/move_effects/magnitude.asm:20
+      if event.kind == "move" and (event.missed or event.animDelay) then
         self.messageDelay = MOVE_DELAY_FRAMES
       end
     else
@@ -1750,10 +1794,13 @@ function BattleState:advanceQueue()
   end
   -- engine/battle/effect_commands.asm:1958: a missed move burns the delay
   -- and plays nothing; the after-anim chain is animForMove / stepAnim's.
-  if event.kind == "move" and not event.missed then
+  -- data/moves/effects.asm:1705-1711
+  local animId = event.moveAnim
+    or (event.kind == "move" and not event.deferAnim and event.move)
+  if animId and not event.missed then
     self.afterAnimPlayed = nil
     self.pendingAfterAnim = nil
-    if not self:animForMove(event.move, event.side, event.animParam,
+    if not self:animForMove(animId, event.side, event.animParam,
         event.effectiveness) then
       -- BATTLE SCENE off skips the move script but still runs wBattleAfterAnim
       -- (anim_commands.asm:55-72 .disabled fallthrough).
@@ -1952,6 +1999,9 @@ function BattleState:finishBattle()
   -- The party tables it wrote them on are the save's own, so this has to run
   -- before the overworld (and the next save write) sees them again.
   if self.battle then self.battle:clearAllVolatiles() end
+  Runtime.emit("battle.ended", {
+    battle = self, result = self.battle and self.battle.outcome,
+  })
   if self.onDone then
     self.onDone(self.battle and self.battle.outcome, self.battle)
   end
@@ -2004,6 +2054,9 @@ function BattleState:playVictoryMusic()
 end
 
 function BattleState:submit(action)
+  if self.link and self.link.submit then
+    return self.link.submit(self, action)
+  end
   self.phase = "resolving"
   self:pushAll(self.battle:takeTurn(action))
   self.message = nil
@@ -2018,6 +2071,9 @@ end
 -- One semantic path for the native command menu and mod.battle intents.
 function BattleState:chooseMenu(choice)
   if self.phase ~= "menu" then return nil, "battle menu is not active" end
+  if self.link and self.link.menuChoice and self.link.menuChoice(self, choice) then
+    return true
+  end
   if choice == "fight" then
     -- CheckPlayerHasUsableMoves skips MoveSelectionScreen and uses Struggle.
     local fighter = self.battle and self.battle.player
@@ -2110,6 +2166,12 @@ function BattleState:swapMoves(i, j)
   moves[i], moves[j] = b, a
 end
 
+-- ../pokecrystal/engine/battle/core.asm:8063
+function BattleState:introGrayscale()
+  local frame = self.slideFrame
+  return frame ~= nil and frame < BattleAnimView.SLIDE_FRAMES
+end
+
 function BattleState:update(_dt)
   -- The evolution sweep owns the stack (and the low-HP alarm is long over);
   -- this state is only still here because ExitBattle has not cleaned up yet.
@@ -2190,8 +2252,16 @@ function BattleState:update(_dt)
     -- Without it the DUDE's auto-input tapped straight through the "Gotcha!"
     -- line and finishBattle closed the tutorial over the jingle.
     if self.waitSfx then
-      if Sound.isPlaying(self.waitSfx) then return end
-      self.waitSfx = nil
+      if not self.waitSfxLeft then
+        self.waitSfxLeft = Sound.waitFramesFor
+          and Sound.waitFramesFor(self.waitSfx) or 180
+      end
+      self.waitSfxLeft = self.waitSfxLeft - 1
+      if Sound.isPlaying(self.waitSfx) then
+        if self.waitSfxLeft > 0 then return end
+        if Sound.stop then Sound.stop(self.waitSfx) end
+      end
+      self.waitSfx, self.waitSfxLeft = nil, nil
     end
     -- AnimateExpBar sits right after PrintText Text_MonGainedExpPoint
     -- (core.asm:6881-6888), with that line still on screen.  Run the crawl
@@ -2415,6 +2485,9 @@ function BattleState:update(_dt)
   end
 
   if self.phase == "forced-switch" then
+    if self.link and self.link.forcedPrompt and self.link.forcedPrompt(self) then
+      return
+    end
     -- Reuse the party list so the layout and controls match the start menu's.
     self:openParty(true)
     return
@@ -2451,6 +2524,18 @@ function BattleState:update(_dt)
     end
     self.message = nil
     self.phase = "moves"
+    return
+  end
+
+  if self.phase == "refuse-menu" then
+    if self.messageTimer > 0 then
+      if input:wasPressed("a") or input:wasPressed("b") then
+        self.messageTimer = 0
+      end
+      return
+    end
+    self.message = nil
+    self.phase = "menu"
     return
   end
 
@@ -2541,6 +2626,8 @@ function BattleState:openParty(forced)
     prompt = forced and "which" or "choose",
     battle = true,
     battleSubmenu = not forced,
+    party = (self.battle and self.battle.party) or nil,
+    save = self.save,
     onCancel = function()
       stack:pop()
       -- A forced switch cannot be cancelled.
@@ -2577,6 +2664,9 @@ function BattleState:openParty(forced)
         -- ForcePickPartyMonInBattle loops on carry: a pick the engine will not
         -- take has to come back as the list again, never as the battle menu
         -- with a fainted mon standing on the field.
+        if self.link and self.link.forcedSwitch then
+          return self.link.forcedSwitch(self, index)
+        end
         if not self.battle:switch(index) then
           return self:refuseSwitch(true)
         end
@@ -2603,6 +2693,12 @@ end
 
 function BattleState:refuseMove(text)
   self.phase = "refuse-move"
+  self.message = text
+  self.messageTimer = MESSAGE_FRAMES
+end
+
+function BattleState:refuseMenu(text)
+  self.phase = "refuse-menu"
   self.message = text
   self.messageTimer = MESSAGE_FRAMES
 end
@@ -2829,6 +2925,26 @@ function BattleState:hasPokedex()
     or save.pokedexReceived == true
 end
 
+-- caught_data.asm:168-199
+function BattleState:stampCaughtData(mon, bugContest)
+  local save = self.save
+  local world = self.game and self.game.world
+  local map = world and world.map
+  local battle = self.battle
+  Catching.stampCaughtData(mon, {
+    version = save and save.version,
+    save = save,
+    data = self.game and self.game.data,
+    bugContest = bugContest,
+    timeOfDay = (battle and battle.timeOfDay)
+      or (world and world.timeOfDayId and world:timeOfDayId()),
+    map = map and map.def,
+    backupMap = world and world.backupMapId and world.maps
+      and world.maps[world.backupMapId],
+    playerGender = save and save.player and save.player.gender,
+  })
+end
+
 -- PokeBallEffect's caught tail, in the cart's order (item_effects.asm:514-676):
 -- Text_GotchaMonWasCaught, CheckCaughtMon / SetSeenAndCaughtMon, the new-entry
 -- line and NewPokedexEntry, the party add or .SendToPC, then
@@ -2881,6 +2997,8 @@ function BattleState:pushCaught(enemy, itemId)
     return self:pushPayDay()
   end
   save.party = save.party or {}
+  -- item_effects.asm:556-558, :612-614
+  self:stampCaughtData(enemy)
   local toPc = #save.party >= Boxes.PARTY_SIZE
   if toPc then
     -- `.SendToPC` / `predef SendMonIntoBox` (item_effects.asm:548-550, 604):
@@ -2958,6 +3076,7 @@ end
 -- (engine/battle/core.asm:3269-3295, engine/menus/options_menu.asm:249-256).
 function BattleState:shiftOfferAllowed()
   local battle = self.battle
+  if self.link then return false end
   if not (battle and battle.player and battle.trainer) then return false end
   if #(battle.party or {}) < 2 then return false end
   if (battle.player.hp or 0) <= 0 then return false end
@@ -3158,6 +3277,8 @@ end
 -- already in stock the player is shown the comparison and asked, and the NO arm
 -- -- which is also what B does -- keeps the mon they already had.
 function BattleState:contestCatch(mon)
+  -- engine/pokemon/caught_data.asm:72-81
+  self:stampCaughtData(mon, true)
   local kind, stock, fresh = BugContest.catch(self.save, mon)
   if kind ~= BugContest.ASK_SWITCH then
     self:push({ kind = "message", text = Strings("Caught %s!", self:name(mon)) })
@@ -3399,16 +3520,15 @@ function BattleState:useOnPartyMon(itemId, action)
       stack:pop()
       self:openPack()
     end,
-    onChoose = function(_, mon)
+    onChoose = function(partySlot, mon)
       -- RestorePPEffect: the ETHER pair needs the move pick first, the ELIXER
       -- pair walks every slot without one, and an EGG refuses before the move
       -- list ever opens (UseItem_SelectMon's `cp EGG`).
       local row = (action == "pp") and ItemEffects.RESTORE_PP[itemId] or nil
       if row and not row.each and mon and not mon.isEgg then
-        return self:pickMoveForItem(itemId, mon)
+        return self:pickMoveForItem(itemId, mon, partySlot)
       end
-      stack:pop()
-      self:applyPartyItem(itemId, action, mon)
+      self:applyPartyItem(itemId, action, mon, nil, partySlot)
     end,
   })
 end
@@ -3418,7 +3538,7 @@ end
 -- port serves both with src/ui/gen2/MoveDeleter.lua.  Backing out drops only
 -- the move list and leaves the party list standing, which is the routine's own
 -- `jr nz, .loop`.
-function BattleState:pickMoveForItem(itemId, mon)
+function BattleState:pickMoveForItem(itemId, mon, partySlot)
   local stack = self.game.stack
   Screens.push(self.game, "Gen2MoveDeleter", {
     mon = mon,
@@ -3426,8 +3546,7 @@ function BattleState:pickMoveForItem(itemId, mon)
     onCancel = function() stack:pop() end,
     onChoose = function(slot)
       stack:pop() -- the move list
-      stack:pop() -- the party list
-      self:applyPartyItem(itemId, "pp", mon, slot)
+      self:applyPartyItem(itemId, "pp", mon, slot, partySlot)
     end,
   })
 end
@@ -3470,8 +3589,11 @@ end
 -- revive target, a PP slot already full); this side adds the arm that only
 -- exists with a battle up, spends the item where UseDisposableItem sits, and
 -- pays the turn the pack costs.
-function BattleState:applyPartyItem(itemId, action, mon, slot)
+function BattleState:applyPartyItem(itemId, action, mon, slot, partySlot)
   local data = (self.game and self.game.data) or {}
+  local stack = self.game and self.game.stack
+  local menu = stack and stack.top and stack:top()
+  if not (menu and menu.showItemResult) then menu = nil end
   local before = (mon and mon.hp) or 0
   local result
   if action == "pp" then
@@ -3493,12 +3615,34 @@ function BattleState:applyPartyItem(itemId, action, mon, slot)
     end
   end
   if not result.used then
+    if menu then stack:pop() end
     self.message = oneLine(result.text)
     self.messageTimer = MESSAGE_FRAMES
     self.phase = "resolving"
     return
   end
   self:consumeItem(itemId)
+  if menu then
+    -- engine/items/item_effects.asm:1671
+    local climbs = (action == "heal" or action == "revive")
+      and mon and (mon.hp or 0) ~= before
+    if climbs then
+      -- engine/items/item_effects.asm:1659
+      self:stopAlarm()
+      self.healSilence = true
+    end
+    menu:showItemResult(partySlot, {
+      fromHp = climbs and before or nil,
+      toHp = climbs and mon.hp or nil,
+      sfx = climbs and "Sfx_Potion" or nil,
+      text = result.text,
+      onDone = function()
+        stack:pop()
+        self:finishPartyItemTurn(itemId, mon)
+      end,
+    })
+    return
+  end
   self.queue = {}
   if mon == self.battle.player and (mon.hp or 0) ~= before then
     -- Every HP-restoring effect zeroes wLowHealthAlarm BEFORE it touches the
@@ -3516,6 +3660,18 @@ function BattleState:applyPartyItem(itemId, action, mon, slot)
       text = oneLine(result.text) })
   else
     self:push({ kind = "message", text = oneLine(result.text) })
+  end
+  self:pushAll(self.battle:takeTurn({ kind = "item", item = itemId }))
+  self.phase = "resolving"
+  self:advanceQueue()
+end
+
+-- engine/items/item_effects.asm:1671
+function BattleState:finishPartyItemTurn(itemId, mon)
+  self.queue = {}
+  if mon and mon == self.battle.player and self.shownHp then
+    self.shownHp.player = mon.hp or 0
+    if self.hpAnim and self.hpAnim.side == "player" then self.hpAnim = nil end
   end
   self:pushAll(self.battle:takeTurn({ kind = "item", item = itemId }))
   self.phase = "resolving"
@@ -3755,7 +3911,12 @@ function BattleState:drawPanel()
   -- on top, so the tail of a long name is simply covered.
   -- MoveSelectionScreen type 0 is two boxes: the name-only list
   -- (engine/battle/core.asm:5074-5084) and MoveInfoBox's (:5407-5410).
+  -- engine/gfx/cgb_layouts.asm:146
+  -- engine/battle_anims/anim_commands.asm:1302
+  local previousBgp = GbcPalette.setBgp(nil)
   local moveMenu = self.phase == "moves"
+  local forgetting = self.phase == "choose-forget"
+    and (self.messageTimer or 0) <= 0
   Chrome.box(0, 12, 20, 6)
   if moveMenu then
     -- List box first (core.asm:5074-5084), MoveInfoBox on top (:5157).
@@ -3777,45 +3938,39 @@ function BattleState:drawPanel()
       end
       Chrome.printThrough(label, tx, ty, Chrome.DEFAULT_BOX_PALETTE)
     end
-  elseif self.phase == "moves"
-      or (self.phase == "choose-forget" and (self.messageTimer or 0) <= 0) then
-    -- The forget picker shows the SAME four moves, cursored by forgetIndex --
-    -- pick one to drop for the pending move.
-    local forgetting = self.phase == "choose-forget"
+  elseif forgetting then
+    -- engine/pokemon/learn.asm:136-146
+    self:printMessage()
+    local learn = self.pendingLearn
+    local mon = learn and self.battle.party[learn.index]
+    local moves = (mon and mon.moves) or self:playerMoves()
+    ForgetMoveList.draw(moves, self.forgetIndex,
+      self.game and self.game.data and self.game.data.moves,
+      Chrome.DEFAULT_BOX_PALETTE)
+  elseif moveMenu then
     local moves = self:playerMoves()
-    if forgetting then
-      local learn = self.pendingLearn
-      local mon = learn and self.battle.party[learn.index]
-      moves = (mon and mon.moves) or moves
-    end
-    local cursorRow = forgetting and self.forgetIndex or self.moveIndex
+    local cursorRow = self.moveIndex
     -- w2DMenuCursorInitX 5 with the names at hlcoord 6 (core.asm:5086-5107).
-    local cursorCol = moveMenu and 5 or 1
-    local nameCol = moveMenu and 6 or 2
     for i, move in ipairs(moves) do
       local ty = 13 + (i - 1)
       -- Cursor in the box's own gutter, not clipped against the border.
       if i == cursorRow then
-        Chrome.cursorThrough(cursorCol, ty, Chrome.DEFAULT_BOX_PALETTE)
+        Chrome.cursorThrough(5, ty, Chrome.DEFAULT_BOX_PALETTE)
       end
       -- The held slot's marker.  `.battle_player_moves` writes '▷' into the
       -- row wSwappingMove names (engine/battle/core.asm:5157-5165) so a move
       -- picked up for a swap is visible while the cursor moves off it.  It
       -- hlcoord 5, 13 is the cursor's own gutter, so PlaceMenuCursor covers
       -- the marker on the cursor's row.
-      if not forgetting and self.moveSwapIndex == i and i ~= cursorRow then
-        Chrome.printThrough("\u{25B7}", cursorCol, ty, Chrome.DEFAULT_BOX_PALETTE)
+      if self.moveSwapIndex == i and i ~= cursorRow then
+        Chrome.printThrough("\u{25B7}", 5, ty, Chrome.DEFAULT_BOX_PALETTE)
       end
       local def = self.game and self.game.data and self.game.data.moves
         and self.game.data.moves[move.id]
-      Chrome.printThrough((def and def.name) or move.id, nameCol, ty,
+      Chrome.printThrough((def and def.name) or move.id, 6, ty,
         Chrome.DEFAULT_BOX_PALETTE)
-      if not moveMenu then
-        Chrome.printRightThrough(("%d/%d"):format(move.pp or 0, move.maxPp or 0),
-          19, ty, Chrome.DEFAULT_BOX_PALETTE)
-      end
     end
-    if moveMenu then self:drawMoveInfoBox(moves[cursorRow]) end
+    self:drawMoveInfoBox(moves[cursorRow])
   else
     -- Battle messages wrap inside the box rather than running off the frame.
     self:printMessage()
@@ -3841,6 +3996,7 @@ function BattleState:drawPanel()
         Chrome.DEFAULT_BOX_PALETTE)
     end
   end
+  GbcPalette.setBgp(previousBgp)
   if self.phase == "stats-box" and self.statsBoxMon then
     self:drawStatsBox(self.statsBoxMon)
   end
@@ -3905,16 +4061,23 @@ function BattleState:drawLiftedRows()
     self.liftCanvas:setFilter("nearest", "nearest")
   end
   local previous = G.getCanvas()
+  local sx, sy, sw, sh
+  if G.getScissor then sx, sy, sw, sh = G.getScissor() end
   G.setCanvas(self.liftCanvas)
+  G.setScissor()
   G.clear(0, 0, 0, 0)
   G.push()
   G.origin()
   self.liftedPass = true
+  -- engine/battle_anims/anim_commands.asm:1308
+  local previousBgp = GbcPalette.setBgp(self.anim and self.anim.bg.bgp or nil)
   if enemyLift then self:drawPic(battle.enemy, false) end
   if playerLift then self:drawPic(battle.player, true) end
+  GbcPalette.setBgp(previousBgp)
   self.liftedPass = nil
   G.pop()
   G.setCanvas(previous)
+  if sx then G.setScissor(sx, sy, sw, sh) end
   G.setColor(1, 1, 1, 1)
   G.draw(self.liftCanvas, 0, 0)
 end
@@ -3948,19 +4111,12 @@ function BattleState:drawSceneBody()
 end
 
 function BattleState:draw()
-  self:drawScene()
+  Chrome.withClip(function() self:drawScene() end)
 end
 
 function BattleState:drawWidescreen(winW, winH)
-  local G = love.graphics
-  Chrome.letterbox(winW, winH, 1, 1, 1)
-  local scale = Chrome.fitScale(winW, winH)
-  local ox, oy = Chrome.fitOrigin(winW, winH, scale)
-  G.push()
-  G.translate(ox, oy)
-  G.scale(scale, scale)
-  self:drawScene()
-  G.pop()
+  Chrome.withPanel(winW, winH, 1, 1, 1, function() self:drawScene() end,
+    self:battlePanelScale(winW, winH))
 end
 
 BattleState.MENU = MENU

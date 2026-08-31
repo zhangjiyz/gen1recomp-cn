@@ -13,6 +13,76 @@
       "category": "games",
       "versions": [
         {
+          "version": "0.2.42",
+          "date": "2026-08-31",
+          "size": 21534750,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.42/gen1recomp++-0.2.42-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #1990 Fx Sound Speeds Up\n- #1991 Sound fx speed x2\n- #1997 Sound effects buggy after update when speed up\n\n## Contributors\n\n- @1Jamie\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.41",
+          "date": "2026-08-30",
+          "size": 21533788,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.41/gen1recomp++-0.2.41-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #889 Pokemon yellow can't export save file right\n- #1691 Exported .sav not valid in emulator\n- #1910 Screen tearing and presentation sync failure at 90Hz (Steam Deck OLED)\n- #1958 (RBYGSC) Irregular frame pacing\n\n## Contributors\n\n- @1Jamie\n- @bryanthaboi\n- @castdrian\n- @colsonrice"
+        },
+        {
+          "version": "0.2.40",
+          "date": "2026-08-30",
+          "size": 21511375,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.40/gen1recomp++-0.2.40-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #1938 Poké Flute tune can be skipped when waking up Pokemon\n- #1940 Minimize sprite at wrong position\n- #1941 Pokemon sprite visible during Minimize faint animation\n- #1943 [Crystal] Location banners are missing when changing area\n- #1944 My pokemon gen 1 cannot connect\n- #1945 (GSC) Pokemon Cries are Too Fast\n- #1946 Healing during fight looks different\n- #1948 Visibility of character sprites before trainer battle\n- #1949 Multi-hit move critical message doesn't stay onscreen\n- #1950 Player not looking up right at the start\n- #1952 When the game battle is speed up, the jingles stall\n- #1953 Returning to battle state for \"already out\" message\n- #1955 Menu for giving girl in Celadon drinks inaccurate\n- #1957 (GSC) Uncentered text for \"this isn't the time to use that\"\n- #1960 (GSC) Issues when using FLY in the overworld\n- #1961 (GSC) Night Shade move animation erros\n- #1962 (GSC) Unable to sort items in the PC\n- #1963 (Crystal) Move tutor never comes back after teaching a move\n- #1964 (Crystal) Unable to move in the top floor of Celadon Mansion\n- #1967 (Crystal) Broken Credits\n- #1968 (GSC) Missing black and white effect when entering battles\n- #1969 (GSC) Pokéballs for the player and the opponent shouldn't appear at the start of battle intros\n- #1970 (GSC) Missing battle intro effects against trainers\n- #1972 Crystal trading between xbox and android\n- #1974 Android not connecting to xbox battle\n- #1975 (GSC) Music doesn't change when changing routes in a bike\n- #1976 (GSC) Evolving a pokémon stops the overworld music\n- #1977 (GSC) Missing animation when using healing items\n- #1978 (GSC) Missing walking animation when going against obstacles\n- #1979 (GSC) Magnitude animation playing before its level is shown\n- #1980 (GSC) Wrong HUD for learning moves\n- #1981 Market - Buy Items\n- #1982 Early Getting Badge Sounds\n- #1983 Magikarp Money Box is always there\n- #1985 Pokemon Trading Sequence is skippable\n- #1986 Pokeballs in Healing Maschine missing Advance Color\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.39",
+          "date": "2026-08-30",
+          "size": 21499456,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.39/gen1recomp++-0.2.39-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Contributors\n\n- @1Jamie\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.38",
+          "date": "2026-08-29",
+          "size": 21493318,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.38/gen1recomp++-0.2.38-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #1928 (GSC) Incorrect song when fighting against the roaming dogs\n- #1929 (Crystal) NPC at Cianwood can't identify where your pokémon were caught at\n- #1930 (GSC) When winning some badges, you can skip the jingle for winning them\n- #1931 (GSC) Missing sounds for entering and exiting menus on the PC\n- #1933 (GSC) The game is letting you click on \"use\" for items that it shouldn't during battles\n- #1934 (Crystal) Badge and TM jingle not played when receiving both from Clair\n- #1935 (GSC) Wrong layout for exchanging points in the radio tower in goldenrod cirty\n- #1936 (GSC) The game lets you push a boulder way further than it should\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.37",
+          "date": "2026-08-29",
+          "size": 21490921,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.37/gen1recomp++-0.2.37-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #1590 [Feature request] Mods one-click update\n- #1592 [Feature request] PC keys on mobile platforms \n- #1625 bug: Rival has wrong starter\n- #1657 Add Launch Options For Syncing Save and Update\n- #1698 [Save editor] Option to max out the items\n- #1699 [Save editor] Option to sort out the items\n- #1700 [Save editor] Edit the number of coins for the Celedon Game Corner in the save editor\n- #1843 bug: trainer battles not happening\n- #1875 bug: replace this with a meaningful title\n- #1898 Holding up or down doesn't keep scrolling in Pokedex or item menu\n- #1902 Crystal Rocksmash Pokémon spawns not working\n- #1905 Twin girls are trees on road 37\n- #1906 Can’t fly anywhere (with imported save)\n- #1907 Character doesnt keep gender when you import a save\n- #1908 Poison damage flicker missing\n- #1909 Elevator menu inaccuracies\n- #1912 Skin Selection Problem\n- #1915 (GSC) Missing jingle for completing ancient puzzles\n- #1917 Mt. silver flight map incorrect Crystal\n- #1919 (GSC) Some slight inaccuracies after fixing issues #1889 and #1891\n- #1920 (GSC) Missing distortion effect for Surf during battles\n- #1921 (GSC) Animation for the move Night Shade shows a corrupt white line at the top\n- #1922 There's no way to remove speed shortcuts from L1/R1 in controller or remap them to other buttons\n- #1923 (Crystal) Nurse appearing beyond the limits of the map in Goldenrod's Pokémon Center\n- #1924 (Crystal) Plant vases are blue intead of brown\n- #1925 (GSC) Key item Blue Card isn't doing anything when the player uses it\n- #1926 (GSC) Dialogues with unskippable jingles shoudn't show the arrow on the text box while the jingle plays\n- #1927 Add game/gen filters and tags to mod index separate from mod manager\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.36",
+          "date": "2026-08-28",
+          "size": 21477353,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.36/gen1recomp++-0.2.36-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.35",
+          "date": "2026-08-28",
+          "size": 21476663,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.35/gen1recomp++-0.2.35-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.34",
+          "date": "2026-08-28",
+          "size": 21476421,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.34/gen1recomp++-0.2.34-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Contributors\n\n- @AverageConsumer\n- @bryanthaboi"
+        },
+        {
+          "version": "0.2.33",
+          "date": "2026-08-28",
+          "size": 21475829,
+          "downloadURL": "https://github.com/bryanthaboi/gen1recomp/releases/download/v0.2.33/gen1recomp++-0.2.33-ios.ipa",
+          "localizedDescription": "Download the right version for your device below.\n\n## Issues closed\n\n- #1275 Find Mods: opening a mod's details blocks the render thread (_findShowDetails uses the synchronous fetch)\n- #1295 lan code doesn't do double digits only three digit\n- #1384 Battle animations off: player damaging moves show no feedback at all (enemy blink is wrongly gated)\n- #1628 Save Sync showing a duplicate save\n- #1677 Retroarch Skin Getting Cutout\n- #1682 Mods don't remove update\n- #1691 Exported .sav not valid in emulator\n- #1813 Custom Carts menu stops responding after canceling explorer browse for RED\n- #1822 Launcher filters carts by selected cart instead of by selected filter\n- #1861 bug: can’t search mods on iOS because an onscreen keyboard pops up that I can’t interact with\n- #1867 (RBY) Game Corner Prize Exchange Menu Inaccuracies\n- #1868 (RBY) Town Map navigation should only account UP or DOWN\n- #1869 (GSC) Some issues in wider aspect ratios\n- #1870 (GSC) Overworld pokémon sprites are animating too fast\n- #1871 team rocket radio takeover doesn't trigger on pokegear radio\n- #1872 poison flicker only covers the 160x144 canvas\n- #1874 Launcher always shows Red as selected when choosing a game\n- #1876 Vending machine issues\n- #1878 Area issues in the Pokedex\n- #1880 Poke Flute tune can be skipped when waking up Snorlax\n- #1881 Amnesia & Sleep animation bug\n- #1882 Pokeflute with no Pokemon asleep doesn't end turn\n- #1884 PokeGear menu locking up\n- #1885 Visual bugs in PokeGear\n- #1886 Save Editor not tracking OT gender/catch time\n- #1887 (RBY) Buy and Sell menus inaccauracies\n- #1888 (GSC) Shadow when jumping off ledges is transparent and completely round\n- #1889 (GSC) Missing leaves when using FLY in the overworld\n- #1890 (GSC) FLY destination menu inaccuracies\n- #1891 (GSC) Pokédex area map inaccuracies\n- #1892 Flying bugs\n- #1893 (GSC) Missing SFX when operating the bag\n- #1894 Save Sync fails after unlinking Android device — unable to sync or unlink on PC\n- #1895 (GSC) Distortion effect for some moves is glitched\n- #1896 (GSC) Pokéballs not changing color after catching a pokémon\n- #1899 0 pp when importing a savegame\n- #1900 No pokedex when importing an existing savegame\n- #1901 Wrong text in Pokemon menu during fights\n\n## Contributors\n\n- @bryanthaboi"
+        },
+        {
           "version": "0.2.32",
           "date": "2026-08-27",
           "size": 21387427,

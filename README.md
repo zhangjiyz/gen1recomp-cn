@@ -83,6 +83,27 @@ scripts/setup.sh --rom "/path/to/your/game.gb"
 scripts/run.sh
 ```
 
+### 低性能设备
+
+“选项 → 性能模式”可以按设备性能缩减可选画面效果：高档开启全部效果，均衡档关闭 3D 倾斜，低档还会关闭大范围缩放并限制帧率；自动档会根据设备类型选择。该设置只影响显示效果，不改变固定步长的游戏逻辑，也不会丢失用户原有的倾斜和缩放偏好。详见 [新功能说明](docs/new-features.md#performance-tier-low-end-devices)。
+
+### 战斗规则集
+
+“选项 → 战斗规则”决定第一世代战斗采用忠实原版还是现代修正规则。两者使用相同的伤害公式，区别在于是否保留原版卡带的特殊行为和著名 Bug；设置保存在 `options.lua`，模组也可以注册自己的规则集。
+
+| 规则 | 忠实原版 `gen1_faithful` | 现代修正 `modern_clean` |
+| --- | --- | --- |
+| `oneIn256Miss` | 100% 命中率招式仍可能在随机值为 255 时落空 | 100% 命中率招式必定命中 |
+| `critUsesBaseSpeed` | 会心率读取基础速度 | 保持相同 |
+| `critIgnoresStages` | 会心伤害忽略能力等级 | 计算能力等级 |
+| `focusEnergyBug` | 聚气会错误地把会心率降为四分之一 | 聚气按预期提高会心率 |
+| `enemyUnlimitedPP` | 敌方不消耗 PP | 敌方会耗尽 PP 并使用挣扎 |
+| `hyperBeamSkipRechargeOnKO` | 破坏光线击倒目标后跳过蓄力 | 始终需要蓄力 |
+
+## 在线功能
+
+启动器新增“在线”页面。连接后可以查看在线玩家及其游戏和规则，创建或加入对战房间、观战、组织锦标赛，也可以在本机存档或不同玩家的存档之间交换宝可梦。进入比赛时会直接启动对应游戏和规则集，比赛结束后返回在线页面。房间会校验双方引擎版本、规则集以及密封自定义 Cart；游戏内原有的 LINK 菜单仍然只用于局域网连接。
+
 本地开发环境如果已经准备了 `.runtime/love.app`，可在 macOS 上执行：
 
 ```bash
@@ -116,6 +137,54 @@ cd "/path/to/gen1recomp-cn"
 | `F1` | 保存 |
 | `F2` | 读取 |
 | `F10` | 打开／关闭模组管理器 |
+
+## 启动参数与移动端链接
+
+| 参数 | 作用 |
+| --- | --- |
+| `--game=red` | 跳过启动器并直接启动指定版本；也支持 `blue`、`yellow`、`gold`、`silver`、`crystal` 及首字母缩写 |
+| `--cart=id` | 启动指定 ID 的已安装自定义 Cart |
+| `--slot=2` | 加载指定存档槽编号或 ID |
+| `--launcher` | 强制打开启动器 |
+| `--no-sync` | 启动前跳过关联设备的存档同步；等同于 `POKEPORT_LAUNCH_SYNC=0` |
+| `--update` | 启动前检查更新，发现新版本时更新并重启；也支持 `-update` |
+
+设备启用存档同步后，快捷入口默认会在启动游戏前同步，避免“继续游戏”加载已经落后的存档。同步期间按任意键可以跳过；发生冲突时会返回启动器，让玩家选择需要保留的副本。
+
+Android 和 iOS 也可以通过 URL 发出同样的启动请求：
+
+```text
+gen1recomp++://launch?game=red
+```
+
+URL 参数与桌面命令行选项对应：
+
+| URL | 作用 |
+| --- | --- |
+| `gen1recomp++://launch?game=red` | 直接启动红版 |
+| `gen1recomp++://launch?game=red&cart=my_cart` | 启动已安装的 `my_cart` |
+| `gen1recomp++://launch?game=red&slot=2` | 启动红版并选择存档槽 2 |
+| `gen1recomp++://launch?game=red&launcher=1` | 打开红版对应的启动器页面 |
+| `gen1recomp++://launch?game=red&sync=0` | 跳过存档同步 |
+| `gen1recomp++://launch?game=red&update=1` | 启动前检查更新 |
+
+`game` 接受与 `--game` 相同的完整名称和缩写；布尔参数支持 `1`/`0`、`true`/`false`、`yes`/`no` 和 `on`/`off`。包含 URL 保留字符的值需要进行百分号编码。未知参数会被忽略，无效的游戏或 Cart 会回退到启动器。
+
+Android 测试命令：
+
+```bash
+adb shell am start -a android.intent.action.VIEW \
+  -d 'gen1recomp++://launch?game=red' \
+  com.theboisclub.pokemonred
+```
+
+iOS 模拟器测试命令：
+
+```bash
+xcrun simctl openurl booted 'gen1recomp++://launch?game=red'
+```
+
+在实体 iPhone 或 iPad 上，可以从备忘录、信息或 Safari 等能够转交自定义 URL 的应用打开该链接。
 
 ## 模组与 3D 效果
 
@@ -202,5 +271,19 @@ src/locales/zh_CN_app.lua
 ## 致谢
 
 感谢 Gen1Recomp 原作者及所有贡献者，也感谢 [pret](https://github.com/pret) 社区维护的 [pokered](https://github.com/pret/pokered) 反汇编项目。
+
+## iOS 安装与主屏幕入口
+
+在 iOS 启动器中长按已导入的游戏卡带并选择“主屏幕”，即可为该游戏生成独立入口。自定义 Cart 可以在对应列表行选择同一操作。应用会通过 Safari 打开配置描述文件，玩家需要按照系统提示前往“设置”批准安装。生成的入口会保留游戏或 Cart 的封面，并使用相同的 `gen1recomp++://launch` URL 启动。
+
+<div>
+    <a href="https://intradeus.github.io/http-protocol-redirector?r=sidestore://source?url=https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/sidestore-badge.png" alt="Add to SideStore" height="60"></a>
+    &nbsp;
+    <a href="https://intradeus.github.io/http-protocol-redirector?r=feather://source/https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/feather-badge.png" alt="Add to Feather" height="60"></a>
+    &nbsp;
+    <a href="https://intradeus.github.io/http-protocol-redirector?r=altstore://source?url=https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/altstore-badge.png" alt="Add to AltStore" height="60"></a>
+    &nbsp;
+    <a href="https://github.com/bryanthaboi/gen1recomp/releases/latest"><img src="./.github/resources/github-badge.png" alt="Download from GitHub" height="60"></a>
+</div>
 
 本中文分支会在尊重上游项目、许可证和第三方内容版权的前提下持续同步和完善。

@@ -361,6 +361,14 @@ function PartyMenu:close()
   if self.game.stack:top() == self then self.game.stack:pop() end
 end
 
+-- engine/battle/core.asm:2329
+function PartyMenu:refuse(text)
+  self.submenu = nil
+  self.subIndex = 1
+  local TextBox = require("src.render.TextBox")
+  self.game.stack:push(TextBox.new(self.game, text))
+end
+
 function PartyMenu:gridNavigation()
   if not self.battle
       or not Runtime.wantsHook("ui.party.grid_navigation") then return false end
@@ -418,8 +426,13 @@ function PartyMenu:update(dt)
         -- (core.asm .partyMenuWasSelected)
         Screens.push(self.game, "SummaryMenu", mon)
       elseif action == "battle_switch" then
-        self.game.stack:pop()
-        self.onSwitch(mon)
+        -- engine/battle/core.asm:2396
+        if self.keepOpen then
+          self.onSwitch(mon, self)
+        else
+          self.game.stack:pop()
+          self.onSwitch(mon)
+        end
         return
       elseif action == "cancel" then
         self.game.stack:pop()
@@ -731,14 +744,7 @@ function PartyMenu:update(dt)
   end
 end
 
--- The bottom-of-screen context message for the current menu state
--- (pokered engine/menus/party_menu.asm PartyMenuMessage / RedrawPartyMenu_):
--- the party menu always prints a message in the bottom text box.  With the
--- normal message id that is PartyMenuBattleText ("Bring out which POKéMON?")
--- when IsInBattle else PartyMenuNormalText ("Choose a POKéMON."); the swap /
--- item / TM-HM ids print their own strings, and EVO_STONE shares
--- PartyMenuItemUseText (party_menu.asm:229 PartyMenuMessagePointers).
--- Pure (no side effects) so drivers can assert it. #147 #1610
+-- engine/menus/party_menu.asm:229 (#147 #1610 #1901)
 function PartyMenu:bottomMessage()
   if self.swapFrom then
     return self.game.data.text._PartyMenuSwapMonText
@@ -749,7 +755,7 @@ function PartyMenu:bottomMessage()
   elseif self.softboiledFrom or self.itemUse then
     return self.game.data.text._PartyMenuItemUseText
       or Strings("Use item on which\nPOKéMON?")
-  elseif self.battle then
+  elseif self.forceSwitch then
     return self.game.data.text._PartyMenuBattleText
       or Strings("Bring out which\nPOKéMON?")
   else

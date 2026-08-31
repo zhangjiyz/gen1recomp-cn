@@ -106,6 +106,12 @@ local function addTouchRows(rows, add, opts, hooks)
           return true
         end)
     end
+    add(Strings("KEY BAR"),
+      function() return opts.hotbar == false and Strings("OFF") or Strings("ON") end,
+      function()
+        opts.hotbar = opts.hotbar == false
+        return true
+      end)
   end
 
   -- TOUCH CONTROLS, the on-screen pad's layout editor.  It used to be a
@@ -675,9 +681,12 @@ local function gen2Rows(opts, hooks, shared)
       end)
   end
 
-  -- BATTLE BG (#1709): the WHITE/BLACK pair Gold's battle screen honours.
+  add(Strings("BATTLE SIZE"), ladder(opts, "battleFit",
+    { { "fixed", "FIXED" }, { "fill", "FILL" } }, "fixed"))
+
   add(Strings("BATTLE BG"), ladder(opts, "battleBg",
-    { { "white", "WHITE" }, { "black", "BLACK" } }, "white"))
+    { { "white", "WHITE" }, { "black", "BLACK" }, { "world", "WORLD" } },
+    "white"))
 
   addTouchRows(rows, add, shared, hooks)
 
@@ -712,6 +721,23 @@ function LauncherSettings.open(hooks, version)
     sections[#sections + 1] =
       { title = Strings("OPTIONS"), rows = coreRows(opts, hooks) }
   end
+  sections[#sections + 1] = {
+    title = Strings("LAUNCHER"),
+    rows = {
+      {
+        label = Strings("REDUCE MOTION"),
+        value = function()
+          return opts.reduceMotion == true and Strings("ON") or Strings("OFF")
+        end,
+        step = function()
+          opts.reduceMotion = not (opts.reduceMotion == true)
+          local okT, Transition = pcall(require, "src.ui.kit.Transition")
+          if okT then Transition.reduceMotion = opts.reduceMotion end
+          return true
+        end,
+      },
+    },
+  }
   -- Mod options are generation-agnostic (the manager's options_schema
   -- contract), so they ride along either way.
   for _, mod in ipairs(discoverModSchemas(opts)) do

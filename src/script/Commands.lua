@@ -135,7 +135,11 @@ function Commands.show_text(ctx, textId, subs, extraOpts)
     end
   end
   -- MONEY_BOX (engine/menus/text_box.asm:133) reads the live wallet
-  if opts and opts.money == true then
+  if opts and opts.money == "choice" then
+    -- scripts/MtMoonPokecenter.asm:30
+    opts.money = function() return ctx.save.money end
+    opts.moneyWithChoice = true
+  elseif opts and opts.money == true then
     opts.money = function() return ctx.save.money end
   end
   ctx.game.stack:push(TextBox.new(ctx.game, text, function()
@@ -214,22 +218,23 @@ function Commands.jump_if_false(ctx, target)
   if not ctx.lastCheck then return target end
 end
 
--- give_item <itemId> [count] [gotText]: adds to the bag, plays the gift
--- jingle and shows the "got item!" box.  pokered's GiveItem (home/
+-- give_item <itemId> [count] [gotText] [fullText]: adds to the bag, plays
+-- the gift jingle and shows the "got item!" box.  pokered's GiveItem (home/
 -- give.asm) copies the item name to wStringBuffer and every gift script
 -- then prints a text ending "<PLAYER> got\n<item>!" with
 -- sound_get_item_1/sound_get_key_item.  gotText picks that per-script
 -- text (label or literal; {RAM:wStringBuffer} becomes the item name);
--- pass false when the script shows its own received-text row.
-function Commands.give_item(ctx, itemId, count, gotText)
+-- pass false when the script shows its own received-text row.  fullText
+-- picks the refusal text (scripts/BillsHouse.asm:184-186).
+function Commands.give_item(ctx, itemId, count, gotText, fullText)
   -- the bag can refuse at its configured capacity (20 in vanilla): halt
   -- the script, so later set_flag rows don't burn the gift -- make
   -- room and talk again, like the original (pokered's `jr nc, .bag_full`
   -- skips the received text entirely when AddItemToInventory refuses)
   if not require("src.inventory.Bag").add(
       ctx.save, itemId, count or 1, ctx.game.data) then
-    Commands.show_text(ctx, ctx.game.data.text
-      and ctx.game.data.text._BagFullText or Strings("You can't carry\nany more items!"))
+    Commands.show_text(ctx, fullText or (ctx.game.data.text
+      and ctx.game.data.text._BagFullText) or Strings("You can't carry\nany more items!"))
     return math.huge
   end
   local def = ctx.game.data.items[itemId]
@@ -294,7 +299,9 @@ end
 -- and battle music.
 function Commands.pushBattle(ctx, battle)
   if ctx.overworld and ctx.overworld.pushBattle then
-    ctx.overworld:pushBattle(battle)
+    -- engine/battle/battle_transitions.asm:28
+    ctx.overworld:pushBattle(battle,
+                             battle.kind == "trainer" and ctx.npc or nil)
   else
     Logger.warn("pushBattle: no overworld:pushBattle, skipping the transition wipe")
     ctx.game.stack:push(battle)
@@ -710,7 +717,7 @@ local function askNickname(ctx, mon)
       return
     end
     Screens.push(ctx.game, "NamingScreen", {
-      title = Strings("NICKNAME?"), maxLen = 10,
+      title = Strings("NICKNAME?"), maxLen = 10, mon = mon,
       onDone = function(nick)
         if nick and #nick > 0 then mon.nickname = nick end
         ctx.lastCheck = success

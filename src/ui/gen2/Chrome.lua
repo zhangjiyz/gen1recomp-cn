@@ -50,7 +50,10 @@ local function letterboxPaper()
   return c[1] / 255, c[2] / 255, c[3] / 255
 end
 
+Chrome.worldSurround = false
+
 function Chrome.letterbox(winW, winH, r, g, b)
+  if Chrome.worldSurround then return end
   local Letterbox = require("src.render.Letterbox")
   local G = love.graphics
   G.setColor(Letterbox.fill(r or 1, g or 1, b or 1, letterboxPaper))
@@ -102,6 +105,34 @@ function Chrome.positionLift(winW, winH, scale)
   local _, _, _, h = playfieldRect(winW, winH)
   return ScreenPosition.lift(h, Chrome.SCREEN_H * 8 * (scale
     or Chrome.fitScale(winW, winH)), ScreenPosition.safeTop())
+end
+
+-- pokegold engine/battle/core.asm:8646, engine/events/halloffame.asm:270
+local function clipTo(x, y, w, h)
+  local G = love.graphics
+  if G.intersectScissor then G.intersectScissor(x, y, w, h)
+  else G.setScissor(x, y, w, h) end
+end
+
+function Chrome.withPanel(winW, winH, r, g, b, drawFn, scale)
+  local G = love.graphics
+  Chrome.letterbox(winW, winH, r, g, b)
+  scale = scale or Chrome.fitScale(winW, winH)
+  local ox, oy = Chrome.fitOrigin(winW, winH, scale)
+  G.push("all")
+  clipTo(ox, oy, Chrome.SCREEN_W * 8 * scale, Chrome.SCREEN_H * 8 * scale)
+  G.translate(ox, oy)
+  G.scale(scale, scale)
+  drawFn()
+  G.pop()
+end
+
+function Chrome.withClip(drawFn)
+  local G = love.graphics
+  G.push("all")
+  clipTo(0, 0, Chrome.SCREEN_W * 8, Chrome.SCREEN_H * 8)
+  drawFn()
+  G.pop()
 end
 
 Chrome.DEFAULT_BOX_PALETTE = {

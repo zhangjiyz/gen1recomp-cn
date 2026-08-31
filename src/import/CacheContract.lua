@@ -10,7 +10,13 @@ local CacheContract = {}
 
 CacheContract.FORMAT = "rom-cache-v10:"
 CacheContract.VERSION_FORMAT = {
-  crystal = "rom-cache-v10-crystal3:",
+  -- v11: Gen 2 maps carry their object list's ROM address, which a .sav
+  -- export re-anchoring a save onto another map writes back into
+  -- wCurMapObjectEventsPointer. A v10 cache has no address to write, and
+  -- such an export is refused until the ROM re-imports.
+  gold = "rom-cache-v11:",
+  silver = "rom-cache-v11:",
+  crystal = "rom-cache-v11-crystal4:",
 }
 CacheContract.MARKER_PATH = "rom-cache.complete"
 
@@ -27,6 +33,9 @@ CacheContract.REQUIRED_FILES = {
   "assets/generated/battle/anims/move_anim_1.png",
   "assets/generated/audio/programs.bin",
   "assets/generated/trade/game_boy.png",
+  -- engine/items/town_map.asm:296, 150
+  "assets/generated/townmap/nest.png",
+  "assets/generated/townmap/up_arrow.png",
 }
 
 CacheContract.VERSION_REQUIRED_FILES = {
@@ -83,6 +92,11 @@ CacheContract.VERSION_REQUIRED_FILES_OVERRIDE = {
     "assets/generated/pc/mail_item.png",
     -- engine/events/fishing_gfx.asm:23
     "assets/generated/emotes/fishing.png",
+    -- data/sprites/emotes.asm:19, engine/events/field_moves.asm:390
+    "assets/generated/emotes/jump_shadow.png",
+    "assets/generated/emotes/cut_grass.png",
+    -- engine/pokegear/pokegear.asm:2298
+    "assets/generated/pokegear/nest_icon.png",
   },
   crystal = {
     "data/generated/constants.lua",
@@ -103,6 +117,8 @@ CacheContract.VERSION_REQUIRED_FILES_OVERRIDE = {
     "data/generated/intro.lua",
     "assets/generated/fonts/font.png",
     "assets/generated/fonts/frames.png",
+    -- ../pokecrystal/gfx/font.asm:60
+    "assets/generated/fonts/map_entry_sign.png",
     "assets/generated/title/crystal_logo.png",
     "assets/generated/title/crystal_wordmark.png",
     "assets/generated/title/crystal_suicune.png",
@@ -133,6 +149,11 @@ CacheContract.VERSION_REQUIRED_FILES_OVERRIDE = {
     "assets/generated/battle/trainers/chris.png",
     -- ../pokecrystal/engine/events/fishing_gfx.asm:38-42
     "assets/generated/emotes/fishing.png",
+    -- data/sprites/emotes.asm:19, engine/events/field_moves.asm:390
+    "assets/generated/emotes/jump_shadow.png",
+    "assets/generated/emotes/cut_grass.png",
+    -- engine/pokegear/pokegear.asm:2298
+    "assets/generated/pokegear/nest_icon.png",
   },
 }
 CacheContract.VERSION_REQUIRED_FILES_OVERRIDE.silver =

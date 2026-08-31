@@ -95,6 +95,7 @@ function Gen2Save.crosswalks(data)
     itemIndex = toIndex(data.items),
     mapIds = mapIds,
     itemDefs = data.items or {},
+    moveDefs = data.moves or {},
   }
 end
 
@@ -147,18 +148,36 @@ local function decodeStatExp(bytes, o)
   }
 end
 
+-- constants/pokemon_data_constants.asm:216, :218
+local function decodePPByte(b) return b % 64, math.floor(b / 64) % 4 end
+local function encodePPByte(pp, ppUps)
+  return ((ppUps or 0) % 4) * 64 + ((pp or 0) % 64)
+end
+
+-- engine/items/item_effects.asm:2736
+local function maxPPOf(base, ppUps)
+  if not base then return nil end
+  return base + (ppUps or 0) * math.min(math.floor(base / 5), 7)
+end
+
 -- The first 32 bytes, which a box mon and a party mon share.
 local function decodeSharedMon(bytes, o, x)
-  local moves, pp = {}, {}
+  local moves = {}
   for i = 0, 3 do
     local id = named(x.moves, u8(bytes, o + 2 + i))
-    if id then moves[#moves + 1] = id end
+    if id then
+      local pp, ppUps = decodePPByte(u8(bytes, o + 0x17 + i))
+      local def = x.moveDefs[id]
+      local base = type(def) == "table" and def.pp or nil
+      moves[#moves + 1] = {
+        id = id, pp = pp, ppUps = ppUps, maxPp = maxPPOf(base, ppUps),
+      }
+    end
   end
-  for i = 0, 3 do pp[i + 1] = u8(bytes, o + 0x17 + i) % 64 end
   return {
     species = named(x.pokemon, u8(bytes, o)),
     item = named(x.items, u8(bytes, o + 1)),
-    moves = moves, pp = pp,
+    moves = moves,
     otId = be(bytes, o + 6, 2),
     experience = be(bytes, o + 8, 3),
     statExp = decodeStatExp(bytes, o + 0x0B),
@@ -299,6 +318,73 @@ local function decodeBadges(byte, order)
   return out
 end
 
+-- data/events/engine_flags.asm:11-40
+local ENGINE_FLAG_BITS = {
+  wPokegearFlags = { { 1, 0 }, { 0, 1 }, { 2, 2 }, { 3, 3 }, { 4, 7 } },
+  wStatusFlags = { { 11, 0 }, { 12, 1 }, { 13, 3 }, { 14, 4 }, { 15, 6 } },
+  wStatusFlags2 = {
+    { 18, 0 }, { 17, 1 }, { 19, 4 }, { 20, 5 }, { 21, 6 }, { 22, 7 },
+  },
+}
+
+-- data/events/engine_flags.asm:74-101 over the spawn indexes at
+-- constants/map_data_constants.asm:68-99
+local FLYPOINT_BITS = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  18, 19, 20, 21, 22, 23, 24, 25, 26, 28,
+}
+local FLYPOINT_FIRST_ID = 50
+
+-- pokecrystal constants/engine_flags.asm:25 ENGINE_MOBILE_SYSTEM
+local function engineId(gold, gameVersion)
+  if gameVersion == "crystal" and gold >= 16 then return gold + 1 end
+  return gold
+end
+
+-- engine/pokegear/pokegear.asm:2189 HasVisitedSpawn
+local function eachSpawnBit(L, fn)
+  if not L.wVisitedSpawns then return end
+  for i, bit in ipairs(FLYPOINT_BITS) do
+    fn(FLYPOINT_FIRST_ID + i - 1, L.wVisitedSpawns + math.floor(bit / 8),
+       2 ^ (bit % 8))
+  end
+end
+
+local function decodeEngineFlags(bytes, L, gameVersion)
+  local out = {}
+  for field, rows in pairs(ENGINE_FLAG_BITS) do
+    local at = L[field]
+    if at then
+      local byte = u8(bytes, at)
+      for _, row in ipairs(rows) do
+        if math.floor(byte / 2 ^ row[2]) % 2 == 1 then
+          out[engineId(row[1], gameVersion)] = true
+        end
+      end
+    end
+  end
+  eachSpawnBit(L, function(id, at, mask)
+    if math.floor(u8(bytes, at) / mask) % 2 == 1 then
+      out[engineId(id, gameVersion)] = true
+    end
+  end)
+  return out
+end
+
+-- constants/sprite_constants.asm:149 SPRITE_VARS; ram/sram.asm:96
+Gen2Save.VARIABLE_SPRITES = 16
+
+-- engine/overworld/overworld.asm:326 GetMonSprite.Variable
+local function decodeVariableSprites(bytes, at, count)
+  if not at then return nil end
+  local out = {}
+  for i = 0, count - 1 do
+    local b = u8(bytes, at + i)
+    if b and b ~= 0 then out[i] = b end
+  end
+  return out
+end
+
 Gen2Save.NUM_SPECIES = 251
 Gen2Save.EVENT_BYTES = 256
 
@@ -356,6 +442,9 @@ function Gen2Save.decode(bytes, gameVersion, data)
       coins = be(bytes, L.wCoins, 2),
       badges = decodeBadges(u8(bytes, L.wBadges), Gen2Save.JOHTO_BADGES),
       kantoBadges = decodeBadges(u8(bytes, L.wKantoBadges), Gen2Save.KANTO_BADGES),
+      -- constants/ram_constants.asm:177 PLAYERGENDER_FEMALE_F
+      gender = L.wPlayerGender
+        and (u8(bytes, L.wPlayerGender) % 2 == 1 and "female" or "male") or nil,
     },
     rival = { name = text(bytes, L.wRivalName, Gen2Save.NAME_LENGTH) },
     mom = { name = text(bytes, L.wMomsName, Gen2Save.NAME_LENGTH) },
@@ -369,6 +458,9 @@ function Gen2Save.decode(bytes, gameVersion, data)
       seen = decodeDex(bytes, L.wPokedexSeen, x),
     },
     events = decodeFlagBytes(bytes, L.wEventFlags, Gen2Save.EVENT_BYTES),
+    engineFlags = decodeEngineFlags(bytes, L, gameVersion),
+    variableSprites = decodeVariableSprites(bytes, L.wVariableSprites,
+                                            Gen2Save.VARIABLE_SPRITES),
     -- Save.summary does `save.position.map or save.spawn`.
     position = {
       map = x.maps[u8(bytes, L.wMapGroup) * 256 + u8(bytes, L.wMapNumber)],
@@ -479,7 +571,9 @@ local function putSharedMon(t, o, mon, x)
   putU8(t, o, indexOf(x.pokemonIndex, mon.species))
   putU8(t, o + 1, indexOf(x.itemIndex, mon.item))
   for i = 0, 3 do
-    putU8(t, o + 2 + i, indexOf(x.moveIndex, (mon.moves or {})[i + 1]))
+    local mv = (mon.moves or {})[i + 1]
+    putU8(t, o + 2 + i,
+      indexOf(x.moveIndex, type(mv) == "table" and mv.id or mv))
   end
   putBE(t, o + 6, mon.otId or 0, 2)
   putBE(t, o + 8, mon.experience or 0, 3)
@@ -491,7 +585,12 @@ local function putSharedMon(t, o, mon, x)
   putU8(t, o + 0x15, (d.attack or 0) * 16 + (d.defense or 0))
   putU8(t, o + 0x16, (d.speed or 0) * 16 + (d.special or 0))
   for i = 0, 3 do
-    putU8(t, o + 0x17 + i, (mon.ppRaw or {})[i + 1] or (mon.pp or {})[i + 1] or 0)
+    local mv = (mon.moves or {})[i + 1]
+    if type(mv) == "table" then
+      putU8(t, o + 0x17 + i, encodePPByte(mv.pp, mv.ppUps))
+    else
+      putU8(t, o + 0x17 + i, (mon.ppRaw or {})[i + 1] or (mon.pp or {})[i + 1] or 0)
+    end
   end
   putU8(t, o + 0x1B, mon.happiness or 0)
   -- 0x1C-0x1E belong to the mon, not to the slot: leaving them to the template
@@ -551,6 +650,28 @@ local function putBag(t, L, inventory, x)
   return overflow
 end
 
+local function putEngineFlags(t, L, flags, gameVersion)
+  for field, rows in pairs(ENGINE_FLAG_BITS) do
+    local at = L[field]
+    if at then
+      local byte = t[at] or 0
+      for _, row in ipairs(rows) do
+        local mask = 2 ^ row[2]
+        local on = math.floor(byte / mask) % 2 == 1
+        local want = flags[engineId(row[1], gameVersion)] == true
+        if on ~= want then byte = want and (byte + mask) or (byte - mask) end
+      end
+      t[at] = byte
+    end
+  end
+  eachSpawnBit(L, function(id, at, mask)
+    local cur = t[at] or 0
+    local on = math.floor(cur / mask) % 2 == 1
+    local want = flags[engineId(id, gameVersion)] == true
+    if on ~= want then t[at] = want and (cur + mask) or (cur - mask) end
+  end)
+end
+
 local function putFlagSet(t, at, set, count, indexFor)
   for i = 0, count - 1 do
     local byteAt = at + math.floor(i / 8)
@@ -592,6 +713,12 @@ function Gen2Save.encode(save, gameVersion, template, data)
   putBadges(t, L.wKantoBadges, p.kantoBadges, Gen2Save.KANTO_BADGES)
   putText(t, L.wRivalName, (save.rival or {}).name or "", Gen2Save.NAME_LENGTH)
   putText(t, L.wMomsName, (save.mom or {}).name or "", Gen2Save.NAME_LENGTH)
+  -- engine/menus/init_gender.asm:38
+  if L.wPlayerGender then
+    local byte = t[L.wPlayerGender] or 0
+    putU8(t, L.wPlayerGender,
+          byte - byte % 2 + (p.gender == "female" and 1 or 0))
+  end
 
   local party = save.party or {}
   if #party > Gen2Save.PARTY_LENGTH then
@@ -657,6 +784,16 @@ function Gen2Save.encode(save, gameVersion, template, data)
     local byte = (save.events or {})[i]
     if type(byte) == "number" then putU8(t, L.wEventFlags + i, byte) end
   end
+  if type(save.engineFlags) == "table" then
+    putEngineFlags(t, L, save.engineFlags, gameVersion)
+  end
+  -- engine/overworld/scripting.asm:869 Script_variablesprite
+  if L.wVariableSprites and type(save.variableSprites) == "table" then
+    for i = 0, Gen2Save.VARIABLE_SPRITES - 1 do
+      local b = save.variableSprites[i]
+      if type(b) == "number" then putU8(t, L.wVariableSprites + i, b) end
+    end
+  end
 
   local pos = save.position
   if pos then
@@ -665,6 +802,29 @@ function Gen2Save.encode(save, gameVersion, template, data)
     putU8(t, L.wMapNumber, (ids and ids[2]) or pos.mapNumber or 0)
     putU8(t, L.wXCoord, pos.x or 0)
     putU8(t, L.wYCoord, pos.y or 0)
+  end
+
+  -- The save may now stand on a different map than the cartridge image it
+  -- was written into. Everything the template carried for ITS map is right
+  -- only for that map: the real game's CONTINUE re-derives attributes and
+  -- blocks from the ROM but keeps the saved object window
+  -- (MapSetupScript_Continue runs LoadMapAttributes_SkipObjects), so a
+  -- moved save needs that window rebuilt for where it stands, or the new
+  -- map continues with the old map's people in it. Same-map exports leave
+  -- the template's window untouched, byte for byte.
+  local templateGroup = template:byte(L.wMapGroup + 1)
+  local templateNumber = template:byte(L.wMapNumber + 1)
+  if t[L.wMapGroup] ~= templateGroup or t[L.wMapNumber] ~= templateNumber then
+    local Gen2MapContext = require("src.save_convert.Gen2MapContext")
+    local ctx, why = Gen2MapContext.build(data, gameVersion,
+      t[L.wMapGroup], t[L.wMapNumber], t[L.wXCoord], t[L.wYCoord])
+    if not ctx then
+      return nil, ("this save cannot be exported onto map %d/%d: %s")
+        :format(t[L.wMapGroup], t[L.wMapNumber], tostring(why))
+    end
+    for offset, values in pairs(ctx.writes) do
+      for i, value in ipairs(values) do t[offset + i - 1] = value % 256 end
+    end
   end
   local pt = save.playTime
   if pt then

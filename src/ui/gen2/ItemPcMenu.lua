@@ -28,6 +28,7 @@
 local Bag = require("src.inventory.Bag")
 local Chrome = require("src.ui.gen2.Chrome")
 local Logger = require("src.core.Logger")
+local PcItems = require("src.core.gen2.PcItems")
 local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local Sound = require("src.core.Sound")
@@ -114,7 +115,7 @@ function ItemPcMenu.new(game, opts)
   self.confirm = nil
   if self.house then
     -- _PlayersHousePC: PC_PlayBootSound, then PlayersPCTurnOnText.
-    self:playSfx("Sfx_BootPc")
+    self:playPcSfx("Sfx_BootPc")
     self:say({ { "{PLAYER} turned on", "the PC." } })
   end
   return self
@@ -126,6 +127,12 @@ function ItemPcMenu:playSfx(name)
   if sfx and sfx[Sound.resolve(data, name)] then
     Sound.play(data, name)
   end
+end
+
+-- engine/events/pokecenter_pc.asm:200
+function ItemPcMenu:playPcSfx(name)
+  Sound.waitSfxDone()
+  self:playSfx(name)
 end
 
 function ItemPcMenu:playerName()
@@ -144,7 +151,7 @@ function ItemPcMenu:close()
   -- _PlayersHousePC plays PC_PlayShutdownSound only on the unchanged arm;
   -- `.changed_deco_tiles` leaves for the map reload without it.
   if self.house and not self.changedDecorations then
-    self:playSfx("Sfx_ShutDownPc")
+    self:playPcSfx("Sfx_ShutDownPc")
   end
   if self.onClose then self.onClose(self.changedDecorations) end
 end
@@ -163,11 +170,15 @@ function ItemPcMenu:cantToss(id)
   return def ~= nil and def.canToss == false
 end
 
+-- engine/events/pokecenter_pc.asm:647
 function ItemPcMenu:rebuild()
   local pc = (self.save and self.save.pcItems) or {}
+  local order = self.save and PcItems.order(self.save, self.items) or {}
   local rows = {}
-  for id, count in pairs(pc) do
-    if (count or 0) > 0 then
+  for slot = 1, #order do
+    local id = order[slot]
+    local count = pc[id] or 0
+    if count > 0 then
       local def = self:def(id)
       local remaining = count
       while remaining > 0 do
@@ -175,19 +186,12 @@ function ItemPcMenu:rebuild()
         rows[#rows + 1] = {
           id = id, count = n,
           name = (def and def.name) or id,
-          index = def and def.index or math.huge,
+          slot = slot,
         }
         remaining = remaining - n
       end
     end
   end
-  -- wPCItems keeps acquisition order; without that recorded, item id order is
-  -- the stable choice, the same sort the PACK uses.
-  table.sort(rows, function(a, b)
-    if a.index ~= b.index then return a.index < b.index end
-    if a.id ~= b.id then return a.id < b.id end
-    return a.count > b.count
-  end)
   self.rows = rows
   if self.listIndex > #rows + 1 then self.listIndex = #rows + 1 end
   if self.listIndex < 1 then self.listIndex = 1 end
@@ -377,6 +381,8 @@ function ItemPcMenu:choose()
     self.phase = entry.id
     self.listIndex = 1
     self.scroll = 0
+    -- engine/events/pokecenter_pc.asm:569
+    self.switching = nil
     self:rebuild()
     return
   end
@@ -406,6 +412,46 @@ function ItemPcMenu:choose()
   end
   -- logoff / turnoff: PlayerLogOffMenu serves both rows.
   self:close()
+end
+
+
+-- engine/events/pokecenter_pc.asm:622
+-- engine/items/switch_items.asm:27
+function ItemPcMenu:armSwitch()
+  if not self.rows[self.listIndex] then return end
+  self.switching = self.listIndex
+end
+
+-- engine/events/pokecenter_pc.asm:604
+function ItemPcMenu:updateSwitch(input)
+  if input:wasPressed("up") then
+    self.listIndex = self.listIndex > 1 and self.listIndex - 1
+      or self:listTotal()
+    self:ensureVisible()
+  elseif input:wasPressed("down") then
+    self.listIndex = self.listIndex < self:listTotal() and self.listIndex + 1
+      or 1
+    self:ensureVisible()
+  elseif input:wasPressed("a") or input:wasPressed("select") then
+    self:placeSwitch()
+  elseif input:wasPressed("b") then
+    -- engine/events/pokecenter_pc.asm:615
+    self.switching = nil
+  end
+end
+
+-- engine/events/pokecenter_pc.asm:620
+-- engine/items/switch_items.asm:12
+function ItemPcMenu:placeSwitch()
+  local held = self.rows[self.switching]
+  local target = self.rows[self.listIndex]
+  self:playPcSfx("Sfx_SwitchPokemon")
+  if not target then return end
+  if held and self.save and target.slot ~= held.slot then
+    PcItems.move(self.save, held.id, target.slot, self.items)
+    self:rebuild()
+  end
+  self.switching = nil
 end
 
 -- ------------------------------------------------------------------- update
@@ -451,9 +497,12 @@ function ItemPcMenu:update(_dt)
     if input:wasPressed("up") or input:wasPressed("down") then
       c.choice = c.choice == 1 and 2 or 1
     elseif input:wasPressed("b") then
+      -- home/menu.asm:345
+      self:playSfx("Sfx_ReadText2")
       self.confirm = nil
       if c.onNo then c.onNo() end
     elseif input:wasPressed("a") then
+      self:playSfx("Sfx_ReadText2")
       self.confirm = nil
       if c.choice == 1 then
         if c.onYes then c.onYes() end
@@ -474,6 +523,10 @@ function ItemPcMenu:update(_dt)
   end
 
   if self.phase == "withdraw" or self.phase == "toss" then
+    if self.switching then
+      self:updateSwitch(input)
+      return
+    end
     if input:wasPressed("up") then
       self.listIndex = self.listIndex > 1 and self.listIndex - 1
         or self:listTotal()
@@ -483,13 +536,19 @@ function ItemPcMenu:update(_dt)
         or 1
       self:ensureVisible()
     elseif input:wasPressed("b") then
+      -- engine/menus/scrolling_menu.asm:24
+      self:playSfx("Sfx_ReadText2")
       self.phase = "menu"
+      self.switching = nil
     elseif input:wasPressed("a") then
+      self:playSfx("Sfx_ReadText2")
       if self.phase == "withdraw" then
         self:chooseWithdraw()
       else
         self:chooseToss()
       end
+    elseif input:wasPressed("select") then
+      self:armSwitch()
     end
     return
   end
@@ -499,9 +558,12 @@ function ItemPcMenu:update(_dt)
   elseif input:wasPressed("down") then
     self.index = self.index < #self.entries and self.index + 1 or 1
   elseif input:wasPressed("a") then
+    -- home/menu.asm:476
+    self:playSfx("Sfx_ReadText2")
     self:choose()
   elseif input:wasPressed("b") then
     -- DoNthMenu's carry is `.turn_off`.
+    self:playSfx("Sfx_ReadText2")
     self:close()
   end
 end
@@ -525,7 +587,12 @@ function ItemPcMenu:drawList()
     local ty = row * 2
     if i <= #self.rows then
       local entry = self.rows[i]
-      if i == self.listIndex then Chrome.cursor(5, ty) end
+      -- home/menu.asm:50
+      if i == self.listIndex then
+        Chrome.cursor(5, ty)
+      elseif i == self.switching then
+        Chrome.cursor(5, ty, true)
+      end
       Chrome.print(entry.name, 6, ty)
       -- PlaceMenuItemQuantity (engine/menus/menu_2.asm:18, :24)
       if not self:cantToss(entry.id) then

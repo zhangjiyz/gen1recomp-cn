@@ -63,10 +63,12 @@ function Player.new(cx, cy, facing, spriteDef)
 end
 
 function Player:setSprite(spriteDef)
-  if spriteDef then
-    self.spriteDef = spriteDef
-    self.sprite = SpriteRenderer.new(spriteDef, "player")
-  end
+  if not spriteDef then return end
+  -- pokegold engine/overworld/overworld.asm:55-64
+  local ok, sprite = pcall(SpriteRenderer.new, spriteDef, "player")
+  if not (ok and sprite) then return end
+  self.spriteDef = spriteDef
+  self.sprite = sprite
 end
 
 -- the movement.collision chain sees the boolean; a wrapper that flips it
@@ -101,6 +103,7 @@ function Player:tryMove(dir, map, entities)
   if self.moving then return nil end
   if self.facing ~= dir then
     self.facing = dir
+    self.bumpFrames = nil
     if self.turnArmed then
       self.turnArmed = false
       self.turnTimer = TURN_FRAMES
@@ -124,10 +127,14 @@ function Player:tryMove(dir, map, entities)
   if not allowed then
     -- World:movePlayer tells the two refusals apart: "edge" is what asks the
     -- connection table for the neighbouring map, "blocked" is a bump.
+    -- (engine/overworld/player_movement.asm:93-106, :525-531).
+    -- engine/overworld/movement.asm:315
+    self.bumpFrames = 1
     return why == "bounds" and "edge" or "blocked"
   end
   self.targetX, self.targetY = tx, ty
   self.moving = true
+  self.bumpFrames = nil
   self.progress = 0
   return "moved"
 end
@@ -147,6 +154,7 @@ function Player:scriptStep(dir)
   if not d then return false end
   self.targetX, self.targetY = self.cellX + d[1], self.cellY + d[2]
   self.moving = true
+  self.bumpFrames = nil
   self.progress = 0
   return true
 end
@@ -173,9 +181,20 @@ function Player:walkPhase()
   -- pokegold engine/overworld/map_objects.asm StepFunction_Turn: forces the
   -- walking leg frame for the whole 4-frame turn-in-place.
   if self.turnTimer > 0 then return 1 end
-  if not self.moving then return 0 end
+  if not self.moving then
+    -- map_object_action.asm:45-69
+    if (self.bumpFrames or 0) <= 0 then return 0 end
+    return (math.floor(self.animClock / 8) % 2 == 1) and 1 or 0
+  end
   local p = self.animClock % STEP_FRAMES
   return (p >= 4 and p < 12) and 1 or 0
+end
+
+-- map_object_action.asm:71-94
+function Player:drawFlip()
+  if self.moving or (self.bumpFrames or 0) <= 0 then return self.stepFlip end
+  local mirrored = math.floor(self.animClock / 16) % 2 == 1
+  return self.stepFlip ~= mirrored
 end
 
 function Player:update()
@@ -188,6 +207,11 @@ function Player:update()
     if self.spinFrames <= 0 then self.spinFrames = nil end
   end
   if not self.moving then
+    -- map_objects.asm:1517-1525
+    if (self.bumpFrames or 0) > 0 then
+      self.bumpFrames = self.bumpFrames - 1
+      self.animClock = self.animClock + 1
+    end
     -- Re-arm turn-in-place once a poll finds no held direction (caller
     -- clears this while a dir is held; we only set it from idle).
     return false
@@ -265,15 +289,6 @@ function Player:draw(ox, oy, scale)
   -- it moves the sprite without moving the player off the tile they are
   -- standing on.  StepFunction_GotBite's `xor 1` rod bob rides this one byte.
   local yOffset = self.spriteYOffset or 0
-  if self.jumping then
-    -- engine/overworld/map_objects.asm:1995
-    local gx = ox + self.px * scale
-    local gy = oy + self.py * scale
-    local s = 16 * scale
-    G.setColor(0, 0, 0, 0.4)
-    G.ellipse("fill", gx + s * 0.5, gy + s * 0.85, s * 0.35, s * 0.12)
-    G.setColor(1, 1, 1, 1)
-  end
   if self.sprite then
     G.push()
     G.translate(ox, oy)
@@ -284,13 +299,14 @@ function Player:draw(ox, oy, scale)
       self:drawFishing(yOffset)
     else
       local facing, phase = self.facing, self:walkPhase()
+      local flip = self:drawFlip()
       -- OBJECT_ACTION_SPIN (map_object_action.asm:96-152), for step_dig.
       if self.spinFrames then
         facing = SPIN_FACINGS[math.floor(self.spinTimer / 4) % 4 + 1]
         phase = 0
       end
       self.sprite:draw(
-        self.px, self.py + yOffset, 0, 0, facing, phase, self.stepFlip)
+        self.px, self.py + yOffset, 0, 0, facing, phase, flip)
     end
     G.pop()
     return

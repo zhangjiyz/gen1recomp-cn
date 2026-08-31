@@ -22,6 +22,7 @@ local check, eq = T.check, T.eq
 local Gen2Save = require("src.save_convert.Gen2Save")
 local Gen2Layout = require("src.save_convert.Gen2Layout")
 local SaveConvert = require("src.save_convert.SaveConvert")
+local FieldMoves = require("src.world.gen2.FieldMoves")
 
 local SIZE = Gen2Save.SAVE_SIZE
 
@@ -65,8 +66,10 @@ local function pack(b)
   return table.concat(out)
 end
 
--- A save with one known Pokemon in the party and one in box 3.
-local function build(version)
+-- SPRITE_TWIN is $26 (constants/sprite_constants.asm:42,149,154).
+local WEIRD_TREE_SLOT, SPRITE_TWIN = 4, 0x26
+
+local function build(version, bare, female)
   local L = Gen2Save.layoutFor(version)
   local b = blank()
   putName(b, L.wPlayerName, "ASH")
@@ -81,6 +84,7 @@ local function build(version)
   put(b, mon, 155)                         -- species
   put(b, mon + 1, 0)                       -- no held item
   put(b, mon + 2, 33, 43, 0, 0)            -- two moves
+  put(b, mon + 0x17, 0x63, 40, 0, 0)       -- 35 PP with one PP Up, then 40
   put(b, mon + 6, 0x12, 0x34)              -- OT id
   put(b, mon + 0x15, 0x9F, 0x6A)           -- DVs: a=9 d=15 s=6 sp=10
   put(b, mon + 0x1B, 200)                  -- happiness
@@ -92,6 +96,14 @@ local function build(version)
   putName(b, L.wPartyMonNicknames, "FLAME")
   putName(b, L.wPartyMonOTs, "ASH")
   put(b, L.wMapGroup, 21); put(b, L.wMapNumber, 14)
+  if not bare then
+    put(b, L.wStatusFlags, 0x01)           -- STATUSFLAGS_POKEDEX_F
+    put(b, L.wPokegearFlags, 0x81)         -- POKEGEAR_OBTAINED_F + map card
+    put(b, L.wVisitedSpawns + 1, 0x40)
+    put(b, L.wVisitedSpawns + 2, 0x05)
+    put(b, L.wVariableSprites + WEIRD_TREE_SLOT, SPRITE_TWIN)
+  end
+  if L.wPlayerGender then put(b, L.wPlayerGender, female and 1 or 0) end
   put(b, L.wNumItems, 1); put(b, L.wItems, 20, 3); put(b, L.wItems + 2, 0xFF)
   put(b, L.wNumKeyItems, 1); put(b, L.wKeyItems, 7); put(b, L.wKeyItems + 1, 0xFF)
   put(b, L.wNumBalls, 1); put(b, L.wBalls, 5, 9); put(b, L.wBalls + 2, 0xFF)
@@ -144,6 +156,45 @@ for _, version in ipairs({ "gold", "silver", "crystal" }) do
     eq(save.boxes[3][1].nickname, "SQUIRT", version .. ": box nicknames follow the OTs")
     eq(save.boxes[3][1].ot, "ASH", version .. ": box OT")
     eq(save.boxes[3][1].hp, nil, version .. ": a box mon carries no computed stats")
+    -- data/events/engine_flags.asm (#1900)
+    eq(save.engineFlags[11], true, version .. ": ENGINE_POKEDEX out of wStatusFlags")
+    eq(save.engineFlags[4], true, version .. ": ENGINE_POKEGEAR out of wPokegearFlags")
+    eq(save.engineFlags[1], true, version .. ": the map card is engine flag 1")
+    eq(save.engineFlags[0], nil, version .. ": the radio card bit is clear")
+    local bare = assert(Gen2Save.decode(build(version, true), version))
+    eq(bare.engineFlags[11], nil,
+       version .. ": a save from before Mr. Pokemon's house has no dex flag")
+    eq(bare.engineFlags[4], nil, version .. ": nor a POKEGEAR")
+
+    local shift = version == "crystal" and 1 or 0
+    eq(save.engineFlags[64 + shift], true, version .. ": ENGINE_FLYPOINT_NEW_BARK")
+    eq(save.engineFlags[66 + shift], true, version .. ": ENGINE_FLYPOINT_VIOLET")
+    eq(save.engineFlags[67 + shift], true,
+       version .. ": AZALEA is bit 18, not 17 -- SPAWN_UNION_CAVE has no flag")
+    eq(save.engineFlags[65 + shift], nil,
+       version .. ": a town the cart never reached stays unflyable")
+    eq(bare.engineFlags[64 + shift], nil,
+       version .. ": and a pre-Mr.-Pokemon save has no flypoint at all")
+    if shift == 0 then
+      eq(FieldMoves.hasVisitedSpawn(save, "SPAWN_AZALEA"), true,
+         version .. ": FLY offers the town the cart unlocked")
+      eq(FieldMoves.hasVisitedSpawn(save, "SPAWN_CHERRYGROVE"), false,
+         version .. ": and not the one it did not")
+      eq(FieldMoves.hasVisitedSpawn(bare, "SPAWN_NEW_BARK"), false,
+         version .. ": a fresh cart offers nothing")
+    end
+
+    eq(save.variableSprites[WEIRD_TREE_SLOT], SPRITE_TWIN,
+       version .. ": the SPRITE_WEIRD_TREE slot comes off the cart")
+    eq(save.variableSprites[0], nil,
+       version .. ": a slot the cart never filled stays absent for World's seed")
+
+    -- constants/ram_constants.asm:177 (#1907)
+    eq(save.player.gender, version == "crystal" and "male" or nil,
+       version .. ": Gold and Silver have no gender byte to read")
+    local kris = assert(Gen2Save.decode(build(version, false, true), version))
+    eq(kris.player.gender, version == "crystal" and "female" or nil,
+       version .. ": sCrystalData bit 0 is the imported gender")
   end
 end
 
@@ -157,7 +208,8 @@ end
 
 local CROSSWALK = {
   pokemon = { CYNDAQUIL = { index = 155 }, SQUIRTLE = { index = 7 } },
-  moves   = { TACKLE = { index = 33 }, LEER = { index = 43 } },
+  moves   = { TACKLE = { index = 33, pp = 35, name = "TACKLE" },
+              LEER = { index = 43, pp = 30, name = "LEER" } },
   items   = { POTION = { index = 20 }, BICYCLE = { index = 7 },
               POKE_BALL = { index = 5 } },
   maps    = { GOLDENROD_CITY = { group = 21, map = 14 } },
@@ -167,8 +219,13 @@ do
   local save = assert(Gen2Save.decode(build("gold"), "gold", CROSSWALK))
   local m = save.party[1]
   eq(m.species, "CYNDAQUIL", "species is the engine's id, not the cart's number")
-  eq(m.moves[1], "TACKLE", "and so are moves")
-  eq(m.moves[2], "LEER", "both of them")
+  eq(m.moves[1].id, "TACKLE", "and so are moves")
+  eq(m.moves[2].id, "LEER", "both of them")
+  -- engine/pokemon/mon_stats.asm (#1899)
+  eq(m.moves[1].pp, 35, "a move slot carries the PP the cart stored")
+  eq(m.moves[1].ppUps, 1, "and its PP Ups, out of the top two bits")
+  eq(m.moves[1].maxPp, 42, "max PP is the base plus one PP Up's bonus")
+  eq(m.pp, nil, "and there is no parallel PP array beside it")
   eq(save.boxes[3][1].species, "SQUIRTLE", "boxes translate too")
 
   -- One flat bag. Nothing in src reads save.keyItems or save.balls; PackMenu
@@ -205,6 +262,9 @@ end
 do
   local save = assert(Gen2Save.decode(build("gold"), "gold"))
   eq(save.party[1].species, 155, "an unknown species keeps its cart number")
+  eq(save.party[1].moves[1].id, 33, "and an unnamed move keeps its own")
+  eq(save.party[1].moves[1].maxPp, nil,
+     "with no move table there is no base PP to grow a max out of")
 end
 
 -- ------------------------------------------------------------------
@@ -236,6 +296,11 @@ do
   save.party[1].pokerus = 0x34
   save.party[1].caughtData = 0x1234
   save.events[9] = 0xA5
+  save.party[1].moves[1].pp = 12
+  save.engineFlags[11] = nil
+  save.engineFlags[66] = nil
+  save.engineFlags[69] = true
+  save.variableSprites[6] = 0x35
 
   local out = assert(Gen2Save.encode(save, "gold", cart, data))
   eq(#out, #cart, "the image keeps its size")
@@ -257,6 +322,87 @@ do
   eq(back.party[1].status, "slp", "status survives as a class")
   eq(back.party[1].statusTurns, 3, "with its turn count")
   eq(back.events[9], 0xA5, "event bytes are written")
+
+  eq(back.party[1].moves[1].id, "TACKLE", "a move slot survives the round trip")
+  eq(back.party[1].moves[1].pp, 12, "with the PP it was spent down to")
+  eq(back.party[1].moves[1].ppUps, 1, "and its PP Ups still in the top bits")
+  -- engine/menus/save.asm
+  eq(back.engineFlags[11], nil, "a cleared engine flag clears its SRAM bit")
+  eq(back.engineFlags[4], true, "and the ones left alone stay set")
+
+  -- engine/pokegear/pokegear.asm:2189 (#1906)
+  eq(back.engineFlags[66], nil, "a cleared flypoint clears its wVisitedSpawns bit")
+  eq(back.engineFlags[69], true, "and a newly earned one is written")
+  eq(back.engineFlags[64], true, "with the neighbours on either side untouched")
+  eq(back.engineFlags[67], true, "AZALEA included, across the UNION_CAVE hole")
+
+  -- engine/overworld/scripting.asm:869 (#1905)
+  eq(back.variableSprites[WEIRD_TREE_SLOT], SPRITE_TWIN,
+     "the twins' slot survives the round trip")
+  eq(back.variableSprites[6], 0x35, "and a slot filled inside the port is written")
+end
+
+-- ram/sram.asm:138-144
+do
+  eq(Gen2Layout.goldSilver.wPlayerGender, nil,
+     "Gold and Silver have no gender byte")
+  eq(Gen2Layout.crystal.wPlayerGender, Gen2Layout.crystal.backup.wPlayerGender,
+     "the Crystal backup shares the primary's gender byte")
+
+  local cart = build("crystal", false, true)
+  local save = assert(Gen2Save.decode(cart, "crystal"))
+  eq(save.player.gender, "female", "Kris imports as Kris")
+  local out = assert(Gen2Save.encode(save, "crystal", cart))
+  eq(out:byte(Gen2Layout.crystal.wPlayerGender + 1) % 2, 1,
+     "and exports back into sCrystalData bit 0")
+
+  save.player.gender = "male"
+  local male = assert(Gen2Save.encode(save, "crystal", cart))
+  eq(male:byte(Gen2Layout.crystal.wPlayerGender + 1) % 2, 0,
+     "a gender changed in the port reaches the cart image")
+  eq(assert(Gen2Save.decode(male, "crystal")).player.gender, "male",
+     "and reads back as Chris")
+end
+
+-- engine/pokemon/stats_screen.asm (#1899)
+
+do
+  local SummaryMenu = require("src.ui.gen2.SummaryMenu")
+  local save = assert(Gen2Save.decode(build("gold"), "gold", CROSSWALK))
+  local view = setmetatable(
+    { mon = save.party[1], moves = CROSSWALK.moves, items = CROSSWALK.items,
+      party = {}, page = SummaryMenu.GREEN_PAGE },
+    { __index = SummaryMenu })
+  local rows = {}
+  for _, row in ipairs(view:greenPlacements()) do
+    rows[#rows + 1] = row.text
+  end
+  local text = table.concat(rows, "|")
+  check(text:find("TACKLE", 1, true) ~= nil,
+    "the green page names the imported move -- got: " .. text)
+  check(text:find("35", 1, true) ~= nil and text:find("42", 1, true) ~= nil,
+    "and prints its PP over its max rather than 0/ 0 -- got: " .. text)
+end
+
+-- engine/menus/start_menu.asm (#1900)
+do
+  local StartMenu = require("src.ui.gen2.StartMenu")
+  local imported = assert(SaveConvert.importSav(build("gold"), "gold", "gold"))
+  local menu = setmetatable({ save = imported }, { __index = StartMenu })
+  local rows = {}
+  for _, item in ipairs(menu:visibleItems()) do rows[#rows + 1] = item.value end
+  local list = table.concat(rows, ",")
+  check(list:find("pokedex", 1, true) ~= nil,
+    "an imported save shows #DEX on the START menu -- got: " .. list)
+  check(list:find("pokegear", 1, true) ~= nil,
+    "and the POKEGEAR row too -- got: " .. list)
+
+  local before = assert(SaveConvert.importSav(build("gold", true), "gold", "gold"))
+  local early = setmetatable({ save = before }, { __index = StartMenu })
+  local earlyRows = {}
+  for _, item in ipairs(early:visibleItems()) do earlyRows[#earlyRows + 1] = item.value end
+  check(table.concat(earlyRows, ","):find("pokedex", 1, true) == nil,
+    "and a save from before the dex was given still hides it")
 end
 
 -- A save with no cartridge image behind it is refused, not invented.

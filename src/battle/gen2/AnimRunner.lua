@@ -88,6 +88,8 @@ function AnimRunner.new(opts)
   }
   self.objects = AnimObjects.new(self.data, self.constants, self.env)
   self.bg = BgEffects.new(self.constants, self.env)
+  -- engine/battle_anims/functions.asm:1158
+  self.objects.hram = self.bg
   self.animId = opts.animId    -- wFXAnimID
   self.gfxOrder = self.constants.battleAnimGfxOrder or {}
   self.sfxOrder = opts.sfxOrder or {}
@@ -457,9 +459,14 @@ function Runner:step()
     if first and first.index ~= 0 then first.yOffset = self.bg.rolloutYOffset end
   end
   if self.stopped then
-    -- BattleAnim_ClearOAM: unless the script asked to keep them, every object
-    -- goes at the end.
-    if not self.keepSprites then self.objects.oam = {} end
+    -- engine/battle_anims/anim_commands.asm:213
+    if not self.keepSprites then
+      self.objects.oam = {}
+    else
+      for _, obj in ipairs(self.objects.oam) do
+        obj.palette = "PAL_BATTLE_OB_ENEMY"
+      end
+    end
     return false
   end
   return true

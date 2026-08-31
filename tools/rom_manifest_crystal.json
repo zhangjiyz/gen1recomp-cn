@@ -14728,6 +14728,10 @@
       32,
       19642
     ],
+    "BattleTowerInsidePalette": [
+      18,
+      21840
+    ],
     "BattleTowerMons": [
       126,
       17488
@@ -15299,6 +15303,10 @@
     "CubonePokedexEntry": [
       110,
       20584
+    ],
+    "CutGrassGFX": [
+      35,
+      18892
     ],
     "CyndaquilBackpic": [
       83,
@@ -16432,6 +16440,10 @@
       116,
       20223
     ],
+    "HousePalette": [
+      18,
+      21998
+    ],
     "HungOnText": [
       32,
       20121
@@ -16463,6 +16475,10 @@
     "HypnoPokedexEntry": [
       110,
       19840
+    ],
+    "IcePathPalette": [
+      18,
+      21919
     ],
     "IconPointers": [
       35,
@@ -16763,6 +16779,10 @@
     "JolteonPokedexEntry": [
       115,
       17035
+    ],
+    "JumpShadowGFX": [
+      65,
+      17744
     ],
     "JumpluffBackpic": [
       85,
@@ -17212,6 +17232,14 @@
       96,
       28093
     ],
+    "MansionPalette1": [
+      18,
+      22141
+    ],
+    "MansionPalette2": [
+      18,
+      22270
+    ],
     "MantineBackpic": [
       89,
       20850
@@ -17223,6 +17251,10 @@
     "MantinePokedexEntry": [
       116,
       20005
+    ],
+    "MapEntryFrameGFX": [
+      62,
+      21316
     ],
     "MapGroupPointers": [
       37,
@@ -18500,6 +18532,10 @@
       108,
       17110
     ],
+    "PokeComPalette": [
+      18,
+      21761
+    ],
     "PokecenterSignText": [
       108,
       17791
@@ -18515,6 +18551,10 @@
     "PokedexLZ": [
       16,
       21774
+    ],
+    "PokedexNestIconGFX": [
+      36,
+      25297
     ],
     "PokedexQuestionMarkPalette": [
       2,
@@ -18771,6 +18811,10 @@
     "RadioTilemapRLE": [
       36,
       21773
+    ],
+    "RadioTowerPalette": [
+      18,
+      22077
     ],
     "RageBuildingText": [
       32,

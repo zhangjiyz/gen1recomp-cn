@@ -39,7 +39,25 @@ local function cartOfScope(scope)
 end
 
 local CacheContract = require("src.import.CacheContract")
+local Transition = require("src.ui.kit.Transition")
 local COMMUNITY_URL = "https://bois.icu"
+
+local TAB_ORDER, TAB_AT = {}, {}
+local function tabOrder()
+  if #TAB_ORDER == 0 then
+    for _, version in ipairs(GameVersion.ORDER) do
+      TAB_ORDER[#TAB_ORDER + 1] = version
+    end
+    local okView, View = pcall(require, "src.import.LauncherView")
+    if okView then
+      for _, t in ipairs(View.HEADER_TABS or {}) do
+        TAB_ORDER[#TAB_ORDER + 1] = t.id
+      end
+    end
+    for i, id in ipairs(TAB_ORDER) do TAB_AT[id] = i end
+  end
+  return TAB_AT
+end
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
   "or a link from the discord that bryanthaboi himself posted, just know " ..
   "it might have been tampered with. go to the discord to verify " ..
@@ -420,6 +438,7 @@ local function commandOutput(command)
   -- lock can free a FILE while a worker thread's popen is walking the stream
   -- list, which deadlocks that thread for good (see HostShell).
   HostShell.pclose(pipe)
+  HostShell.pumpHostEvents()
   result = trim(result)
   return result ~= "" and result or nil
 end
@@ -1405,6 +1424,7 @@ function RomImporter.new(onComplete, opts)
     -- Which half of the feed the panel is browsing.  Mods by default: carts
     -- are the newer, much shorter list, and a feed may carry none at all.
     findKind = "mods", findBase = nil,
+    findGame = nil,
     skinUrl = "", _skinUrlFocus = false,
     -- Page scroll offset (px) for the column under the tab bar -- panel, updater
     -- banner and footer -- used only while that column is taller than the window
@@ -1448,7 +1468,24 @@ function RomImporter.new(onComplete, opts)
         and ".gbc" or ".gb")
   end
   RomImporter.syncAndroidShortcuts()
+  Transition.reset()
+  Transition.armed = false
+  local okMotion, motionOpts = pcall(function()
+    return require("src.core.SaveData").loadOptions()
+  end)
+  Transition.reduceMotion = os.getenv("POKEPORT_REDUCE_MOTION") == "1"
+    or opts.reduceMotion == true
+    or (okMotion and type(motionOpts) == "table"
+      and motionOpts.reduceMotion == true) or false
   self:_applyLastVersionTab()
+  if type(opts.initialTab) == "string" and opts.initialTab ~= "" then
+    self:_switchTab(opts.initialTab)
+  end
+  if type(opts.joinCode) == "string" and opts.joinCode ~= "" then
+    self:_switchTab("online")
+    local okOnline, OnlinePanel = pcall(require, "src.import.OnlinePanel")
+    if okOnline then pcall(OnlinePanel.deepLink, self, opts.joinCode, "player") end
+  end
   self:_queueBaseRomScan()
 
   -- Android: import a save-dir .gb/.gbc that is not yet ready (USB drop or a
@@ -1586,9 +1623,16 @@ function RomImporter:focus(f)
     and love.filesystem.read("pick_error.flag")
   if pickError then
     love.filesystem.remove("pick_error.flag")
-    local text = Strings(
-      "Could not read the picked file. Reopen the picker and choose it with the Files (Documents) app, or copy it into: %s",
-      love.filesystem.getSaveDirectory())
+    local text
+    if pickError:find("cancelled:", 1, true) == 1 then
+      text = Strings(
+        "The file manager did not return a file. Try a different file manager, or copy it into: %s",
+        love.filesystem.getSaveDirectory())
+    else
+      text = Strings(
+        "Could not read the picked file. Reopen the picker and choose it with the Files (Documents) app, or copy it into: %s",
+        love.filesystem.getSaveDirectory())
+    end
     local legacyRequiredPick = self.requiredImportLegacyRomPick
       and self.pickerPendingKind == "required_import"
     if self.pickerPendingKind == "required_import"
@@ -2858,6 +2902,10 @@ end
 
 function RomImporter:update(dt)
   self.pulse = self.pulse + dt
+  if not Transition.armed then
+    self._motionFrames = (self._motionFrames or 0) + 1
+    if self._motionFrames > 1 then Transition.armed = true end
+  end
   if self._launchFade then
     self._launchFade.elapsed = self._launchFade.elapsed + dt
     if self._launchFade.elapsed >= self._launchFade.duration then
@@ -2881,16 +2929,19 @@ function RomImporter:update(dt)
   -- nothing.  They run whether or not the view is up, so a refresh started
   -- before a tab switch still completes.
   self:_pumpFindFetch()
+  self:_pumpFindDetails()
   self:_pumpModInfoFetch()
   self:_queueFindEnrichment()
   self:_pumpFindStats()
   self:_pumpFindThumbs()
   self:_pumpSkinFetch()
   self:_pumpSync(dt)
+  self:_pumpOnline(dt)
   self:_pumpModCheck()
   self:_pumpModInstall()
   self:_pumpCartInstall()
   self:_pumpCartFill()
+  self:_pumpUpdateAll()
   self:_pumpExtract()
   -- Dev harness: POKEPORT_LAUNCHER_SHOT=/path.png resizes the window from
   -- POKEPORT_WIN=WxH, lets the view settle, then captures one frame and
@@ -2900,6 +2951,9 @@ function RomImporter:update(dt)
   if shot and not self._shotDone then
     if not self._shotSized then
       self._shotSized = true
+      if os.getenv("POKEPORT_REDUCE_MOTION") ~= "0" then
+        Transition.reduceMotion = true
+      end
       local w, h = (os.getenv("POKEPORT_WIN") or ""):match("^(%d+)x(%d+)$")
       if w and love.window and love.window.setMode then
         pcall(love.window.setMode, tonumber(w), tonumber(h),
@@ -2924,6 +2978,9 @@ function RomImporter:update(dt)
       -- POKEPORT_LAUNCHER_SETTINGS_PAGE to land on a page past the first.
       if os.getenv("POKEPORT_LAUNCHER_SETTINGS") == "1" then
         self:_openSettings()
+      end
+      if os.getenv("POKEPORT_LAUNCHER_BUG") == "1" then
+        self:_openBugPanel()
       end
       -- POKEPORT_LAUNCHER_FIND_KIND=mods|carts picks which half of the feed
       -- the FIND tab is browsing; the switch is otherwise only a click.
@@ -2966,7 +3023,48 @@ function RomImporter:update(dt)
           { resizable = true })
       end
     end
-    if self._shotTimer > 1.2 then
+    local motion = os.getenv("POKEPORT_LAUNCHER_MOTION")
+    if motion and motion ~= "" and not self._shotMotionAt
+        and self._shotTimer > 0.9 then
+      self._shotMotionAt = 0
+      local ms = tonumber(os.getenv("POKEPORT_MOTION_MS") or "")
+      if ms and ms > 0 then
+        for kind in pairs(Transition.DURATIONS) do
+          Transition.DURATIONS[kind] = ms / 1000
+        end
+      end
+      if motion:match("^go:") then
+        local okOP, OP = pcall(require, "src.import.OnlinePanel")
+        if okOP then OP.go(self, motion:sub(4)) end
+      elseif motion == "modal-close" then
+        self._modConfirm = nil
+      elseif motion == "modal" then
+        self._modConfirm = {
+          kind = "update", title = "Install mod", yesLabel = "Install",
+          lines = { "JP GREEN - Poketto Monsuta Midori v0.4.4",
+                    "by bryanthaboi",
+                    "Mods are not reviewed - trust the author." },
+        }
+      else
+        self:_switchTab(motion)
+      end
+    end
+    if self._shotMotionAt then
+      self._shotMotionAt = self._shotMotionAt + 1
+      local want = tonumber(os.getenv("POKEPORT_LAUNCHER_SHOT_SEQ") or "4") or 4
+      if self._shotMotionAt <= want then
+        local path = (shot:gsub("%.png$", ""))
+          .. "-" .. self._shotMotionAt .. ".png"
+        love.graphics.captureScreenshot(function(imagedata)
+          local fd = imagedata:encode("png")
+          local f = io.open(path, "wb")
+          if f then f:write(fd:getString()) f:close() end
+        end)
+      else
+        self._shotDone = true
+        love.event.quit()
+      end
+    elseif self._shotTimer > 1.2 then
       self._shotDone = true
       love.graphics.captureScreenshot(function(imagedata)
         local fd = imagedata:encode("png")
@@ -3052,6 +3150,10 @@ local PAD_DEAD = 0.28
 local PAD_SPEED = 560   -- px/s at full stick deflection
 local PAD_DPAD_SPEED = 420
 
+function RomImporter:_consolePointerHost()
+  return (self.isNX or Platform.isUWP()) and true or false
+end
+
 function RomImporter:_activatePadCursor()
   if self._padCursorActive then return end
   local ox, oy, w, h = SafeArea.rect()
@@ -3068,7 +3170,7 @@ end
 -- and makes the virtual cursor lag. Expose the pad pointer through a getPosition
 -- shim instead; desktop keeps the setPosition path unchanged.
 function RomImporter:_ensureNxPointerBridge()
-  if not self.isNX or self._nxPointerBridge then return end
+  if not self:_consolePointerHost() or self._nxPointerBridge then return end
   if not (love and love.mouse and love.mouse.getPosition) then return end
   self._nxRealGetPosition = love.mouse.getPosition
   local importer = self
@@ -3093,7 +3195,7 @@ end
 -- NX only: drop the getPosition shim + hide the virtual cursor before a host
 -- takes over input (embedded save editor). Desktop is a no-op.
 function RomImporter:parkNxPointerForHost()
-  if not self.isNX then return end
+  if not self:_consolePointerHost() then return end
   self._padCursorActive = false
   self:_restoreNxPointerBridge()
 end
@@ -3129,7 +3231,7 @@ function RomImporter:resumeAfterOverlay()
 end
 
 function RomImporter:_cycleTab(delta)
-  local order = { "mods", "find", "skins", "bug" }
+  local order = { "mods", "find", "skins" }
   for i = #GameVersion.ORDER, 1, -1 do
     table.insert(order, 1, GameVersion.ORDER[i])
   end
@@ -3138,6 +3240,48 @@ function RomImporter:_cycleTab(delta)
     if id == self.tab then idx = i; break end
   end
   self:_switchTab(order[((idx - 1 + delta) % #order) + 1])
+end
+
+local STICK_NAV_ON = 0.5
+local STICK_NAV_OFF = 0.3
+local STICK_NAV_DELAY = 0.28
+local STICK_NAV_REPEAT = 0.12
+
+function RomImporter:_stickNavDir()
+  local nav = self._stickNav
+  local on = (nav and nav.dir) and STICK_NAV_OFF or STICK_NAV_ON
+  local ax = self._padAxis.leftx or 0
+  local ay = self._padAxis.lefty or 0
+  if math.abs(ax) >= math.abs(ay) then
+    if math.abs(ax) > on then return ax > 0 and "right" or "left" end
+  else
+    if math.abs(ay) > on then return ay > 0 and "down" or "up" end
+  end
+  if self._padDir.dpleft then return "left" end
+  if self._padDir.dpright then return "right" end
+  if self._padDir.dpup then return "up" end
+  if self._padDir.dpdown then return "down" end
+  return nil
+end
+
+function RomImporter:_navigateWithStick(dt, Kit)
+  local nav = self._stickNav
+  if not nav then nav = {}; self._stickNav = nav end
+  local dir = self:_stickNavDir()
+  if not dir then
+    nav.dir, nav.t, nav.fired = nil, 0, false
+    return
+  end
+  if nav.dir ~= dir then
+    nav.dir, nav.t, nav.fired = dir, 0, false
+    if Kit then Kit.navigate(dir) end
+    return
+  end
+  nav.t = (nav.t or 0) + dt
+  if nav.t >= (nav.fired and STICK_NAV_REPEAT or STICK_NAV_DELAY) then
+    nav.t, nav.fired = 0, true
+    if Kit then Kit.navigate(dir) end
+  end
 end
 
 function RomImporter:_updatePadCursor(dt)
@@ -3149,7 +3293,7 @@ function RomImporter:_updatePadCursor(dt)
     end
   end
 
-  if self.isNX then
+  if self:_consolePointerHost() then
     self:_ensureNxPointerBridge()
     -- Cap dt so a hitch in the FlexLove immediate-mode frame does not fling
     -- the cursor; desktop keeps raw dt (setPosition path already smooth there).
@@ -3160,7 +3304,7 @@ function RomImporter:_updatePadCursor(dt)
   -- pointer after bumping a stick once. On NX this must stay off: love-nx /
   -- SDL often drifts the system mouse with the stick (or touch), and axis
   -- events are not every frame, so yield+reactivate flickers the overlay.
-  if not self.isNX then
+  if not self:_consolePointerHost() then
     local mx, my = love.mouse.getPosition()
     if self._lastMouseX and self._padCursorActive then
       if math.abs(mx - self._lastMouseX) > 3 or math.abs(my - self._lastMouseY) > 3 then
@@ -3169,6 +3313,17 @@ function RomImporter:_updatePadCursor(dt)
     end
     self._lastMouseX, self._lastMouseY = mx, my
   end
+
+  if not self._padCursorActive and not self.isNX
+      and (Platform.isUWP() or self._padNavChosen) then
+    self:_navigateWithStick(dt, okKit and Kit or nil)
+    local scrollY = self._padAxis.righty or 0
+    if math.abs(scrollY) > PAD_DEAD and self._flex then
+      require("src.import.LauncherView").wheelmoved(self, 0, -scrollY * 8 * dt)
+    end
+    return
+  end
+  self._stickNav = nil
 
   local ax = self._padAxis.leftx or 0
   local ay = self._padAxis.lefty or 0
@@ -3198,7 +3353,7 @@ function RomImporter:_updatePadCursor(dt)
     if overY ~= 0 and self._flex then
       require("src.import.LauncherView").wheelmoved(self, 0, -overY / 48)
     end
-    if not self.isNX and love.mouse.setPosition then
+    if not self:_consolePointerHost() and love.mouse.setPosition then
       pcall(love.mouse.setPosition, self._padCursor.x, self._padCursor.y)
       self._lastMouseX, self._lastMouseY = self._padCursor.x, self._padCursor.y
     end
@@ -3212,7 +3367,8 @@ function RomImporter:_updatePadCursor(dt)
 end
 
 function RomImporter:gamepadpressed(_, button)
-  local action = (GamepadMap.mapLauncherButton and GamepadMap.mapLauncherButton(button)) or button
+  if Transition.active() then return end
+  local action =(GamepadMap.mapLauncherButton and GamepadMap.mapLauncherButton(button)) or button
   local okKit, Kit = pcall(require, "src.ui.kit.Kit")
   if okKit then
     if Kit.VirtualKeyboard and Kit.VirtualKeyboard.active then
@@ -3226,6 +3382,7 @@ function RomImporter:gamepadpressed(_, button)
   -- Y button toggle between Native Controller Navigation and Virtual Pointer Cursor:
   if action == "y" or button == "y" then
     self._padCursorActive = not self._padCursorActive
+    self._padNavChosen = not self._padCursorActive
     if okKit then Kit._ringShown = not self._padCursorActive end
     self._cursorModeToast = self._padCursorActive and "Cursor Navigation [Y]" or "Controller Menu Navigation [Y]"
     self._cursorModeToastTime = love.timer.getTime()
@@ -3291,11 +3448,11 @@ function RomImporter:gamepadpressed(_, button)
         return
       elseif self.tab == "find" then
         Kit.VirtualKeyboard.open({
-          text = self._findQuery or "",
+          text = self.findQuery or "",
           title = "Search Mods",
           onDone = function(newText, confirmed)
             if confirmed then
-              self._findQuery = newText
+              self.findQuery = newText
               if self._refreshFind then self:_refreshFind() end
             end
           end
@@ -3353,6 +3510,11 @@ function RomImporter:gamepadpressed(_, button)
       end
       return
     elseif action == "b" then
+      if self._bugModal then self:_closeBugPanel(); return end
+      if self.tab == "online" then
+        local okOnline, OnlinePanel = pcall(require, "src.import.OnlinePanel")
+        if okOnline and OnlinePanel.back(self) then return end
+      end
       if self._indexPrompt then self._indexPrompt = nil; self:_disarmTextInput(); return
       elseif self._rename then self._rename = nil; self:_disarmTextInput(); return
       elseif self._profileRenamePrompt then self._profileRenamePrompt = nil; self:_disarmTextInput(); return
@@ -3380,6 +3542,11 @@ function RomImporter:gamepadpressed(_, button)
           self._padCursor.x, self._padCursor.y)
       end
     elseif action == "b" then
+      if self._bugModal then self:_closeBugPanel(); return end
+      if self.tab == "online" then
+        local okOnline, OnlinePanel = pcall(require, "src.import.OnlinePanel")
+        if okOnline and OnlinePanel.back(self) then return end
+      end
       if self._indexPrompt then self._indexPrompt = nil; self:_disarmTextInput(); return
       elseif self._rename then self._rename = nil; self:_disarmTextInput(); return
       elseif self._profileRenamePrompt then self._profileRenamePrompt = nil; self:_disarmTextInput(); return
@@ -3487,7 +3654,6 @@ function RomImporter:joystickhat(joystick, hat, direction)
   })[direction] or {}
   for _, dir in ipairs(dirs) do self._padDir[dir] = true end
   self._rawHatDirs[hat] = dirs
-  if #dirs > 0 then self:_activatePadCursor() end
 end
 
 -- Player pressed Play on a game whose ROM is imported: hand off to boot.
@@ -3704,10 +3870,19 @@ end
 -- the soft keyboard drop with the panel they belonged to; each tab's scroll
 -- offset persists inside the view's per-tab scroll container.
 function RomImporter:_switchTab(id)
+  if id == "bug" then return self:_openBugPanel() end
+  if self.tab and self.tab ~= id then
+    local at = tabOrder()
+    Transition.start("tabs", "tab", {
+      dir = ((at[id] or 0) >= (at[self.tab] or 0)) and 1 or -1,
+      from = self.tab, to = id,
+    })
+  end
   self.tab = id
   if id ~= "find" then self._findVisibleEntries = nil end
   self._findSearchFocus = false
   self._skinUrlFocus = false
+  self._onlineFocus = nil
   self:_disarmTextInput()
   -- the skins list is cheap and can change behind the launcher's back
   -- (an export, a hand-dropped folder), so re-read it on every visit
@@ -4028,6 +4203,13 @@ function RomImporter:_syncSupported()
   return self._syncTransportOk
 end
 
+function RomImporter:_pumpOnline(dt)
+  if not self._online then return end
+  local ok, OnlinePanel = pcall(require, "src.import.OnlinePanel")
+  if not ok then return end
+  pcall(OnlinePanel.update, self, dt)
+end
+
 function RomImporter:_pumpSync(dt)
   if self._sync == nil then
     if not self.launcher or self._syncBooted then return end
@@ -4244,6 +4426,17 @@ end
 
 -- ------- settings gear (options.lua + enabled mods' option schemas)
 
+function RomImporter:_openBugPanel()
+  self._settings = nil
+  self._bugModal = true
+  return true
+end
+
+function RomImporter:_closeBugPanel()
+  self._bugModal = nil
+  return true
+end
+
 function RomImporter:_openSettings()
   -- The touch-overlay editor is a host screen, so the model gets it as a
   -- hook rather than reaching for main.lua's handler itself.  Closing the
@@ -4352,6 +4545,13 @@ end
 -- notice line used.
 -- Desktop picks a .cart file; everywhere else CartStore's stray scan already
 -- adopts anything dropped in the folder, so we just point at it.
+function RomImporter:_resyncPointerAfterDialog()
+  self._mouseAt = nil
+  self._clickPt = nil
+  self._prevMouseDown = (love and love.mouse and love.mouse.isDown
+    and love.mouse.isDown(1)) and true or false
+end
+
 function RomImporter:importCartFile(version)
   local CartStore = require("src.carts.CartStore")
   local FilePicker = require("src.core.FilePicker")
@@ -4364,6 +4564,7 @@ function RomImporter:importCartFile(version)
   end
   local path = FilePicker.open("Choose a cart",
     { label = "Cart", exts = { CartStore.EXT:gsub("^%.", "") } })
+  self:_resyncPointerAfterDialog()
   if not path then return false end
   local bytes = FilePicker.read(path)
   if not bytes then
@@ -4399,6 +4600,7 @@ function RomImporter:fileUrl(path)
 end
 
 function RomImporter:keypressed(key)
+  if Transition.active() then return end
   local okKit, Kit = pcall(require, "src.ui.kit.Kit")
   if okKit then
     if Kit.FileBrowser and Kit.FileBrowser.active then
@@ -4530,6 +4732,7 @@ function RomImporter:keypressed(key)
     if key == "escape" then
       if self._findDetails then
         self._findDetails = nil
+        self:_cancelFindDetails()
       elseif self._modReleaseNotes then
         self._modReleaseNotes = nil
       elseif self._appPatchNotes then
@@ -4546,6 +4749,41 @@ function RomImporter:keypressed(key)
       return
     end
     if key == "escape" then self._cartPopup = nil end
+    return
+  end
+  if self._bugModal and key == "escape" then
+    self:_closeBugPanel()
+    return
+  end
+  if self._pcPicker and key == "escape" and not self._onlineFocus then
+    require("src.import.OnlinePanel").pcClose(self)
+    return
+  end
+  if self._onlineFocus then
+    local OnlinePanel = require("src.import.OnlinePanel")
+    local st = OnlinePanel.state(self)
+    local field = self._onlineFocus
+    if key == "backspace" then
+      if field == "online-name" then
+        st.nameDraft = utf8Back(st.nameDraft or "")
+      elseif field == "online-note" then
+        st.note = utf8Back(st.note or "")
+      elseif field == "online-code" then
+        st.joinCode = utf8Back(st.joinCode or "")
+      elseif field == "online-trade-code" then
+        local tr = OnlinePanel.tradeState(self)
+        tr.code = utf8Back(tr.code or "")
+      elseif field == OnlinePanel.PC_FIELD then
+        local pc = OnlinePanel.pcPicker(self)
+        OnlinePanel.pcQuery(self, utf8Back((pc and pc.query) or ""))
+      end
+    elseif key == "return" or key == "kpenter" then
+      self:_commitOnlineField()
+    elseif key == "escape" then
+      self._onlineFocus = nil
+      st.nameDraft = nil
+      self:_disarmTextInput()
+    end
     return
   end
   if self._skinUrlFocus then
@@ -4572,6 +4810,10 @@ function RomImporter:keypressed(key)
       self:_disarmTextInput()
     end
     return
+  end
+  if key == "escape" and self.tab == "online" then
+    local okOnline, OnlinePanel = pcall(require, "src.import.OnlinePanel")
+    if okOnline and OnlinePanel.back(self) then return end
   end
   if self.workState == "working" then return end
   -- Keyboard focus ring: arrows move it, Enter activates it -- but only once
@@ -4659,7 +4901,7 @@ function RomImporter:_cartSealSlot(version)
   return nil, scope
 end
 
-function RomImporter:cartPlan(version)
+function RomImporter:cartPlan(version, listed)
   local id = self.activeCart and self.activeCart[version] or nil
   if not id then return nil, nil end
   local slot = self:_cartSealSlot(version)
@@ -4670,7 +4912,7 @@ function RomImporter:cartPlan(version)
   if cached and cached.key == key then return cached.report, slot end
   local installed = {}
   pcall(function()
-    local rows = require("src.mods.LauncherMods").list(version) or {}
+    local rows = listed or require("src.mods.LauncherMods").list(version) or {}
     for _, row in ipairs(rows) do
       local manifest = type(row.manifest) == "table" and row.manifest or row
       if type(manifest.id) == "string" then
@@ -4789,7 +5031,8 @@ function RomImporter:_cartPinIndexRelease(row)
 end
 
 function RomImporter:pressInstallCartMods(version)
-  if self._cartFill or self._modInstall or self._cartInstall then return false end
+  if self._cartFill or self._modInstall or self._cartInstall
+      or self._updateAll then return false end
   local rows = self:cartFillRows(version)
   if #rows == 0 then return false end
   self.cartFillNotice = nil
@@ -5171,7 +5414,40 @@ function RomImporter:_disarmTextInput()
   end
 end
 
+function RomImporter:_focusOnlineField(key)
+  self._onlineFocus = key
+  local OnlinePanel = require("src.import.OnlinePanel")
+  local st = OnlinePanel.state(self)
+  if key == "online-name" then st.nameDraft = st.name or "" end
+  self:_armTextInput()
+end
+
+function RomImporter:_commitOnlineField()
+  local key = self._onlineFocus
+  self._onlineFocus = nil
+  self:_disarmTextInput()
+  if key ~= "online-name" then return end
+  local OnlinePanel = require("src.import.OnlinePanel")
+  local st = OnlinePanel.state(self)
+  OnlinePanel.setName(self, st.nameDraft or "")
+  st.nameDraft = nil
+end
+
+function RomImporter:playArena(version, cartId, spec)
+  if not version or not spec then return false end
+  self._handedOff = true
+  resetPointerCursor(self)
+  if self._flex then require("src.import.LauncherView").detach(self) end
+  if self.onComplete then self.onComplete(version, cartId, { arena = spec }) end
+  return true
+end
+
 function RomImporter:_blurPanelFields()
+  if self._pcPicker then return end
+  if self._onlineFocus then
+    self:_commitOnlineField()
+    return
+  end
   if not (self._findSearchFocus or self._skinUrlFocus) then return end
   if self._indexPrompt or self._rename or self._settingsText
       or self._profileSavePrompt or self._profileRenamePrompt
@@ -5238,6 +5514,24 @@ function RomImporter:textinput(text)
     -- with a stray newline attached
     self._indexPrompt.text =
       utf8Cap(self._indexPrompt.text .. text:gsub("%s", ""), MAX_INDEX_URL)
+    return
+  end
+  if self._onlineFocus then
+    local OnlinePanel = require("src.import.OnlinePanel")
+    local st = OnlinePanel.state(self)
+    if self._onlineFocus == "online-name" then
+      st.nameDraft = OnlinePanel.sanitizeName((st.nameDraft or "") .. text)
+    elseif self._onlineFocus == "online-note" then
+      st.note = utf8Cap((st.note or "") .. text, OnlinePanel.NOTE_MAX)
+    elseif self._onlineFocus == "online-code" then
+      st.joinCode = OnlinePanel.sanitizeCode((st.joinCode or "") .. text)
+    elseif self._onlineFocus == "online-trade-code" then
+      local tr = OnlinePanel.tradeState(self)
+      tr.code = OnlinePanel.sanitizeCode((tr.code or "") .. text)
+    elseif self._onlineFocus == OnlinePanel.PC_FIELD then
+      local pc = OnlinePanel.pcPicker(self)
+      OnlinePanel.pcQuery(self, ((pc and pc.query) or "") .. text)
+    end
     return
   end
   if self._skinUrlFocus then
@@ -5342,18 +5636,18 @@ function RomImporter:_refreshMods()
   end
   -- a pin is judged against the whole listing: the cart named it, so it is
   -- listed even where the game filter above would have dropped it
-  local cartId, report = self:modCartPlan()
+  local cartId, report = self:modCartPlan(listed)
   if cartId then self.mods = self:_cartPinRows(cartId, report, listed) end
 end
 
 -- The cart the MODS panel is answering for, with the plan that resolves its
 -- pins, or nil when the panel is on a base game.
-function RomImporter:modCartPlan()
+function RomImporter:modCartPlan(listed)
   local version = self.modScope
   if not version then return nil end
   local id = self.activeCart and self.activeCart[version] or nil
   if not id then return nil end
-  local report = self:cartPlan(version)
+  local report = self:cartPlan(version, listed)
   if type(report) ~= "table" or type(report.pins) ~= "table" then return nil end
   return id, report, version
 end
@@ -5506,6 +5800,29 @@ end
 
 function RomImporter:_modUpdateInfo(id)
   return self.modUpdateInfo and self.modUpdateInfo[id] or nil
+end
+
+function RomImporter:_rejudgeModUpdate(id, fallbackVersion)
+  if type(id) ~= "string" then return end
+  local info = self:_modUpdateInfo(id)
+  local releases = info and info.releases
+  if type(releases) ~= "table" or #releases == 0 then return end
+  local installed
+  for _, m in ipairs(self.mods or {}) do
+    if m.id == id then installed = m.version break end
+  end
+  installed = installed or fallbackVersion
+  if type(installed) ~= "string" or installed == "" then return end
+  local ModUpdate = require("src.mods.ModUpdate")
+  local status, best = ModUpdate.statusFor(installed, releases)
+  info.status = status
+  info.latest = best and best.version or nil
+  info.best = best
+  info.err = nil
+  self._modUpdateRev = (self._modUpdateRev or 0) + 1
+  for _, item in ipairs(self._modInfoFetch or {}) do
+    if item.mod and item.mod.id == id then item.mod.version = installed end
+  end
 end
 
 -- Flip one game's mod flag (persisted via LauncherMods.setEnabled) and relist
@@ -5847,9 +6164,11 @@ function RomImporter:_beginModInstall(spec)
 end
 
 function RomImporter:_modInstallFailed(spec, msg)
-  local notice = { ok = false, text = Strings(tostring(msg)) }
-  if spec.notice == "find" then self.findNotice = notice
-  elseif spec.notice ~= "cart" then self.modNotice = notice end
+  if not spec.quiet then
+    local notice = { ok = false, text = Strings(tostring(msg)) }
+    if spec.notice == "find" then self.findNotice = notice
+    elseif spec.notice ~= "cart" then self.modNotice = notice end
+  end
   self:_clearBusy()
   if spec.done then spec.done(false, tostring(msg)) end
 end
@@ -5935,17 +6254,19 @@ function RomImporter:_pumpModInstall()
   -- The installed list is what the Install / Installed labels read, so it has
   -- to be re-derived before the next paint or the card lies.
   pcall(self._refreshMods, self)
+  self:_rejudgeModUpdate(spec.modId, resErr or job.version)
   local shown = tostring(resErr or job.version or "")
   local text = ("%s %s %s"):format(Strings(spec.verb or "Installed"),
     tostring(spec.name or spec.modId), shown)
-  if spec.notice == "find" then
+  if spec.quiet then
+  elseif spec.notice == "find" then
     self.findNotice = { ok = true, text = text }
   elseif spec.notice ~= "cart" then
     self.modNotice = { ok = true, text = text }
   end
   -- A cart pins its whole load order, so the dependency modal would only
   -- interrupt the queue that is already installing the rest of it.
-  if spec.notice ~= "cart" then
+  if spec.notice ~= "cart" and not spec.quiet then
     local depCheck = LauncherMods.checkDependencies({ id = spec.modId })
     if depCheck and depCheck.hasIssues then
       self._modDepResolver = depCheck
@@ -5960,7 +6281,7 @@ end
 -- never through the mod installer.  Shares the mod job's single-in-flight
 -- rule: either entry point refuses while the other is running.
 function RomImporter:_beginCartInstall(entry)
-  if self._modInstall or self._cartInstall then return end
+  if self._modInstall or self._cartInstall or self._updateAll then return end
   local ModIndex = require("src.mods.ModIndex")
   local release, why = ModIndex.releaseFor(entry)
   if type(release) ~= "table" or not (release.zip and release.zip.url) then
@@ -6077,6 +6398,91 @@ function RomImporter:_installCartPins(version, id)
   self:pressInstallCartMods(version)
 end
 
+-- ------- one-call cart install for the ONLINE tab
+function RomImporter:installCartForOnline(cartId, version, onDone)
+  if type(cartId) ~= "string" or cartId == "" then
+    if onDone then onDone(false, "no cart was named") end
+    return false
+  end
+  if self._onlineCart then return false end
+  self._onlineCart = { id = cartId, base = version, done = onDone,
+                       stage = "index" }
+  self:_ensureFind()
+  return true
+end
+
+function RomImporter:_finishOnlineCart(ok, text)
+  local job = self._onlineCart
+  self._onlineCart = nil
+  if job and job.done then pcall(job.done, ok, text) end
+end
+
+function RomImporter:pumpOnlineCartInstall()
+  local job = self._onlineCart
+  if not job then return end
+  local CartStore = require("src.carts.CartStore")
+
+  if job.stage == "index" then
+    if self._findFetch then return end
+    if not self.findLoaded then
+      self:_ensureFind()
+      return
+    end
+    local entry
+    for _, row in ipairs((self.findIndex and self.findIndex.carts) or {}) do
+      if row.id == job.id then
+        entry = row
+        break
+      end
+    end
+    if not entry then
+      return self:_finishOnlineCart(false,
+        Strings("No mod index lists a cart called %s.", tostring(job.id)))
+    end
+    if self._modInstall or self._cartInstall then return end
+    self.findNotice = nil
+    self:_beginCartInstall(entry)
+    if not self._cartInstall then
+      return self:_finishOnlineCart(false,
+        tostring((self.findNotice and self.findNotice.text)
+          or "that cart has no download"))
+    end
+    job.stage = "download"
+    return
+  end
+
+  if job.stage == "download" then
+    if self._cartInstall then return end
+    local ok, cart = pcall(CartStore.get, job.id)
+    if not ok or type(cart) ~= "table" then
+      return self:_finishOnlineCart(false,
+        tostring((self.findNotice and self.findNotice.text)
+          or "that cart did not install"))
+    end
+    self._modConfirm = nil
+    job.base = cart.base
+    job.title = cart.title or cart.id
+    if #self:_cartPinsMissing(cart.base, job.id) == 0 then
+      return self:_finishOnlineCart(true,
+        Strings("%s is installed.", tostring(job.title)))
+    end
+    self:_installCartPins(cart.base, job.id)
+    job.stage = "pins"
+    return
+  end
+
+  if job.stage == "pins" then
+    if self._cartFill then return end
+    if #self:_cartPinsMissing(job.base, job.id) > 0 then
+      return self:_finishOnlineCart(false,
+        tostring((self.cartFillNotice and self.cartFillNotice.text)
+          or "some of this cart's mods could not be installed"))
+    end
+    return self:_finishOnlineCart(true,
+      Strings("%s and its mods are installed.", tostring(job.title or job.id)))
+  end
+end
+
 -- Start an async pull for a single dependency
 function RomImporter:_startDepPull(dep)
   if not dep or not dep.github then return end
@@ -6160,6 +6566,125 @@ function RomImporter:_installModVersion(modId, release)
     modId = modId, name = modId, release = release,
     verb = "Installed", notice = "mod",
   })
+end
+
+
+function RomImporter:_updateAllRows()
+  if self.modCartPlan and self:modCartPlan() then return {} end
+  local rows = {}
+  for _, m in ipairs(self.mods or {}) do
+    local info = self:_modUpdateInfo(m.id)
+    if info and info.status == "available" and info.best
+        and info.best.zip and info.best.zip.url then
+      rows[#rows + 1] = { id = m.id, name = m.name, release = info.best,
+                          from = m.version }
+    end
+  end
+  return rows
+end
+
+function RomImporter:pressUpdateAllMods()
+  if self._updateAll or self._modInstall or self._cartInstall
+      or self._cartFill then return false end
+  if not Platform.canFetchRemote() then
+    self.modNotice = { ok = false,
+      text = "Remote mod download is unavailable on this platform. Install a mod .zip from storage instead." }
+    return false
+  end
+  self._updateAll = { stage = "check", index = 0, updated = 0,
+                      updatedIds = {}, failures = {} }
+  self.modNotice = nil
+  self:_syncModUpdateInfo(true)
+  self:_setBusy(Strings("Checking for updates"), nil,
+    function() self:_cancelUpdateAll() end)
+  self:_pumpUpdateAll()
+  return true
+end
+
+function RomImporter:_cancelUpdateAll()
+  local job = self._updateAll
+  if not job or job.cancelled then return end
+  job.cancelled = true
+  if self._modInstall then
+    self:_setBusy(Strings("Finishing the last mod"))
+  else
+    self:_finishUpdateAll(true)
+  end
+end
+
+function RomImporter:_pumpUpdateAll()
+  local job = self._updateAll
+  if not job then return end
+
+  if job.stage == "check" then
+    if self._modInfoFetch then return end
+    job.rows = self:_updateAllRows()
+    job.total = #job.rows
+    if job.cancelled or job.total == 0 then
+      return self:_finishUpdateAll(job.cancelled)
+    end
+    job.stage = "next"
+    return
+  end
+
+  if job.stage ~= "next" then return end
+  if job.cancelled then return self:_finishUpdateAll(true) end
+  if self._modInstall or self._cartInstall then return end
+  job.index = job.index + 1
+  local row = job.rows[job.index]
+  if not row then return self:_finishUpdateAll() end
+  job.stage = "installing"
+  self:_beginModInstall({
+    modId = row.id, name = row.name, release = row.release,
+    verb = "Updated", notice = "mod", quiet = true,
+    done = function(ok, text)
+      if ok then
+        job.updated = job.updated + 1
+        job.updatedIds[#job.updatedIds + 1] = row.id
+      else
+        job.failures[#job.failures + 1] =
+          ("%s: %s"):format(tostring(row.name or row.id), tostring(text))
+      end
+      job.stage = "next"
+    end,
+  })
+  if self._modInstall then
+    self:_setBusy(Strings("Updating %s (%d of %d)",
+      tostring(row.name or row.id), job.index, job.total),
+      "v" .. tostring(row.release.version or "?"),
+      function() self:_cancelUpdateAll() end)
+  elseif job.stage == "installing" then
+    job.stage = "next"
+  end
+end
+
+function RomImporter:_finishUpdateAll(cancelled)
+  local job = self._updateAll
+  self._updateAll = nil
+  self:_clearBusy()
+  pcall(self._refreshMods, self)
+  if not job then return end
+  if cancelled then
+    self.modNotice = { ok = true, failures = job.failures,
+      text = Strings("Stopped after updating %d mods.", job.updated) }
+  elseif (job.total or 0) == 0 then
+    self.modNotice = { ok = true, text = Strings("All mods are up to date.") }
+  elseif #job.failures == 0 then
+    self.modNotice = { ok = true,
+      text = Strings("Updated %d mods.", job.updated) }
+  else
+    self.modNotice = { ok = false, failures = job.failures,
+      text = Strings("Updated %d of %d. %d failed:", job.updated, job.total,
+        #job.failures) }
+  end
+  local LauncherMods = require("src.mods.LauncherMods")
+  for _, id in ipairs(job.updatedIds or {}) do
+    local ok, depCheck = pcall(LauncherMods.checkDependencies, { id = id })
+    if ok and depCheck and depCheck.hasIssues then
+      self._modDepResolver = depCheck
+      break
+    end
+  end
 end
 
 
@@ -6445,7 +6970,7 @@ function RomImporter:_findRows()
   local c = self._findRowsCache
   if c and c.src == all and c.query == self.findQuery
       and c.category == self.findCategory and c.base == self.findBase
-      and c.scope == self.modScope then
+      and c.game == self.findGame then
     return c.rows
   end
   local ModIndex = require("src.mods.ModIndex")
@@ -6453,33 +6978,22 @@ function RomImporter:_findRows()
     query = self.findQuery,
     category = (not carts) and self.findCategory or nil,
     base = carts and self.findBase or nil,
+    game = self.findGame,
   })
-  if self.modScope then
-    if carts then
-      -- A cart plays as exactly one game, so the scope is a plain match on
-      -- the base rather than a ModTargets coverage question.
-      local kept = {}
-      for _, entry in ipairs(rows) do
-        if entry.base == self.modScope then kept[#kept + 1] = entry end
-      end
-      rows = kept
-    else
-      local ModTargets = require("src.mods.ModTargets")
-      local gen = GameVersion.generation(self.modScope)
-      local kept = {}
-      for _, entry in ipairs(rows) do
-        local versions = ModTargets.normalize(entry.games)
-        if #versions == 0 or ModTargets.covers(versions, gen) then
-          kept[#kept + 1] = entry
-        end
-      end
-      rows = kept
-    end
-  end
   self._findRowsCache = { src = all, query = self.findQuery,
     category = self.findCategory, base = self.findBase,
-    scope = self.modScope, rows = rows }
+    game = self.findGame, rows = rows }
   return rows
+end
+
+function RomImporter:_setFindGame(token)
+  if token == "all" then token = nil end
+  if self.findGame == token then return end
+  self.findGame = token
+  self._findRowsCache = nil
+  self._findSortCache = nil
+  if self._pages then self._pages["find"] = 1 end
+  self.findPage = 1
 end
 
 function RomImporter:_findInstalledMap()
@@ -6787,16 +7301,39 @@ end
 function RomImporter:_findShowDetails(entry)
   local ModIndex = require("src.mods.ModIndex")
   local url = ModIndex.joinUrl(entry._base, entry.description_url)
-  local body = entry.summary or ""
-  if url then
-    local ok, text = pcall(ModIndex.fetchText, url)
-    if ok and type(text) == "string" and text ~= "" then body = text end
-  end
+  self:_cancelFindDetails()
   self._findDetails = {
     title = entry.title or entry.id,
-    body = body,
+    body = entry.summary or "",
+    loading = url ~= nil,
     scroll = 0,
   }
+  if url then
+    self._findDetailsFetch = ModIndex.beginFetchText(url)
+  end
+end
+
+function RomImporter:_cancelFindDetails()
+  local h = self._findDetailsFetch
+  if not h then return end
+  self._findDetailsFetch = nil
+  pcall(require("src.mods.ModIndex").cancelFetchText, h)
+end
+
+function RomImporter:_pumpFindDetails()
+  local h = self._findDetailsFetch
+  if not h then return end
+  if not self._findDetails then
+    self:_cancelFindDetails()
+    return
+  end
+  local ok, done, text = pcall(require("src.mods.ModIndex").pumpFetchText, h)
+  if ok and not done then return end
+  self._findDetailsFetch = nil
+  local d = self._findDetails
+  if not d then return end
+  d.loading = false
+  if ok and type(text) == "string" and text ~= "" then d.body = text end
 end
 
 -- Arm the install confirm.  The compatibility list is the whole point of the

@@ -46,6 +46,7 @@ local Strings = require("src.core.Strings")
 local PAL = Theme.PAL
 local VirtualKeyboard = require("src.ui.kit.VirtualKeyboard")
 local FileBrowser = require("src.ui.kit.FileBrowser")
+local Transition = require("src.ui.kit.Transition")
 
 local Kit = {
   scale = 1,
@@ -54,6 +55,7 @@ local Kit = {
   focusId = nil,     -- spatial-nav ring id (nil = nothing selected by pad/arrows)
   VirtualKeyboard = VirtualKeyboard,
   FileBrowser = FileBrowser,
+  Transition = Transition,
 }
 
 Kit.mouseX, Kit.mouseY = 0, 0
@@ -335,6 +337,8 @@ function Kit.beginFrame(mx, my, clicked, wheel)
   if love and love.timer and love.timer.getTime then
     Kit.time = love.timer.getTime()
   end
+  Transition.update(Kit.time)
+  if Transition.active() then Kit.blockClicks = true end
   -- Resolve any queued focus-ring movement against LAST frame's geometry.
   -- Immediate mode has no geometry until the frame is built, and the ring
   -- must move before widgets test themselves against it.
@@ -717,14 +721,16 @@ function Kit.button(x, y, w, h, label, opts)
     strokeA = invert and Theme.A.focus or Theme.A.hairline
     doRing = focused and not hot
   elseif face == "tab" then
-    invert = active or focused or hot
+    invert = active and true or false
     local tint = opts.color or opts.fill or PAL.ink
     fill = invert and tint or PAL.surface
     ink = invert and PAL.inverse or (opts.color or PAL.text)
     if not invert then
       stroke = tint
-      strokeA = opts.color and Theme.A.hover or Theme.A.hairline
+      strokeA = (focused or hot) and Theme.A.focus
+        or (opts.color and Theme.A.hover or Theme.A.hairline)
     end
+    doRing = focused or hot
   elseif face == "chip" then
     local c = opts.color or PAL.line
     invert = active and true or false
