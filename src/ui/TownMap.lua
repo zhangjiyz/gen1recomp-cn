@@ -18,6 +18,7 @@ local GameVersion = require("src.core.GameVersion")
 local PaletteFX = require("src.render.PaletteFX")
 local Sound = require("src.core.Sound")
 local SpriteRenderer = require("src.render.SpriteRenderer")
+local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
 
 local TownMap = {}
@@ -432,7 +433,7 @@ function TownMap:draw()
         -- engine/items/town_map.asm:403
         Font.drawBox(1, 7, 17, 4)
         love.graphics.setColor(0, 0, 0, 1)
-        Font.draw(" AREA UNKNOWN", 16, 72)
+        Font.draw(Strings(" AREA UNKNOWN"), 16, 72)
         love.graphics.setColor(1, 1, 1, 1)
       end
       love.graphics.rectangle("fill", 0, 0, 160, 8)
@@ -489,7 +490,7 @@ function TownMap:draw()
     love.graphics.setColor(0, 0, 0, 1)
     if self.fly then
       -- engine/items/town_map.asm:167, 176, 185
-      Font.draw("To", 0, 0)
+      Font.draw(Strings("To"), 0, 0)
       if selected then Font.draw(selected.name, 24, 0) end
       self:drawFlyArrows()
     elseif selected then

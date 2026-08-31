@@ -52,6 +52,8 @@ eq(Strings("Link desync! %s differs. Are both games the same version and mods?",
   "rng"), "连接不同步！rng 存在差异。双方的游戏版本和模组是否一致？",
   "online desync error")
 eq(Strings("VSYNC"), "垂直同步", "new video option")
+eq(Strings(" AREA UNKNOWN"), " 地区不明", "town map unknown-area label")
+eq(Strings("To"), "前往", "town map fly destination prefix")
 eq(Strings("Select Mod (.zip)"), "选择模组（.zip）", "mod file picker title")
 eq(Strings("Choose a\nPOKéMON BOX."), "请选择一个\n宝可梦盒子。",
   "box selection prompt")
