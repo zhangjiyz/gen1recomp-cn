@@ -130,15 +130,21 @@ EOF
 
 # Fail fast before packing when --fused is requested.
 preflight_fused_build() {
-  if ! devkitpro_ready; then
+  local docker_ok=0
+  if command -v docker >/dev/null 2>&1; then
+    docker_ok=1
+  fi
+
+  if devkitpro_ready; then
+    ensure_dkp_tools_path
+  elif [ "$docker_ok" -eq 0 ]; then
     fail_missing_devkitpro
   fi
-  ensure_dkp_tools_path
 
   local game_ok=0
   if command -v nacptool >/dev/null 2>&1 && command -v elf2nro >/dev/null 2>&1; then
     game_ok=1
-  elif command -v docker >/dev/null 2>&1; then
+  elif [ "$docker_ok" -eq 1 ]; then
     game_ok=1
   fi
   if [ "$game_ok" -eq 0 ]; then
@@ -148,7 +154,7 @@ preflight_fused_build() {
   if ota_launcher_deps_ready; then
     return 0
   fi
-  if command -v docker >/dev/null 2>&1; then
+  if [ "$docker_ok" -eq 1 ]; then
     return 0
   fi
   fail_missing_ota_deps

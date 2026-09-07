@@ -22,7 +22,7 @@ DKP_IMAGE_FILE="$ROOT/scripts/switch/dkp-docker.image"
 [ -d "$LAUNCHER_DIR" ] || fail "missing $LAUNCHER_DIR"
 [ -f "$LAUNCHER_DIR/Makefile" ] || fail "missing Makefile"
 
-if ! devkitpro_ready; then
+if ! devkitpro_ready && ! command -v docker >/dev/null 2>&1; then
   fail_missing_devkitpro
 fi
 
