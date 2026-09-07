@@ -123,7 +123,7 @@ local function cursorStore(game)
 end
 
 -- home/text.asm:424
-local PAGE, SCROLL = "\f", "\v"
+local PAGE, SCROLL, LINE = "\f", "\v", "\n"
 
 local function messageTokens(text)
   if type(text) ~= "string" then return text end

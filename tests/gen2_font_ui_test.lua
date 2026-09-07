@@ -310,11 +310,18 @@ check(upperAt and headerClearAt and upperAt < headerClearAt,
 check(headerClearAt and headerAt and headerClearAt < headerAt,
   "and before the header prints, so no border runs through the letters")
 
-local plaque, plaqueAt = findPrint("│TYPE/└")
-check(plaque ~= nil and plaque.x == 0 and plaque.y == 11,
-  "String_MoveType_Bottom sits on the lower box's top border row")
+local plaqueEdge, plaqueEdgeAt = findPrint("│")
+local plaqueLabel, plaqueLabelAt = findPrint("TYPE/")
+local plaqueCorner, plaqueCornerAt = findPrint("└")
+check(plaqueEdge ~= nil and plaqueEdge.x == 0 and plaqueEdge.y == 11,
+  "String_MoveType_Bottom's left edge sits on the lower box's top border row")
+check(plaqueLabel ~= nil and plaqueLabel.x == 1 and plaqueLabel.y == 11,
+  "TYPE/ label sits inside the fixed plaque")
+check(plaqueCorner ~= nil and plaqueCorner.x == 6 and plaqueCorner.y == 11,
+  "String_MoveType_Bottom's corner stays fixed in the English TYPE/ plaque")
 local plaqueClear, plaqueClearAt = coveringFill(0, 10, 7, 2)
 check(plaqueClear ~= nil, "the seven cells of the TYPE plaque are blanked")
+local plaqueAt = math.max(plaqueEdgeAt or 0, plaqueLabelAt or 0, plaqueCornerAt or 0)
 check(plaqueClearAt and plaqueAt and plaqueClearAt < plaqueAt,
   "before either of its two lines prints")
 

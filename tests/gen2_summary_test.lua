@@ -51,6 +51,7 @@ require("src.core.Logger").warn = function() end
 
 local Mon = require("src.battle.gen2.Mon")
 local PartyMenu = require("src.ui.gen2.PartyMenu")
+local Strings = require("src.core.Strings")
 local SummaryMenu = require("src.ui.gen2.SummaryMenu")
 local TypeChart = require("src.battle.TypeChart")
 local Gen2Battle = require("src.battle.gen2.Battle")
@@ -550,10 +551,19 @@ check("current PP at hlcoord 13,4", at(detail, 13, 4), "30")
 check("the PP slash at hlcoord 15,4", at(detail, 15, 4), "/")
 check("max PP at hlcoord 16,4", at(detail, 16, 4), "35")
 check("the type plaque's top at hlcoord 0,10", at(detail, 0, 10), "┌─────┐")
-check("its bottom at hlcoord 0,11", at(detail, 0, 11), "│TYPE/└")
+check("the type plaque's left edge at hlcoord 0,11", at(detail, 0, 11), "│")
+check("TYPE/ at hlcoord 1,11", at(detail, 1, 11), "TYPE/")
+check("the type plaque's fixed corner at hlcoord 6,11", at(detail, 6, 11), "└")
 check("the move's type at hlcoord 2,12", at(detail, 2, 12), "NORMAL")
 check("ATTK/ at hlcoord 11,12", at(detail, 11, 12), "ATTK/")
 check("the move's power at hlcoord 16,12", at(detail, 16, 12), " 35")
+Strings.load({ strings = { ["TYPE/"] = "属性/" } })
+local zhDetail = screen:moveDetailPlacements()
+check("localized TYPE/ label stays inside the plaque", at(zhDetail, 1, 11), "属性/")
+check("localized TYPE/ keeps a label-sized raised plaque top", at(zhDetail, 0, 10), "┌───┐")
+check("localized TYPE/ keeps the plaque's left edge", at(zhDetail, 0, 11), "│")
+check("localized TYPE/ label drops the stray-looking corner", at(zhDetail, 6, 11), nil)
+Strings.load({ strings = {} })
 -- PrintMoveDescription writes at (1,14) and its lines join with <NEXT>, which
 -- is two rows down -- so line two is on row 16, not row 15.
 check("the description at hlcoord 1,14", at(detail, 1, 14),

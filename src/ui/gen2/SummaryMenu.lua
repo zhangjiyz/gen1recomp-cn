@@ -198,6 +198,11 @@ local function tiles(text)
   return #Font.split(tostring(text or ""))
 end
 
+local function cellsFor(text)
+  text = tostring(text or "")
+  return math.max(tiles(text), math.ceil(Font.width(text) / 8))
+end
+
 -- GetNickname reads wPartyMonNicknames, so a party mon always has a name of
 -- its own; a directly-built mon may only carry a species.
 local function monName(mon)
@@ -634,9 +639,23 @@ function SummaryMenu:moveDetailPlacements()
   end
 
   -- String_MoveType_Top / _Bottom are box-drawing glyphs, and the plaque is
-  -- open on its right: "┌─────┐" over "│TYPE/└".
-  put(out, "┌─────┐", 0, 10)
-  put(out, "│" .. Strings("TYPE/") .. "└", 0, 11)
+  -- open on its right: "┌─────┐" over "│TYPE/└".  Keep the border glyphs in
+  -- their tile cells instead of translating that whole bottom row as one
+  -- string; otherwise a wider localized TYPE/ label pushes the corner glyph.
+  -- Localized labels keep that raised tab, but size it to the label and leave
+  -- off the bottom-right corner; with a short Chinese "属性/" the vanilla
+  -- fixed corner reads as a stray Latin-looking L.
+  local typeLabel = Strings("TYPE/")
+  if typeLabel == "TYPE/" then
+    put(out, "┌─────┐", 0, 10)
+    put(out, "│", 0, 11)
+    put(out, "TYPE/", 1, 11)
+    put(out, "└", 6, 11)
+  else
+    put(out, "┌" .. string.rep("─", cellsFor(typeLabel)) .. "┐", 0, 10)
+    put(out, "│", 0, 11)
+    put(out, typeLabel, 1, 11)
+  end
   put(out, Strings(ATTACK_POWER_LABEL), 11, 12)
 
   local entry = moves[self.moveIndex]
@@ -653,15 +672,11 @@ function SummaryMenu:moveDetailPlacements()
     put(out, "---", 16, 12)
   end
 
-  -- PrintMoveDescription at (1,14).  Descriptions join their lines with
-  -- <NEXT>, which is two rows down at the same column, so the second line is
-  -- at row 16 and not row 15.
+  -- PrintMoveDescription at (1,14).  Two-line cartridge descriptions retain
+  -- their blank middle row; a three-line translation uses rows 14-16.
   local description = def and def.description or ""
-  local ty = 14
-  for line in (tostring(description) .. "<NEXT>"):gmatch("(.-)<NEXT>") do
-    if ty > 16 then break end
-    if line ~= "" then put(out, line, 1, ty) end
-    ty = ty + 2
+  for _, row in ipairs(Chrome.descriptionRows(description)) do
+    put(out, row.text, 1, 14 + row.row)
   end
   return out
 end
@@ -1234,7 +1249,14 @@ function SummaryMenu:drawMoveDetail()
   -- the TYPE plaque at (0,10)/(0,11), the lower box's top border row.  Those
   -- cells belong to the strings, not to the frames.
   clearCells(5, 1, tiles(monName(mon)) + tiles(levelText(mon.level)), 1)
-  clearCells(0, 10, 7, 2)
+  local typeLabel = Strings("TYPE/")
+  if typeLabel == "TYPE/" then
+    clearCells(0, 10, 7, 2)
+  else
+    local typeCells = cellsFor(typeLabel)
+    clearCells(0, 10, typeCells + 2, 1)
+    clearCells(0, 11, typeCells + 1, 1)
+  end
   -- PlaceMoveScreenLeftArrow / RightArrow only draw when there is a party mon
   -- that way; both sit on row 0, above the list box.
   if self.index > 1 then Chrome.print("◀", 16, 0) end

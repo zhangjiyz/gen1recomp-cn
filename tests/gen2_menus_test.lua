@@ -111,6 +111,10 @@ local rejoined = table.concat(wrapped, " ")
 check("wrap loses no words", rejoined, "What will CYNDAQUIL do?")
 check("empty wraps to nothing", #Chrome.wrap("", 8), 0)
 check("wrap keeps a single word whole", #Chrome.wrap("CYNDAQUIL", 2), 1)
+_cnWrapText = "喷雾式药水。能治愈１只宝可梦的中毒状态。"
+_cnWrapLines = Chrome.wrap(_cnWrapText, 18)
+check("wrap splits unspaced Chinese", #_cnWrapLines > 1, true)
+check("wrap loses no Chinese text", table.concat(_cnWrapLines, ""), _cnWrapText)
 
 check("two-line description preserves cart spacing",
   Chrome.descriptionRows("first<NEXT>second")[2].row, 2)
@@ -118,6 +122,10 @@ check("three-line translation uses middle row",
   Chrome.descriptionRows("甲\n乙\n丙")[2].row, 1)
 check("three-line translation reaches bottom row",
   Chrome.descriptionRows("甲\n乙\n丙")[3].row, 2)
+_cnDescriptionRows = Chrome.descriptionRows(_cnWrapText)
+check("descriptions auto-wrap unspaced Chinese", #_cnDescriptionRows > 1, true)
+check("description wrap keeps translated text",
+  _cnDescriptionRows[1].text .. _cnDescriptionRows[2].text, _cnWrapText)
 
 -- Chrome.number pads the way PrintNum does.
 check("number pads with spaces", Chrome.number(5, 3), "  5")

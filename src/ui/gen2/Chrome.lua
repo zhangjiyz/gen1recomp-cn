@@ -335,8 +335,30 @@ end
 -- past tile 20: text that does is drawn outside the GB frame entirely.
 -- A "\n" in the text is the cart's OWN line break (data/text's `line` / `next`
 -- control byte, e.g. "<USER>\nused <MOVE>!"), so it is a HARD break: each
--- segment wraps on its own and the break survives, rather than being eaten by
--- the %S+ tokenizer and re-wrapped by width.
+-- segment wraps on its own and the break survives.  CJK translations often do
+-- not use spaces, so a single long "word" falls back to glyph wrapping.
+
+local function breakGlyphRun(text, budget)
+  local lines, line = {}, {}
+  local function joined() return table.concat(line) end
+  for _, span in ipairs(Font.split(text)) do
+    local token = text:sub(span.from, span.to)
+    local current = joined()
+    local candidate = current .. token
+    if #line > 0 and Font.width(candidate) > budget then
+      lines[#lines + 1] = current
+      line = { token }
+    else
+      line[#line + 1] = token
+    end
+  end
+  return lines, (#line > 0 and joined() or nil)
+end
+
+local function hasMultibyte(text)
+  return tostring(text or ""):find("[\128-\255]") ~= nil
+end
+
 function Chrome.wrap(text, width)
   text = Strings(text)
   local budget = (width or Chrome.SCREEN_W) * 8
@@ -347,9 +369,16 @@ function Chrome.wrap(text, width)
       local candidate = line and (line .. " " .. word) or word
       if line and Font.width(candidate) > budget then
         lines[#lines + 1] = line
-        line = word
+        line = nil
       else
         line = candidate
+      end
+      if Font.width(line or word) > budget and hasMultibyte(word) then
+        local split, tail = breakGlyphRun(word, budget)
+        for _, part in ipairs(split) do lines[#lines + 1] = part end
+        line = tail
+      elseif not line then
+        line = word
       end
     end
     if line then lines[#lines + 1] = line end
@@ -366,7 +395,11 @@ function Chrome.descriptionRows(description)
   local text = tostring(description or ""):gsub("<NEXT>", "\n")
   local lines = {}
   for line in (text .. "\n"):gmatch("(.-)\n") do
-    if line ~= "" then lines[#lines + 1] = line end
+    if line ~= "" then
+      for _, wrapped in ipairs(Chrome.wrap(line, 18)) do
+        lines[#lines + 1] = wrapped
+      end
+    end
   end
   local step = #lines >= 3 and 1 or 2
   local rows = {}
