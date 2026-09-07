@@ -14488,6 +14488,18 @@
       92,
       23985
     ],
+    "AsleepTreeMonsDay": [
+      15,
+      27497
+    ],
+    "AsleepTreeMonsMorn": [
+      15,
+      27503
+    ],
+    "AsleepTreeMonsNite": [
+      15,
+      27485
+    ],
     "AttackMissed2Text": [
       32,
       20531
@@ -15667,6 +15679,10 @@
     "EliminatedStatsText": [
       32,
       21622
+    ],
+    "EndOfExpBarGFX": [
+      35,
+      26612
     ],
     "EnduredText": [
       32,

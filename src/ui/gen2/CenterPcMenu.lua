@@ -20,10 +20,12 @@ local Screens = require("src.ui.Screens")
 local Sound = require("src.core.Sound")
 local Specials = require("src.script.gen2.Specials")
 local Strings = require("src.core.Strings")
+local Typer = require("src.ui.gen2.Typer")
 
 local CenterPcMenu = {}
 CenterPcMenu.__index = CenterPcMenu
-CenterPcMenu.isOpaque = true
+-- ../pokecrystal/engine/events/pokecenter_pc.asm:15
+CenterPcMenu.isOpaque = false
 
 -- ENGINE_POKEDEX (constants/engine_flags.asm, index 11): the flag
 -- CheckReceivedDex reads and Mr.Pokemon's `setflag ENGINE_POKEDEX` writes.
@@ -31,21 +33,70 @@ CenterPcMenu.isOpaque = true
 -- (World:setEngineFlag), so the same store answers here.
 local ENGINE_POKEDEX = 11
 
-function CenterPcMenu:wantsFillScale() return true end
-function CenterPcMenu:drawsWidescreen() return true end
+-- Text owned by PokemonCenterPC/ProfOaksPC. Keep each cart message as one
+-- catalog key so a translation may reflow or reorder it without inheriting
+-- the English line fragments.
+local TEXT = {
+  -- data/text/common_2.asm:725 _PokecenterPCCantUseText ends in `cont`
+  -- (\v scrolls "have a #MON to" up and lands "use this!" under it), not a
+  -- third bare \n line (which pagesOf() renders as its own one-line page
+  -- instead of a scroll).
+  noMon = Strings.source("Bzzzzt! You must\nhave a #MON to\vuse this!"),
+  turnedOn = Strings.source("{PLAYER} turned on\nthe PC."),
+  billsPc = Strings.source("BILL's PC"),
+  playersPc = Strings.source("%s's PC"),
+  oaksPc = Strings.source("PROF.OAK's PC"),
+  hallOfFame = Strings.source("HALL OF FAME"),
+  turnOff = Strings.source("TURN OFF"),
+  oakClosed = Strings.source("The link to PROF.\nOAK's PC closed."),
+  linkClosed = Strings.source("…\nLink closed…"),
+  billsOpened = Strings.source(
+    "BILL's PC\naccessed.\n\n#MON Storage\nSystem opened."),
+  ownOpened = Strings.source(
+    "Accessed own PC.\n\nItem Storage\nSystem opened."),
+  oakOpened = Strings.source(
+    "PROF.OAK's PC\naccessed.\n\n#DEX Rating\nSystem opened."),
+  rateDex = Strings.source("Want to get your\n#DEX rated?"),
+  accessWhose = Strings.source("Access whose PC?"),
+}
 
--- A multi-page body: `para` (a blank line in the transcription) is a
--- screenful of its own, two lines to a page.
+function CenterPcMenu:wantsFillScale() return true end
+
+-- `\f` = para (home/text.asm:403 Paragraph), `\v` = cont (home/text.asm:442
+-- _ContTextNoPause); two rows to a page (constants/text_constants.asm:32).
 local function pagesOf(body)
   local pages = {}
-  for chunk in (tostring(body) .. "\n\n"):gmatch("(.-)\n\n") do
-    local lines = {}
-    for line in (chunk .. "\n"):gmatch("(.-)\n") do
-      if line ~= "" then lines[#lines + 1] = line end
+  for chunk in (tostring(body) .. "\f"):gmatch("(.-)\f") do
+    local flat, pos, scrolled = {}, 1, false
+    while true do
+      local brk = chunk:find("[\n\v]", pos)
+      local line = brk and chunk:sub(pos, brk - 1) or chunk:sub(pos)
+      if line ~= "" then flat[#flat + 1] = { line, scrolled } end
+      if not brk then break end
+      scrolled = chunk:sub(brk, brk) == "\v"
+      pos = brk + 1
     end
-    if #lines > 0 then pages[#pages + 1] = lines end
+    local page
+    for _, entry in ipairs(flat) do
+      if not page then
+        page = { entry[1] }
+        pages[#pages + 1] = page
+      elseif entry[2] then
+        page = { page[#page], entry[1] }
+        pages[#pages + 1] = page
+      elseif #page >= 2 then
+        page = { entry[1] }
+        pages[#pages + 1] = page
+      else
+        page[#page + 1] = entry[1]
+      end
+    end
   end
   return pages
+end
+
+local function translatedPages(source, ...)
+  return pagesOf(Strings(source, ...))
 end
 
 -- opts: save, events, items (items.lua), onClose()
@@ -62,20 +113,22 @@ function CenterPcMenu.new(game, opts)
   self.message = nil
   self.confirm = nil
   self.closed = false
+  self.booted = false
   self:buildEntries()
   local party = self.save and self.save.party
   if not (party and #party > 0) then
     -- PC_CheckPartyForPokemon: SFX_CHOOSE_PC_OPTION, the refusal, and the PC
     -- never boots (`ret c` before PC_PlayBootSound).
+    -- data/text/common_2.asm:725 _PokecenterPCCantUseText ends in cont.
     self:playSfx("Sfx_ChoosePcOption")
-    self:say({ { Strings("Bzzzzt! You must"), Strings("have a #MON to"),
-      Strings("use this!") } },
+    self:say(translatedPages(TEXT.noMon),
       function() self:close() end)
   else
     -- PC_PlayBootSound + _PokecenterPCTurnOnText.
     self:playSfx("Sfx_BootPc")
-    self:say({ { Strings("%s turned on", self:playerName()),
-      Strings("the PC.") } })
+    -- ../pokecrystal/engine/events/pokecenter_pc.asm:22
+    self:say(translatedPages(TEXT.turnedOn),
+      function() self.booted = true end)
   end
   return self
 end
@@ -101,16 +154,16 @@ function CenterPcMenu:buildEntries()
     and save.engineFlags[ENGINE_POKEDEX] == true
   local hofCount = (save and save.hallOfFame and save.hallOfFame.count) or 0
   local entries = {
-    { id = "bills", label = Strings("BILL's PC") },
-    { id = "players", label = Strings("%s's PC", self:playerName()) },
+    { id = "bills", label = Strings(TEXT.billsPc) },
+    { id = "players", label = Strings(TEXT.playersPc, self:playerName()) },
   }
   if hasDex then
-    entries[#entries + 1] = { id = "oaks", label = Strings("PROF.OAK's PC") }
+    entries[#entries + 1] = { id = "oaks", label = Strings(TEXT.oaksPc) }
     if hofCount > 0 then
-      entries[#entries + 1] = { id = "hof", label = Strings("HALL OF FAME") }
+      entries[#entries + 1] = { id = "hof", label = Strings(TEXT.hallOfFame) }
     end
   end
-  entries[#entries + 1] = { id = "turnoff", label = Strings("TURN OFF") }
+  entries[#entries + 1] = { id = "turnoff", label = Strings(TEXT.turnOff) }
   self.entries = entries
 end
 
@@ -118,7 +171,9 @@ end
 -- played the moment it comes up (FindOakRating hands PlaySFX its fanfare
 -- right before the rating text prints).
 function CenterPcMenu:say(pages, onDone)
-  self.message = { pages = pages, page = 1, onDone = onDone }
+  Typer.say(self, pages, onDone, { expand = function(line)
+    return (line:gsub("{PLAYER}", self:playerName()))
+  end })
   local first = pages[1]
   if first and first.sfx then self:playSfx(first.sfx) end
 end
@@ -139,8 +194,7 @@ end
 -- ProfOaksPC's `.shutdown`: _OakPCText4 either way, then back to the menu
 -- loop (`jr nc, .loop` in PokemonCenterPC -- the OaksPC row answers nc).
 function CenterPcMenu:oakClosed()
-  self:say({ { Strings("The link to PROF."),
-    Strings("OAK's PC closed.") } })
+  self:say(translatedPages(TEXT.oakClosed))
 end
 
 -- ProfOaksPCBoot, inside a screen rather than a script: the counts, the
@@ -166,15 +220,14 @@ function CenterPcMenu:choose()
   local game = self.game
   if entry.id == "turnoff" then
     -- TurnOffPC: PokecenterPCOaksClosedText, then carry into .shutdown.
-    self:say({ { "\xe2\x80\xa6", Strings("Link closed…") } },
+    self:say(translatedPages(TEXT.linkClosed),
       function() self:shutdown() end)
     return
   end
   -- PC_PlayChoosePCSound opens all four of the other rows.
   self:playSfx("Sfx_ChoosePcOption")
   if entry.id == "bills" then
-    self:say({ { Strings("BILL's PC"), Strings("accessed.") },
-               { Strings("#MON Storage"), Strings("System opened.") } }, function()
+    self:say(translatedPages(TEXT.billsOpened), function()
       if not (game and game.stack) then return end
       Screens.push(game, "Gen2PcMenu", {
         save = self.save,
@@ -183,8 +236,7 @@ function CenterPcMenu:choose()
       })
     end)
   elseif entry.id == "players" then
-    self:say({ { Strings("Accessed own PC.") },
-               { Strings("Item Storage"), Strings("System opened.") } }, function()
+    self:say(translatedPages(TEXT.ownOpened), function()
       if not (game and game.stack) then return end
       Screens.push(game, "Gen2ItemPcMenu", {
         save = self.save,
@@ -193,11 +245,10 @@ function CenterPcMenu:choose()
       })
     end)
   elseif entry.id == "oaks" then
-    self:say({ { Strings("PROF.OAK's PC"), Strings("accessed.") },
-               { Strings("#DEX Rating"), Strings("System opened.") } }, function()
+    self:say(translatedPages(TEXT.oakOpened), function()
       -- _OakPCText1's yes/no; NO is the same `.shutdown` as a finished rating.
       self.confirm = {
-        prompt = { Strings("Want to get your"), Strings("#DEX rated?") },
+        prompt = translatedPages(TEXT.rateDex)[1],
         choice = 1,
         onYes = function() self:oakRate() end,
         onNo = function() self:oakClosed() end,
@@ -219,10 +270,12 @@ function CenterPcMenu:update(_dt)
   if not input then return end
 
   if self.message then
+    Typer.step(self)
+    if Typer.typing(self) then return end
     if input:wasPressed("a") or input:wasPressed("b") then
       local m = self.message
       if m.page < #m.pages then
-        m.page = m.page + 1
+        Typer.turn(self, m)
         local page = m.pages[m.page]
         if page and page.sfx then self:playSfx(page.sfx) end
         return
@@ -270,39 +323,39 @@ function CenterPcMenu:drawBottomLines(lines)
   Chrome.box(0, 12, 20, 6)
   if not lines then return end
   local name = self:playerName()
-  local startY = #lines >= 3 and 13 or 14
-  for i, line in ipairs(lines) do
-    Chrome.print((line:gsub("{PLAYER}", name)), 1, startY + (i - 1) * 2)
+  -- constants/text_constants.asm:32 TEXTBOX_INNERY: rows 14 and 16 only.
+  for i = 1, math.min(#lines, 2) do
+    Chrome.print((lines[i]:gsub("{PLAYER}", name)), 1, 14 + (i - 1) * 2)
   end
 end
 
 function CenterPcMenu:drawPanel()
-  Chrome.clear()
+  if self.booted then
+    -- _PokecenterPCWhoseText stays up under the menu
+    -- (PC_DisplayTextWaitMenu leaves it there); the menu window is drawn on
+    -- top of it, the way the cart's windows stack.
+    self:drawBottomLines(translatedPages(TEXT.accessWhose)[1])
+    -- .TopMenu is menu_coords 0, 0, 15, 12.
+    Chrome.box(0, 0, 16, math.max(12, #self.entries * 2 + 2))
+    for i, entry in ipairs(self.entries) do
+      local ty = i * 2
+      if i == self.index then Chrome.cursor(1, ty) end
+      Chrome.print(entry.label, 2, ty)
+    end
+  end
 
   if self.message then
-    self:drawBottomLines(self.message.pages[self.message.page])
-    love.graphics.setColor(1, 1, 1, 1)
-    return
-  end
-
-  -- _PokecenterPCWhoseText stays up under the menu
-  -- (PC_DisplayTextWaitMenu leaves it there); the menu window is drawn on
-  -- top of it, the way the cart's windows stack.
-  self:drawBottomLines({ Strings("Access whose PC?") })
-  -- .TopMenu is menu_coords 0, 0, 15, 12.
-  Chrome.box(0, 0, 16, math.max(12, #self.entries * 2 + 2))
-  for i, entry in ipairs(self.entries) do
-    local ty = i * 2
-    if i == self.index then Chrome.cursor(1, ty) end
-    Chrome.print(entry.label, 2, ty)
-  end
-
-  if self.confirm then
+    -- ../pokecrystal/engine/events/pokecenter_pc.asm:652
+    self:drawBottomLines(
+      Typer.text(self, self.message.pages[self.message.page]))
+  elseif self.confirm then
     self:drawBottomLines(self.confirm.prompt)
     Chrome.box(14, 7, 6, 5)
-    Chrome.print("YES", 16, 8)
-    Chrome.print("NO", 16, 10)
+    Chrome.print(Strings("YES"), 16, 8)
+    Chrome.print(Strings("NO"), 16, 10)
     Chrome.cursor(15, self.confirm.choice == 1 and 8 or 10)
+  elseif not self.booted then
+    self:drawBottomLines(nil)
   end
 
   love.graphics.setColor(1, 1, 1, 1)
@@ -310,17 +363,6 @@ end
 
 function CenterPcMenu:draw()
   self:drawPanel()
-end
-
-function CenterPcMenu:drawWidescreen(winW, winH)
-  local G = love.graphics
-  Chrome.letterbox(winW, winH, 1, 1, 1)
-  local scale = Chrome.fitScale(winW, winH)
-  G.push()
-  G.translate(Chrome.fitOrigin(winW, winH, scale))
-  G.scale(scale, scale)
-  self:drawPanel()
-  G.pop()
 end
 
 CenterPcMenu.ENGINE_POKEDEX = ENGINE_POKEDEX

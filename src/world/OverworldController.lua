@@ -8,7 +8,9 @@ local Camera = require("src.render.Camera")
 local Collision = require("src.world.Collision")
 local Encounter = require("src.world.Encounter")
 local FieldDefaults = require("src.world.FieldDefaults")
+local Flags = require("src.script.Flags")
 local GameVersion = require("src.core.GameVersion")
+local GbcPalette = require("src.render.GbcPalette")
 local Logger = require("src.core.Logger")
 local Map = require("src.world.Map")
 local MapLoader = require("src.world.MapLoader")
@@ -71,6 +73,24 @@ local FLY_PATH_IN = {
   { 0x27, 0x78 }, { 0x2D, 0x70 }, { 0x32, 0x68 }, { 0x36, 0x60 },
   { 0x39, 0x58 }, { 0x3B, 0x50 }, { 0x3C, 0x48 }, { 0x3C, 0x40 },
 }
+
+-- engine/overworld/player_animations.asm:126
+local TELEPORT_OUT_HOLDS = {}
+for d = 15, 0, -1 do TELEPORT_OUT_HOLDS[#TELEPORT_OUT_HOLDS + 1] = d end
+for i = 1, 6 do TELEPORT_OUT_HOLDS[#TELEPORT_OUT_HOLDS + 1] = i < 6 and 3 or 0 end
+local TELEPORT_OUT_INPLACE = 16
+local TELEPORT_OUT_FRAMES = 135
+local TELEPORT_OUT_SFX = {
+  [4] = "Teleport_Exit2", [8] = "Teleport_Exit2", [12] = "Teleport_Exit2",
+  [TELEPORT_OUT_INPLACE] = "Teleport_Exit1",
+}
+-- counting 0 up to 8 -- engine/overworld/player_animations.asm:20
+local TELEPORT_IN_HOLDS = { 3, 3, 3, 3, 3, 0, 1, 2, 3, 4, 5, 6, 7, 0 }
+local TELEPORT_IN_FRAMES = 43
+local SPIN_DOWN_STEPS = 6
+-- engine/overworld/player_animations.asm:41-45
+local HOLE_IN_HOLDS = { 3, 3, 3, 3, 3, 0 }
+local HOLE_IN_FRAMES = 15
 
 -- healing machine ball screen positions (PokeCenterOAMData dbsprite
 -- rows are raw shadow-OAM bytes, so the hardware's -8/-16 OAM origin
@@ -292,6 +312,7 @@ function OverworldState:enter(mapId, x, y, facing, opts)
   -- a fresh entry, or a stale flag can freeze player input forever
   self.engaging = false
   self.emote = nil
+  self.fishing = nil
   self.cancelledTrainerSight = nil
   -- volatile WRAM state in pokered; never serialize across save/load
   self.wildEncounterGraceSteps = 0
@@ -496,6 +517,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   else
     self.player = Player.new(Game.data, x, y, facing)
   end
+  self.player.slopeMap = self:onSlopeMap(mapId)
   -- boot only: the original persists the surf state.  wWalkBikeSurfState
   -- (ram/wram.asm) lives inside wMainDataStart..wMainDataEnd, which
   -- engine/menus/save.asm block-copies into sMainData on save and back out
@@ -808,11 +830,7 @@ function OverworldState:sgbPalettes()
   return PaletteFX.wholeNamed(Game.data, mapName)
 end
 
--- World-pass palette zones in world-canvas pixels: each visible map
--- area keeps its own SGB palette (a deliberate step past the original,
--- which recolored the whole screen per map -- see the survey zoom
--- entry in docs/known-differences.md).  Border fill inherits the
--- current map's palette.
+-- `ld de, BlkPacket_WholeScreen` (engine/gfx/palettes.asm:178)
 --
 -- RED++ true overworld coloring does NOT go through this zone/shader
 -- system at all: TileRenderer bakes real per-tile GBC colors straight into
@@ -827,6 +845,11 @@ end
 -- would re-run the DMG shade-remap over already-true-color pixels using
 -- an unrelated 4-color palette -- exactly the "colors are wrong" bug this
 -- fixes.
+-- engine/gfx/palettes.asm:178
+function OverworldState.perMapWorldPalettes()
+  return (Zoom.offset or 0) < 0
+end
+
 function OverworldState:sgbWorldZones()
   local PaletteFX = require("src.render.PaletteFX")
   if PaletteFX.usesGbcPack() and self.map.renderer and self.map.renderer.gbcAtlas then
@@ -837,6 +860,7 @@ function OverworldState:sgbWorldZones()
   local vw, vh = Game.renderer:worldViewSize()
   local cam = self.camera
   local zones = { { colors = base, x = 0, y = 0, w = vw, h = vh } }
+  if not OverworldState.perMapWorldPalettes() then return zones end
   for _, nb in ipairs(self.neighbors) do
     local colors = PaletteFX.pal(Game.data, self:paletteNameFor(nb.map))
     if colors then
@@ -1151,6 +1175,7 @@ function OverworldState:update(dt)
   -- keep the player sprite in sync with the bike state (the drawer
   -- picks the red_bike sheet while riding)
   self.player.onBike = Game.save.onBike
+  self.player.slopeMap = self:onSlopeMap()
   -- the rendered neighbor set depends on the view size; zooming out (or
   -- resizing) past what setMap computed re-runs the walk in place
   if self.map and (self.neighborViewW or 0) > 0 then
@@ -1293,7 +1318,8 @@ function OverworldState:update(dt)
   -- EnterMapAnim's .done tail re-enables the companion once the swoop or the
   -- spin-down has landed (player_animations.asm:40)
   if self.pikachuWarpHidden and not (self.flyAnim or self.flyArrive
-      or self.teleportOut or self.transitioning or self.player.spinning) then
+      or self.teleportOut or self.transitioning or self.player.spinning
+      or self.holeFall or self.holeArrive) then
     self:showPikachuAfterWarp()
   end
 
@@ -1305,6 +1331,13 @@ function OverworldState:update(dt)
   -- player OUTSIDE the last Pokemon Center door (#196).  player.spinFrames
   -- decrements in lockstep in Player:update, so the rising spin ends here too.
   if self.teleportOut then
+    -- engine/overworld/player_animations.asm:136
+    local step = self.player.spinStep or 0
+    if step ~= self.teleportOut.step then
+      self.teleportOut.step = step
+      local key = TELEPORT_OUT_SFX[step]
+      if key then require("src.core.Sound").play(Game.data, key) end
+    end
     self.teleportOut.frames = self.teleportOut.frames - 1
     if self.teleportOut.frames <= 0 then
       local onDone = self.teleportOut.onDone
@@ -1312,6 +1345,9 @@ function OverworldState:update(dt)
       self.player.spinning = false
       self.player.spinFrames = nil
       self.player.spinRise = nil
+      self.player.spinHolds = nil
+      self.player.spinStep = nil
+      self.player.spinRiseFrom = nil
       self.player.inputLocked = false
       -- keep the sprite hidden through the warp fade-out (#916): the spin is
       -- over but the arrival spin-drop is not armed until startWarpTo's
@@ -1319,6 +1355,39 @@ function OverworldState:update(dt)
       self.playerHidden = true
       self:warpToHealPoint(onDone, { arrive = "teleport" })
       return
+    end
+  end
+
+  -- fades to white -- engine/overworld/player_animations.asm:204-228
+  if self.holeFall then
+    self.holeFall.frames = self.holeFall.frames - 1
+    if self.holeFall.frames <= 0 then
+      local f = self.holeFall
+      self.holeFall = nil
+      self.player.holeSink = nil
+      self.playerHidden = true
+      self.arriveWarp = "hole"
+      self:startWarpTo(f.map, f.x, f.y, f.facing)
+      return
+    end
+  end
+
+  -- offscreen, then spins him down -- player_animations.asm:41-45
+  if self.holeArrive then
+    self.holeArrive.frames = self.holeArrive.frames - 1
+    if self.holeArrive.frames <= 0 then
+      self.holeArrive = nil
+      self.playerHidden = false
+      self.player.spinning = true
+      self.player.spinTimer = 0
+      self.player.spinFrames = HOLE_IN_FRAMES
+      self.player.spinTotal = HOLE_IN_FRAMES
+      self.player.spinDrop = true
+      self.player.spinHolds = HOLE_IN_HOLDS
+      self.player.spinStep = 0
+      self.player.spinHold = HOLE_IN_HOLDS[1]
+      self.player.spinDropSteps = SPIN_DOWN_STEPS
+      self.spinArrive = true
     end
   end
 
@@ -1369,6 +1438,8 @@ function OverworldState:update(dt)
                    or (self.hopLand or 0) > 0
                    or self.engaging or self.emote or self.teleportOut
                    or self.flyAnim or self.flyArrive or self.spinArrive
+               or self.holeFall or self.holeArrive
+                   or self.holeFall or self.holeArrive
   if not scripted and not self.transitioning then
     self:checkTrainerSight()
     -- CheckFightingMapTrainers (home/trainers.asm) zeroes hJoyHeld and
@@ -1379,6 +1450,7 @@ function OverworldState:update(dt)
                or (self.hopLand or 0) > 0
                or self.engaging or self.emote or self.teleportOut
                or self.flyAnim or self.flyArrive or self.spinArrive
+               or self.holeFall or self.holeArrive
   end
   -- a scriptMove's onDone can push a text box on the frame it retires, and
   -- DisplayTextID owns the loop from there (home/text_script.asm:3)
@@ -1568,17 +1640,32 @@ function OverworldState:handleInput()
   -- promises ("Press the A or B Button to stay in place") and what the
   -- edge-only wasPressed("a") above can never deliver, since a press
   -- stalls the roll for one frame only (issue #255).
-  local fm = Game.data.field.forcedMovement
   local braking = input:isDown("a") or input:isDown("b")
-  if fm and Game.save.onBike and not braking and not self.player.moving then
-    for _, m in ipairs(fm.slopeMaps or {}) do
-      if m == self.map.id then
-        self.player.facing = "down"
-        self.player:tryMove("down", self.map, self.entities)
-        return
-      end
+  if Game.save.onBike and not braking and not self.player.moving
+     and self:onSlopeMap() then
+    -- does -- home/overworld.asm:1817
+    self.player.facing = "down"
+    if self:checkEdgeExit("down") then return end
+    if self:checkLedgeHop("down") then return end
+    if self:checkBoulderPush("down") then return end
+    local result = self.player:tryMove("down", self.map, self.entities)
+    if result == "blocked" and self:canCollisionWarp() then
+      local w = Warp.onCollision(self.map, Game.data.field.warpCarpets,
+                                 self.player.cellX, self.player.cellY, "down")
+      if w then self:takeWarp(w.def) end
     end
+    return
   end
+end
+
+-- JoypadOverworld both make -- home/overworld.asm:382
+function OverworldState:onSlopeMap(mapId)
+  local fm = Game.data.field.forcedMovement
+  mapId = mapId or (self.map and self.map.id)
+  for _, m in ipairs((fm and fm.slopeMaps) or {}) do
+    if m == mapId then return true end
+  end
+  return false
 end
 
 -- Strength boulders (engine/overworld/push_boulder.asm TryPushingBoulder):
@@ -1890,7 +1977,7 @@ function OverworldState:crossConnection(dir, conn)
   -- fresh walk-cycle clock so the seam step always shows leg frames
   -- (mid-cycle stand phase would otherwise look like a slide)
   p.animClock = 0
-  p.stepFramesCur = p:stepLength()
+  p.stepFramesCur = p:stepLength(dir)
   require("src.core.FixedStep"):discardCatchup()
   return true
 end
@@ -2049,6 +2136,61 @@ local function catchFrom(pool, always)
   return nil
 end
 
+-- engine/items/item_effects.asm:1893, engine/overworld/player_animations.asm:378
+local FISH_ANIM = { used = 80, cast = 10, wait = 100,
+                    shake = 30, shakeStep = 3, bubble = 60 }
+local FISH_CAST_AT = FISH_ANIM.used + FISH_ANIM.cast
+local FISH_VERDICT_AT = FISH_CAST_AT + FISH_ANIM.wait
+local FISH_SHAKE_END = FISH_VERDICT_AT + FISH_ANIM.shake
+
+-- engine/overworld/player_animations.asm:378
+function OverworldState.fishAnimFrames(bite)
+  if bite then return FISH_SHAKE_END + FISH_ANIM.bubble end
+  return FISH_VERDICT_AT
+end
+
+-- engine/overworld/player_animations.asm:378, :452
+function OverworldState.stepFishAnim(fa)
+  fa.frames = (fa.frames or 0) + 1
+  local n = fa.frames
+  if n == FISH_CAST_AT then return "cast" end
+  if n < FISH_VERDICT_AT then return nil end
+  if not fa.bite then
+    return n == FISH_VERDICT_AT and "verdict" or nil
+  end
+  if n <= FISH_SHAKE_END then
+    return ((n - FISH_VERDICT_AT) % FISH_ANIM.shakeStep == 1) and "shake" or nil
+  end
+  if n == FISH_SHAKE_END + 1 then return "bubble" end
+  if n == FISH_SHAKE_END + FISH_ANIM.bubble then return "verdict" end
+  return nil
+end
+
+-- engine/overworld/player_animations.asm:378
+function OverworldState:tickFishAnim(fa)
+  local ev = OverworldState.stepFishAnim(fa)
+  if ev == "cast" then
+    self.fishing = { facing = self.player.facing }
+    self.player.fishing = true
+  elseif ev == "shake" then
+    fa.dy = (fa.dy == 1) and 0 or 1
+    self.player.fishShakeDy = fa.dy
+  elseif ev == "bubble" then
+    self.player.fishShakeDy = nil
+    -- engine/overworld/player_animations.asm:424
+    if self.fishing and self.fishing.facing == "up" then
+      self.fishing.hideRod = true
+    end
+    -- engine/overworld/emotion_bubbles.asm:1
+    self.emote = { npc = self.player, frames = FISH_ANIM.bubble, bubble = 1 }
+  elseif ev == "verdict" then
+    self.emote = nil
+    self.player.fishShakeDy = nil
+    if self.fishing then self.fishing.hideRod = nil end
+  end
+  return ev
+end
+
 -- Fishing (engine/items/item_effects.asm FishingInit + engine/overworld):
 -- Old Rod always hooks a L5 Magikarp; Good Rod bites ~1/3 for
 -- Goldeen/Poliwag L10; Super Rod uses the map's extracted fishing group
@@ -2068,39 +2210,47 @@ function OverworldState:goFishing(rod)
   else
     enc = catchFrom(pool, always)
   end
-  -- the bobber waits a beat before the verdict (the original's
-  -- FishingInit dot animation); the rod pose draws in the meantime
-  self.fishing = { facing = self.player.facing }
-  self.player.fishing = true
-  Game.stack:push(TextBox.new(Game, ". . .", function()
-    -- FishingAnim (engine/overworld/player_animations.asm) holds
-    -- BIT_LEDGE_OR_FISHING -- the rod OAM and the fishing pose -- through
-    -- PrintText and only clears it once the verdict box is done, so the rod
-    -- must NOT vanish with the dots box (#321).
-    if not enc then
-      Game.stack:push(TextBox.new(Game, romText(Game.data, "_NoNibbleText", "Not even a nibble!"), function()
-        -- the rod OAM goes out with the verdict box (res BIT_LEDGE_OR_FISHING
-        -- straight after PrintText) but the player keeps the patched tiles
-        -- until the overworld reloads them a few frames later
-        -- (RestoreScreenTilesAndReloadTilePatterns, home/palettes.asm ->
-        -- ReloadMapSpriteTilePatterns, home/reload_sprites.asm) -- #384
-        self.fishing = nil
-        self.fishPose = 10
-      end))
-      return
-    end
-    Game.stack:push(TextBox.new(Game, romText(Game.data, "_ItsABiteText", "Oh!\nIt's a bite!"), function()
-      -- the bite goes straight into battle, which reloads the sprite tiles
+  -- engine/items/item_effects.asm:2855
+  local nothingHere = rod == "SUPER_ROD" and pool == nil
+  local def = (Game.data.items or {})[rod]
+  local used = require("src.inventory.ItemEffects")
+    .itemUseLine(Game.data, Game.save, (def and def.name) or rod)
+  local fa = { frames = 0, bite = enc ~= nil }
+  -- engine/items/item_effects.asm:1893
+  Game.stack:push(TextBox.new(Game, used, function()
+    self:fishVerdict(enc, nothingHere)
+  end, { auto = {
+    wait = false,
+    delay = OverworldState.fishAnimFrames(fa.bite),
+    sound = function()
+      require("src.core.Sound").play(Game.data, "Heal_Ailment")
+    end,
+    tick = function() self:tickFishAnim(fa) end,
+  } }))
+end
+
+function OverworldState:fishVerdict(enc, nothingHere)
+  if not enc then
+    -- engine/overworld/player_animations.asm:463
+    local text = nothingHere
+      and romText(Game.data, "_NothingHereText", "Looks like there's\nnothing here.")
+      or romText(Game.data, "_NoNibbleText", "Not even a nibble!")
+    Game.stack:push(TextBox.new(Game, text, function()
       self.fishing = nil
-      self.player.fishing = nil
-      local BattleState = require("src.battle.BattleState")
-      local battle = BattleState.newWild(Game, enc.species, enc.level, { hooked = true })
-      if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
-        battle:makeSafari(Game.save.safari)
-      end
-      battle.onFinish = function(result) self:afterBattle(result, battle) end
-      self:pushBattle(battle)
+      self.fishPose = 10
     end))
+    return
+  end
+  Game.stack:push(TextBox.new(Game, romText(Game.data, "_ItsABiteText", "Oh!\nIt's a bite!"), function()
+    self.fishing = nil
+    self.player.fishing = nil
+    local BattleState = require("src.battle.BattleState")
+    local battle = BattleState.newWild(Game, enc.species, enc.level, { hooked = true })
+    if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
+      battle:makeSafari(Game.save.safari)
+    end
+    battle.onFinish = function(result) self:afterBattle(result, battle) end
+    self:pushBattle(battle)
   end))
 end
 
@@ -2151,7 +2301,8 @@ function OverworldState:beginTeleportOut(onDone)
   -- StopMusic sits above both _LeaveMapAnim branches
   -- engine/overworld/player_animations.asm:123
   require("src.core.Music").fadeOut(FLY_FADE_CONTROL)
-  require("src.core.Sound").play(Game.data, "Teleport_Exit1")
+  -- engine/overworld/player_animations.asm:136
+  require("src.core.Sound").play(Game.data, "Teleport_Exit2")
   self.player.surfing = false
   self:syncSurfingPikachu()
   self:hidePikachuForWarp()
@@ -2160,10 +2311,14 @@ function OverworldState:beginTeleportOut(onDone)
   -- spinRise lifts the sprite (Player:pose) while spinFrames counts down
   self.player.spinning = true
   self.player.spinTimer = 0
-  self.player.spinFrames = 48
-  self.player.spinTotal = 48
+  self.player.spinFrames = TELEPORT_OUT_FRAMES
+  self.player.spinTotal = TELEPORT_OUT_FRAMES
   self.player.spinRise = true
-  self.teleportOut = { frames = 48, onDone = onDone }
+  self.player.spinHolds = TELEPORT_OUT_HOLDS
+  self.player.spinStep = 0
+  self.player.spinHold = TELEPORT_OUT_HOLDS[1]
+  self.player.spinRiseFrom = TELEPORT_OUT_INPLACE - 1
+  self.teleportOut = { frames = TELEPORT_OUT_FRAMES, onDone = onDone, step = 0 }
 end
 
 function OverworldState:npcAtCell(cx, cy)
@@ -2600,22 +2755,25 @@ function OverworldState:tryCardKeyDoor(fx, fy)
       t._CardKeyFailText or romText(Game.data, "_CardKeyFailText", "Darn! It needs a\nCARD KEY!")))
     return true
   end
-  require("src.core.Sound").play(Game.data, "Go_Inside")
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
-  self:replaceBlock(bx, by, openBlock)
-  -- opened doors stay open across reloads (the per-door unlock events
-  -- the floors' gate callbacks check, EVENT_SILPH_CO_n_UNLOCKED_DOOR*)
-  local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
-                                               "closedDoors")
-  for _, door in ipairs(closedDoors and closedDoors[self.map.id] or {}) do
-    if door.bx == bx and door.by == by then
-      Game.save.flags[door.event] = true
-      break
+  -- ../pokered/engine/events/card_key.asm:29-56
+  local function openDoor()
+    self:replaceBlock(bx, by, openBlock)
+    local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
+                                                 "closedDoors")
+    for _, door in ipairs(closedDoors and closedDoors[self.map.id] or {}) do
+      if door.bx == bx and door.by == by then
+        Flags.set(Game.save, door.event)
+        break
+      end
     end
+    require("src.core.Sound").play(Game.data, "Go_Inside")
   end
+  -- ../pokered/engine/events/card_key.asm:63-67
   Game.stack:push(TextBox.new(Game,
     (t._CardKeySuccessText1 or Strings("Bingo!"))
-    .. (t._CardKeySuccessText2 or romText(Game.data, "_CardKeySuccessText2", "\nThe CARD KEY\nopened the door!"))))
+    .. (t._CardKeySuccessText2 or romText(Game.data, "_CardKeySuccessText2", "\nThe CARD KEY\nopened the door!")),
+    openDoor, TextBox.soundOpts(Game, "Get_Item1")))
   return true
 end
 
@@ -2733,22 +2891,29 @@ function OverworldState:billsHousePC()
       or romText(Game.data, "_BillsHouseMonitorText", "TELEPORTER is\ndisplayed on the\nPC monitor.")))
     return
   end
-  require("src.core.Music").stop()
   Game.stack:push(TextBox.new(Game, t._BillsHouseInitiatedText
     or Strings("{PLAYER} initiated\nTELEPORTER's Cell\nSeparator!"), function()
-    flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
-    require("src.core.Sound").play(Game.data, "Switch")
+    -- BillsHouseInitiatedText's text_asm stops the music only after the
+    -- prompt button -- bills_house_pc.asm:55
+    require("src.core.Music").stop()
     self:queueScript({
+      { "wait", 16 },
+      { "play_sound", "Switch" }, { "wait_sound" },
+      { "wait", 60 },
+      -- .doCellSeparator -- bills_house_pc.asm:18
       { "wait", 32 },
-      { "play_sound", "Tink" },
+      { "play_sound", "Tink" }, { "wait_sound" },
       { "wait", 80 },
-      { "play_sound", "Shrink" },
+      { "play_sound", "Shrink" }, { "wait_sound" },
       { "wait", 48 },
-      { "play_sound", "Tink" },
+      { "play_sound", "Tink" }, { "wait_sound" },
       { "wait", 32 },
-      { "play_sound", "Get_Item1" },
-      { "wait", 30 },
-    }, { onDone = function() self:billsHouseBillExits() end })
+      { "play_sound", "Get_Item1" }, { "wait_sound" },
+    }, { onDone = function()
+      -- bills_house_pc.asm:39
+      flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
+      self:billsHouseBillExits()
+    end })
   end))
 end
 
@@ -3221,8 +3386,10 @@ function OverworldState:openPC(onDone)
   -- PC session (#695); the sub-PC screens (BoxMenu, PlayerPC) already
   -- use keepOpen for their own rows, matching the original ROM's flow
   -- where the main menu stays underneath.
+  local boxPcLabel = metBill and Strings.source("BILL'S PC")
+                              or Strings.source("SOMEONE'S PC")
   table.insert(items, {
-    label = metBill and "BILL'S PC" or Strings("SOMEONE'S PC"),
+    label = boxPcLabel,
     keepOpen = true,
     onSelect = function()
       require("src.core.Sound").play(Game.data, "Enter_PC")
@@ -3240,8 +3407,10 @@ function OverworldState:openPC(onDone)
   })
 
   -- the player's item storage is always available
+  local playerName = Game.save.player.name or "RED"
+  local playerPcLabel = Strings.source("%s's PC"):format(playerName)
   table.insert(items, {
-    label = (Game.save.player.name or "RED") .. "'s PC",
+    label = playerPcLabel,
     keepOpen = true,
     onSelect = function()
       -- pc.asm .playersPC plays SFX_ENTER_PC then prints AccessedMyPCText
@@ -3258,7 +3427,7 @@ function OverworldState:openPC(onDone)
   -- Prof. Oak's dex rating only appears once you have the Pokédex
   if flags.EVENT_GOT_POKEDEX then
     table.insert(items, {
-      label = Strings("PROF.OAK's PC"),
+      label = Strings.source("PROF.OAK's PC"),
       keepOpen = true,
       onSelect = function()
         -- pc.asm OaksPC plays SFX_ENTER_PC before the farcall (#960)
@@ -3270,7 +3439,7 @@ function OverworldState:openPC(onDone)
     -- engine/pokemon/bills_pc.asm:48-60 PKMN LEAGUE row (#1566)
     if #(Game.save.hallOfFame or {}) > 0 then
       table.insert(items, {
-        label = Strings("<PK><MN>LEAGUE"),
+        label = Strings.source("<PK><MN>LEAGUE"),
         keepOpen = true,
         onSelect = function()
           -- pc.asm PKMNLeague plays SFX_ENTER_PC, then PKMNLeaguePC prints
@@ -3292,6 +3461,22 @@ function OverworldState:openPC(onDone)
   else
     Logger.error("ui.pc.items returned %s; keeping the vanilla items",
                  type(hooked))
+  end
+
+  -- Hooks identify the vanilla rows by their English source labels.  Delay
+  -- localization until after ui.pc.items has inspected/reordered/replaced
+  -- them, then translate any source labels it chose to retain.
+  local translatedLabels = {
+    [boxPcLabel] = function()
+      return metBill and Strings("BILL'S PC") or Strings("SOMEONE'S PC")
+    end,
+    [playerPcLabel] = function() return Strings("%s's PC", playerName) end,
+    ["PROF.OAK's PC"] = function() return Strings("PROF.OAK's PC") end,
+    ["<PK><MN>LEAGUE"] = function() return Strings("<PK><MN>LEAGUE") end,
+  }
+  for _, item in ipairs(items) do
+    local translate = translatedLabels[item.label]
+    if translate then item.label = translate() end
   end
 
   local logOff = function()
@@ -3442,42 +3627,81 @@ function OverworldState:nurseHeal(onDone, npc)
     -- updates.  No follower (or not Yellow) calls straight through (#417).
     Follower.hopToCounter(self, function()
       Game.stack:push(TextBox.new(Game, need, function()
-        -- the nurse turns to the machine, the map music stops, and the
-        -- party heals before the machine runs (predef HealParty)
-        if npc then npc.facing = "left" end
-        -- DisablePikachuOverworldSpriteDrawing: Pikachu goes behind the
-        -- counter with the party for the machine animation
-        Follower.setVisible(self, false)
-        require("src.core.Music").stop()
-        local Pokemon = require("src.pokemon.Pokemon")
-        for _, mon in ipairs(Game.save.party) do
-          Pokemon.heal(mon)
+        local yellow = GameVersion.isYellow()
+        local pika = yellow and Follower.current(self) ~= nil
+        local function hold(frames, next)
+          self.emote = { npc = npc, frames = frames, bubble = false, onDone = next }
         end
-        Game.save.lastHeal = { -- SetLastBlackoutMap
-          map = self.map.id, x = self.player.cellX, y = self.player.cellY,
-          -- the town door of this interior, for LAST_MAP exits after a
-          -- blackout/ESCAPE ROPE warp here
-          outdoor = self.lastOutdoor
-            and { id = self.lastOutdoor.id, x = self.lastOutdoor.x, y = self.lastOutdoor.y }
-            or nil,
-        }
-        self.healAnim = { balls = #Game.save.party, lit = 0, timer = 0,
-                          visible = true,
-                          -- map anchor: the player's cell when healing
-                          -- began (the GB's fixed screen coords assume it
-                          -- BG-aligned at (64,64))
-                          px = self.player.cellX * 16,
-                          py = self.player.cellY * 16 }
-        self.healAnim.onDone = function()
-          -- EnablePikachuOverworldSpriteDrawing, before the fighting-fit
-          -- line: it comes back on the counter facing the player
-          Follower.setVisible(self, true)
-          if npc then npc:facePlayer(self.player) end
-          self:finishNurseHeal(bye, onDone, npc)
+        local function machine()
+          -- the map music stops, and the party heals before the machine
+          -- runs (predef HealParty)
+          require("src.core.Music").stop()
+          local Pokemon = require("src.pokemon.Pokemon")
+          for _, mon in ipairs(Game.save.party) do
+            Pokemon.heal(mon)
+          end
+          Game.save.lastHeal = { -- SetLastBlackoutMap
+            map = self.map.id, x = self.player.cellX, y = self.player.cellY,
+            -- the town door of this interior, for LAST_MAP exits after a
+            -- blackout/ESCAPE ROPE warp here
+            outdoor = self.lastOutdoor
+              and { id = self.lastOutdoor.id, x = self.lastOutdoor.x, y = self.lastOutdoor.y }
+              or nil,
+          }
+          self.healAnim = { balls = #Game.save.party, lit = 0, timer = 0,
+                            visible = true,
+                            -- map anchor: the player's cell when healing
+                            -- began (the GB's fixed screen coords assume it
+                            -- BG-aligned at (64,64))
+                            px = self.player.cellX * 16,
+                            py = self.player.cellY * 16 }
+          self.healAnim.onDone = function()
+            if pika and npc then
+              -- pokeyellow engine/events/pokecenter.asm:64
+              npc.facing = "up"
+              hold(64, function()
+                -- pokeyellow engine/events/pokecenter.asm:67
+                Follower.setVisible(self, true)
+                -- pokeyellow engine/events/pokecenter.asm:69
+                npc.facing = "down"
+                hold(6, function() self:finishNurseHeal(bye, onDone, npc) end)
+              end)
+              return
+            end
+            -- EnablePikachuOverworldSpriteDrawing, before the fighting-fit
+            -- line: it comes back on the counter facing the player
+            Follower.setVisible(self, true)
+            if npc then npc:facePlayer(self.player) end
+            self:finishNurseHeal(bye, onDone, npc)
+          end
         end
+        local function turnLeft()
+          -- pokeyellow engine/events/pokecenter.asm:47
+          if npc then npc.facing = "left" end
+          -- pokeyellow engine/events/pokecenter.asm:49
+          -- engine/events/pokecenter.asm:23
+          hold(yellow and 36 or 3, machine)
+        end
+        if not yellow then
+          turnLeft()
+          return
+        end
+        -- pokeyellow engine/events/pokecenter.asm:39
+        hold(64, function()
+          if not pika then
+            turnLeft()
+            return
+          end
+          -- pokeyellow engine/events/pokecenter.asm:43
+          Follower.setVisible(self, false)
+          -- pokeyellow engine/events/pokecenter.asm:100
+          if npc then npc.facing = "up" end
+          hold(64, turnLeft)
+        end)
       end))
     end)
-  end, choiceLabels = { "HEAL", "CANCEL" }, choiceBox = Theme.healCancelBox }))
+  end, choiceLabels = { Strings("HEAL"), Strings("CANCEL") },
+    choiceBox = Theme.healCancelBox }))
 end
 
 -- pokecenter.asm bows the nurse between the two PrintText calls (#995)
@@ -3492,16 +3716,24 @@ function OverworldState:finishNurseHeal(bye, onDone, npc)
       end))
     end
     if not npc then farewell() return end
-    -- engine/events/pokecenter.asm:36-39; Yellow's walk-down pose when the
-    -- sheet has it (pokeyellow engine/events/pokecenter.asm:82-88)
     local yellow = GameVersion.isYellow()
-    npc.frameOverride = (yellow and npc.sprite.frames[3]) and 3 or 1
-    -- bubble = false is the silent world hold, this port's DelayFrames
-    self.emote = { npc = npc, frames = yellow and 40 or 20, bubble = false, onDone = function()
-      npc.frameOverride = nil
-      npc:facePlayer(self.player)
-      farewell()
-    end }
+    local function bow()
+      -- engine/events/pokecenter.asm:36
+      -- pokeyellow engine/events/pokecenter.asm:82
+      npc.frameOverride = yellow and 3 or 1
+      -- bubble = false is the silent world hold, this port's DelayFrames
+      self.emote = { npc = npc, frames = yellow and 40 or 20, bubble = false, onDone = function()
+        npc.frameOverride = nil
+        npc:facePlayer(self.player)
+        farewell()
+      end }
+    end
+    if not yellow then bow() return end
+    -- pokeyellow engine/events/pokecenter.asm:75
+    -- pokeyellow engine/events/pokecenter.asm:79
+    local Follower = require("src.world.PikachuFollower")
+    self.emote = { npc = npc, bubble = false, onDone = bow,
+                   frames = (Follower.starterInParty(Game.save, true) and 6 or 0) + 3 }
   end))
 end
 
@@ -3683,7 +3915,7 @@ function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText
       if result == "win" then
         Game.save.defeatedTrainers[npc.id] = true
         if header and header.event then
-          Game.save.flags[header.event] = true
+          Flags.set(Game.save, header.event)
         end
         -- checkVictoryRewards pushes the badge/prize box and starts the map's
         -- onVictory script UNDER whatever runs next, so the player still sees
@@ -3737,7 +3969,7 @@ local function giveVictoryItem(reward)
     return false
   end
   if reward.gotFlag then
-    Game.save.flags[reward.gotFlag] = true
+    Flags.set(Game.save, reward.gotFlag)
   end
   local idef = Game.data.items[reward.item]
   Game.stringBuffer = idef and idef.name or reward.item
@@ -3810,11 +4042,11 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex,
   if not reward then return self:runVictoryHook() end
   if reward.flag then
     if Game.save.flags[reward.flag] then return self:runVictoryHook() end
-    Game.save.flags[reward.flag] = true
+    Flags.set(Game.save, reward.flag)
   end
   if reward.deactivate then
     for _, flag in ipairs(reward.deactivate) do
-      Game.save.flags[flag] = true
+      Flags.set(Game.save, flag)
     end
   end
   if reward.hide then
@@ -4135,9 +4367,11 @@ function OverworldState:applyFieldPoison()
         for _, mon in ipairs(save.party) do Pokemon.heal(mon) end
         save.money = math.floor(save.money
           / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
+        local lm, lx, ly = self:escapeWarpTarget()
+        local landing = { map = lm, x = lx, y = ly }
         Runtime.emit("world.blacked_out",
-          { save = save, healTarget = self:healPoint() })
-        self:warpToHealPoint()
+          { save = save, healTarget = self:healPoint(), landing = landing })
+        self:warpToHealPoint(nil, { landing = landing })
       end))
     end
   end
@@ -4431,7 +4665,7 @@ function OverworldState:checkBadgeGate()
       if p.cellX == c.x and p.cellY == c.y then
         if Game.save.inventory[g.badge] then
           if not Game.save.flags[passedFlag] then
-            Game.save.flags[passedFlag] = true
+            Flags.set(Game.save, passedFlag)
             -- Route22GateGuardGoRightAheadText carries sound_get_item_1
             Game.stack:push(TextBox.new(Game,
               t["_" .. g.passText] or Strings("Go right ahead!"),
@@ -4459,7 +4693,7 @@ function OverworldState:checkBadgeGate()
         local badgeName = Game.data.items[guard.badge]
                           and Game.data.items[guard.badge].name or guard.badge
         if Game.save.inventory[guard.badge] then
-          Game.save.flags[guard.event] = true
+          Flags.set(Game.save, guard.event)
           -- Route23OhThatIsTheBadgeText carries sound_get_item_1
           local text = (t["_" .. g.passText] or
                         Strings("Oh! That is the\n{RAM}!")):gsub("{RAM:wNameBuffer}", badgeName)
@@ -4619,7 +4853,7 @@ function OverworldState:boulderIntoHole(npc)
     local h = entry.hole
     if npc.cellX == h.x and npc.cellY == h.y then
       require("src.core.Sound").play(Game.data, "Faint_Thud")
-      Game.save.flags[h.boulderEvent] = true
+      Flags.set(Game.save, h.boulderEvent)
       local toggles = Game.save.objectToggles or {}
       Game.save.objectToggles = toggles
       if h.hideObject then
@@ -4717,9 +4951,11 @@ function OverworldState:afterBattle(result, battle)
     end
     Game.save.money = math.floor(Game.save.money
       / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
+    local lm, lx, ly = self:escapeWarpTarget()
+    local landing = { map = lm, x = lx, y = ly }
     Runtime.emit("world.blacked_out",
-      { save = Game.save, healTarget = self:healPoint() })
-    self:warpToHealPoint()
+      { save = Game.save, healTarget = self:healPoint(), landing = landing })
+    self:warpToHealPoint(nil, { landing = landing })
   else
     -- EndTrainerBattle sets BIT_CUR_MAP_LOADED_1 (home/trainers.asm), which
     -- re-runs the floor's door callback: beating the last Rocket Hideout guard
@@ -4778,7 +5014,7 @@ function OverworldState:restoreBattleContinuation(battle, origin)
   battle.onFinish = function(result)
     if result == "win" then
       game.save.defeatedTrainers[origin.npcId] = true
-      if origin.event then game.save.flags[origin.event] = true end
+      if origin.event then Flags.set(game.save, origin.event) end
       self:checkVictoryRewards(battle.oppClass, battle.partyIndex,
                                battle.rewardDialogueShown)
     end
@@ -4833,14 +5069,20 @@ function OverworldState:takeWarp(warpDef)
     self:startWarpTo(destMap, x, y, facing)
     return
   elseif pad == "hole" then
-    -- falling through a hole: Faint_Fall plays while the player drops,
-    -- matching the boulder-hole Faint_Thud at line 3618 (#694)
-    require("src.core.Sound").play(Game.data, "Faint_Fall")
-    self:startWarpTo(destMap, x, y, facing)
+    self:fallThroughHole(destMap, x, y, facing)
     return
   end
   self.doorWarp = true -- door SFX + PlayerStepOutFromDoor walk-out
   self:startWarpTo(destMap, x, y, facing)
+end
+
+-- (engine/overworld/player_animations.asm:204-228)
+function OverworldState:fallThroughHole(mapId, x, y, facing)
+  self.player.inputLocked = true
+  self:hidePikachuForWarp()
+  self.player.holeSink = true
+  self.holeFall = { frames = 2, map = mapId, x = x, y = y,
+                    facing = facing or self.player.facing }
 end
 
 -- Remember the outdoor side for LAST_MAP exits (pokered's wLastMap).
@@ -4849,71 +5091,43 @@ function OverworldState:rememberOutdoor(id, x, y)
   Game.save.lastOutdoor = self.lastOutdoor
 end
 
--- Warp to the last heal point (blackout, ESCAPE ROPE, DIG/TELEPORT).
--- The heal point is usually an interior, so LAST_MAP exits are re-pointed
--- at its remembered town door rather than wherever the player left from.
---
--- opts.arrive = "teleport" for Dig/Teleport/Escape Rope (LeaveMapAnim /
--- EnterMapAnim).  Blackouts omit it: pret HandleBlackOut only
--- GBFadeOutToBlack + PrepareForSpecialWarp + SpecialEnterMap, and never
--- sets BIT_FLY_WARP / BIT_DUNGEON_WARP, so EnterMap never runs EnterMapAnim.
-function OverworldState:warpToHealPoint(onDone, opts)
+-- engine/events/black_out.asm:39-43, engine/overworld/special_warps.asm:71-129
+function OverworldState:escapeWarpTarget()
   local heal = self:healPoint()
+  local out = heal.outdoor or { id = heal.map, x = heal.x, y = heal.y }
+  local fw = (Game.data.field.flyWarps or {})[out.id]
+  local outX = fw and fw.x or out.x
+  local outY = fw and fw.y or out.y
+  local outDef = Game.data.maps[out.id]
+  if not (outDef and outX and outY
+          and Map.isOutside(outDef,
+                FieldDefaults.field(Game.data, "outsideTilesets"))) then
+    local zeroFill = require("src.core.SaveData")
+                     .defaultHeal(Game.data.field.boot)
+    return zeroFill.map, zeroFill.x, zeroFill.y
+  end
+  return out.id, outX, outY
+end
+
+-- Warp to the last heal point (blackout, ESCAPE ROPE, DIG/TELEPORT).
+-- engine/events/black_out.asm:42, home/overworld.asm:23-30 (#96)
+function OverworldState:warpToHealPoint(onDone, opts)
   self.player.surfing = false
   self:syncSurfingPikachu()
   -- HandleFlyWarpOrDungeonWarp + DisplayPlayerBlackedOutText both clear
   -- BIT_ALWAYS_ON_BIKE (home/overworld.asm / home/text_script.asm)
   Game.save.forcedBike = nil
-  local map, x, y = heal.map, heal.x, heal.y
-  local teleport = opts and opts.arrive == "teleport"
-  if teleport then
-    self.arriveWarp = "teleport"
-    -- Dig/Teleport/Escape Rope land OUTSIDE at the last Pokemon Center TOWN
-    -- door, like Fly (#196) -- NOT the interior heal cell a blackout returns
-    -- to.  pret routes escape-warp and blackout both through wLastBlackoutMap
-    -- (LoadSpecialWarpData .usedFlyWarp, engine/overworld/special_warps.asm),
-    -- and that map is ALWAYS an outdoor one: SetLastBlackoutMap copies
-    -- wLastMap (engine/events/set_blackout_map.asm) and WarpFound2 only
-    -- writes wLastMap on outside maps (home/overworld.asm), with the landing
-    -- cell read from FlyWarpDataPtr.  Prefer the canonical Fly landing
-    -- (field.flyWarps, one tile south of the PC door warp), else the
-    -- remembered outdoor door cell.
-    --
-    -- A heal record naming no outdoor town, or naming a map that is not
-    -- outdoors at all, is never a legal escape-warp destination: a .sav
-    -- import stamps lastHeal from wherever the cartridge was saved
-    -- (SaveConvert mergeDefaults), so ESCAPE ROPE was dropping the player
-    -- into the dungeon that save sat in, whose LAST_MAP exits then still
-    -- pointed at the door they had walked in through (#805).  Vanilla's
-    -- zero-filled wLastBlackoutMap is map 0, so an unusable record falls
-    -- back to the boot heal town exactly as a never-healed game does.
-    local out = heal.outdoor or { id = heal.map, x = heal.x, y = heal.y }
-    local fw = (Game.data.field.flyWarps or {})[out.id]
-    local outX = fw and fw.x or out.x
-    local outY = fw and fw.y or out.y
-    local outDef = Game.data.maps[out.id]
-    if not (outDef and outX and outY
-            and Map.isOutside(outDef,
-                  FieldDefaults.field(Game.data, "outsideTilesets"))) then
-      local zeroFill = require("src.core.SaveData")
-                       .defaultHeal(Game.data.field.boot)
-      out, outX, outY = { id = zeroFill.map }, zeroFill.x, zeroFill.y
-    end
-    map, x, y = out.id, outX, outY
+  if opts and opts.arrive == "teleport" then self.arriveWarp = "teleport" end
+  local landing = opts and opts.landing
+  local map, x, y
+  if landing and landing.map then
+    map, x, y = landing.map, landing.x, landing.y
+  else
+    map, x, y = self:escapeWarpTarget()
   end
   self:startWarpTo(map, x, y, "down", onDone)
-  -- Blackouts land at the interior heal cell, so re-point LAST_MAP exits at
-  -- the remembered town door.  The teleport branch re-points at the town it
-  -- just landed on: PrepareForSpecialWarp (engine/overworld/special_warps.asm)
-  -- writes the special-warp destination straight back into wLastMap for every
-  -- fly/escape warp that is not a dungeon warp, so the next LAST_MAP exit
-  -- resolves against that town instead of the dungeon door the player walked
-  -- in through before using the rope (#805).
-  if teleport then
-    self:rememberOutdoor(map, x, y)
-  elseif heal.outdoor then
-    self:rememberOutdoor(heal.outdoor.id, heal.outdoor.x, heal.outdoor.y)
-  end
+  -- PrepareForSpecialWarp (engine/overworld/special_warps.asm:1-29) writes the
+  self:rememberOutdoor(map, x, y)
 end
 
 -- opts.keepMusic: scripted warps mid-cutscene keep the current song
@@ -4945,20 +5159,35 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   -- PlayMapChangeSound (home/overworld.asm) plays before the tail-called
   -- GBFadeOutToBlack, so the SFX starts with the fade (#961)
   if doorWarp then
-    local dest = Game.data.maps[mapId]
-    local outdoor = dest and Map.isOutdoor(dest)
-    require("src.core.Sound").play(Game.data,
-                                   outdoor and "Go_Outside" or "Go_Inside")
+    -- the source map -- home/overworld.asm:689-703
+    local rule = FieldDefaults.field(Game.data, "mapChangeSound") or {}
+    local exempt = false
+    -- pokeyellow home/overworld.asm:667-671
+    if GameVersion.isYellow() then
+      for _, ts in ipairs(rule.exemptTilesets or {}) do
+        if ts == self.map.def.tileset then exempt = true end
+      end
+    end
+    local cue = "Go_Outside"
+    if not exempt
+       and self.map:tileAt(self.player.cellX * 2, self.player.cellY * 2)
+           == (rule.doorTile or 0x0B) then
+      cue = "Go_Inside"
+    end
+    require("src.core.Sound").play(Game.data, cue)
   end
   -- Fly/Teleport/Dig/Escape Rope: GBFadeOutToWhite / GBFadeInFromWhite
   -- (player_animations.asm).  Door warps stay black with no fade-in (#1644).
   local Timing = require("src.core.Timing")
   local specialWarp = arriveWarp == "fly" or arriveWarp == "teleport"
+                      or arriveWarp == "hole"
   local fadeOpts = specialWarp and {
     color = { 1, 1, 1 },
     frames = Timing.FADE_OUT_TO_WHITE,
     framesIn = Timing.FADE_IN_FROM_WHITE,
   } or nil
+  -- home/overworld.asm:681
+  if not specialWarp and self.dark then fadeOpts = { frames = 0 } end
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
     -- the departure-side hide from flyAnim/teleportOut ends here, on the new
@@ -4989,17 +5218,27 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       self.flyArrive = { t = 0 }
     elseif arriveWarp == "teleport" then
       require("src.core.Sound").play(Game.data, "Teleport_Enter1")
-      -- ENTER_2 caps the spin-down a moment later
-      self.delaySfx = { frames = 40, key = "Teleport_Enter2" }
+      -- engine/overworld/player_animations.asm:83-85
+      self.delaySfx = { frames = HOLE_IN_FRAMES, key = "Teleport_Enter2" }
       -- the sprite spins down into place (EnterMapAnim
       -- PlayerSpinWhileMovingDown), not just the SFX
       self.player.spinning = true
       self.player.spinTimer = 0
-      self.player.spinFrames = 48
-      self.player.spinTotal = 48
+      self.player.spinFrames = TELEPORT_IN_FRAMES
+      self.player.spinTotal = TELEPORT_IN_FRAMES
       self.player.spinDrop = true
+      self.player.spinHolds = TELEPORT_IN_HOLDS
+      self.player.spinStep = 0
+      self.player.spinHold = TELEPORT_IN_HOLDS[1]
+      self.player.spinDropSteps = SPIN_DOWN_STEPS
       -- engine/overworld/player_animations.asm:19
       self.spinArrive = true
+      self.player.inputLocked = true
+    elseif arriveWarp == "hole" then
+      -- engine/overworld/player_animations.asm:12
+      require("src.core.Sound").play(Game.data, "Teleport_Enter1")
+      self.playerHidden = true
+      self.holeArrive = { frames = Timing.DUNGEON_WARP_ARRIVAL }
       self.player.inputLocked = true
     end
     if doorWarp then
@@ -5197,9 +5436,88 @@ end
 -- draw / save
 -- -------------------------------------------------------------------------
 
+-- home/fade.asm:58
+function OverworldState.warpFade()
+  local top = Game and Game.stack and Game.stack.top and Game.stack:top()
+  if top and top.bgp and top.shadeMapFor then return top end
+  return nil
+end
+
+function OverworldState:bakedWorldColors()
+  return PaletteFX.usesGbcPack() and self.map and self.map.renderer
+         and self.map.renderer.gbcAtlas and true or false
+end
+
+-- pokeyellow engine/gfx/palettes.asm:799
+-- pokeyellow home/fade.asm:75-77
+function OverworldState:warpFadeUniforms(byte)
+  local pack = PaletteFX.worldPack()
+  if not pack then return nil end
+  local bg, seen = {}, {}
+  local function addMap(map)
+    local tileset = map and map.def and map.def.tileset
+    if not tileset or seen[tileset] then return end
+    seen[tileset] = true
+    local groups = PaletteFX.worldGroupColors(Game.data, tileset, map.id,
+                                              self.player and self.player.cellY)
+    for _, colors in ipairs(groups or {}) do bg[#bg + 1] = colors end
+  end
+  addMap(self.map)
+  if not bg[1] then return nil end
+  for group = 0, 7 do
+    local colors = (pack.spritePalettes or {})[group]
+    if colors then bg[#bg + 1] = PaletteFX.darkObp(colors, group) end
+  end
+  for _, nb in ipairs(self.neighbors or {}) do addMap(nb.map) end
+  return GbcPalette.remapUniforms(bg, byte)
+end
+
+-- home/fade.asm:58
+function OverworldState:drawWorldFaded()
+  local fade = OverworldState.warpFade()
+  if not (fade and self:bakedWorldColors()) then return false end
+  local byte = fade:bgp()
+  if not Transition.shadeMapFor(byte) then return false end
+  if Tilt.active() or Pipelines.worldPipeline() then return false end
+  if GbcPalette.mode ~= "gbc" or GbcPalette.customRamp then return false end
+  if not GbcPalette.remapShader() then return false end
+  local target = Game.renderer and Game.renderer.worldCanvas
+  if not target then return false end
+  local w, h = target:getWidth(), target:getHeight()
+  local scratch = self.fadeCanvas
+  if scratch and (scratch:getWidth() ~= w or scratch:getHeight() ~= h) then
+    if scratch.release then scratch:release() end
+    scratch, self.fadeCanvas = nil, nil
+  end
+  if not scratch then
+    local ok, made = pcall(love.graphics.newCanvas, w, h)
+    if not ok or not made then return false end
+    made:setFilter("nearest", "nearest")
+    scratch = made
+    self.fadeCanvas = scratch
+  end
+  local uniforms = self:warpFadeUniforms(byte)
+  if not uniforms then return false end
+  local G = love.graphics
+  local previous = G.getCanvas()
+  G.push()
+  G.origin()
+  G.setCanvas(scratch)
+  G.clear(1, 1, 1, 1)
+  self:drawWorld()
+  G.setCanvas(previous)
+  G.pop()
+  if not GbcPalette.useRemapUniforms(uniforms) then return false end
+  G.setColor(1, 1, 1, 1)
+  G.draw(scratch, 0, 0)
+  GbcPalette.clear()
+  fade.paletteStepped = true
+  return true
+end
+
 function OverworldState:draw()
   Game.renderer:beginWorldPass()
-  self:drawWorld()
+  if not self:drawWorldFaded() then self:drawWorld() end
   Game.renderer:endWorldPass()
   self:drawUI()
 end
@@ -5323,8 +5641,17 @@ function OverworldState:drawWorld()
   local battleOverWorld = Game and Game.stack
                           and Game.worldBgBattleInStack(Game.stack)
   -- home/fade.asm:66
-  PaletteFX.setShadeMap((self.dark and not battleOverWorld)
-                        and PaletteFX.DARK_BGP or self:poisonShadeMap())
+  -- home/overworld.asm:684
+  local fade = OverworldState.warpFade()
+  local fadeBgp = fade and fade:bgp()
+  local fadeMap = fadeBgp and Transition.shadeMapFor(fadeBgp)
+  if fadeBgp and not self:bakedWorldColors() then
+    PaletteFX.setShadeMap(fadeMap)
+    fade.paletteStepped = true
+  else
+    PaletteFX.setShadeMap((self.dark and not battleOverWorld)
+                          and PaletteFX.DARK_BGP or self:poisonShadeMap())
+  end
   -- advance the water/flower tile animation (runs under dialogs too).
   -- TileRenderer.tick uses wall-clock 60Hz steps so display refresh rate
   -- does not speed or slow the cycle (issue #4).
@@ -5589,6 +5916,8 @@ function OverworldState:drawWorld()
   -- fishing pose: the rod tile over the faced water (gfx/fishing.asm)
   local function fxRod()
     if not self.fishing then return end
+    -- engine/overworld/player_animations.asm:424
+    if self.fishing.hideRod then return end
     local fx = Game.data.field.overworldFx
     local rod = fx and fx.fishingRod
     if rod then
@@ -5616,7 +5945,8 @@ function OverworldState:drawWorld()
         local sprite, px, py = p.sprite, p.px, p.py
         local sx, sy = sprite:getScreenOrigin(px, py, cam.x, cam.y)
         local rx = sx + oam.dx
-        local ry = sy + oam.dy
+        -- engine/overworld/player_animations.asm:453
+        local ry = sy + oam.dy + (p.fishShakeDy or 0)
         love.graphics.setColor(1, 1, 1, 1)
         if quad and oam.flip then
           love.graphics.draw(self.rodImg, quad, rx + 8, ry, 0, -1, 1)

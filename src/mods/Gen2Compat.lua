@@ -121,6 +121,21 @@ local DATA_UNBACKED = {
 }
 
 local dataProxies = setmetatable({}, { __mode = "kv" })
+local textPlain = setmetatable({}, { __mode = "kv" })
+
+-- ../pokecrystal/home/text.asm:548 PromptText, :566 DoneText
+local function plainText(text)
+  if type(text) ~= "table" then return text end
+  local hit = textPlain[text]
+  if hit then return hit end
+  local CommonText = rawRequire("src.core.gen2.CommonText")
+  hit = {}
+  for key, value in pairs(text) do
+    hit[key] = (type(value) == "string") and CommonText.plain(value) or value
+  end
+  textPlain[text] = hit
+  return hit
+end
 
 local function dataProxy(data)
   if not data then return nil end
@@ -129,7 +144,10 @@ local function dataProxy(data)
   hit = setmetatable({}, {
     __index = function(_, key)
       local renamed = DATA_RENAMES[key]
-      if renamed then return data[renamed] end
+      if renamed then
+        if key == "text" then return plainText(data[renamed]) end
+        return data[renamed]
+      end
       local why = DATA_UNBACKED[key]
       if why then
         warnOnce("data." .. key, "[%s] game.data.%s is Gen 1 only: %s",
@@ -197,9 +215,8 @@ local function buildGame()
   function translate.logicSpeed()
     return function()
       local g = live()
-      if not g then return 1 end
-      return math.max(1, tonumber(g.speedOverride)
-        or tonumber(g.options and g.options.speed) or 1)
+      if not g or not g.logicSpeed then return 1 end
+      return g:logicSpeed()
     end
   end
 
@@ -1409,6 +1426,7 @@ COVERAGE[OW] = {
     .. "billsHouseBillExits tilesetHasWater surfBlockedHere "
     .. "checkSeafoamCurrent seafoamHolesFor boulderIntoHole openOaksPC "
     .. "dexRating cableClubReceptionist finishNurseHeal stepHealAnim "
+    .. "fishAnimFrames stepFishAnim tickFishAnim fishVerdict "
     .. "checkVictoryRewards offerGymTm runVictoryHook onStepComplete "
     .. "rollEncounter checkSpinner runSpinnerMoves rewrittenLastMap "
     .. "syncLastMapRewrite rememberOutdoor checkBadgeGate inSafariStepZone "
@@ -1838,7 +1856,7 @@ local function buildBattleState()
     "syncSides", "playerHasPP", "lockedAction", "computeMusicKind",
     "throwBall", "ballChain", "tossAnimFor", "ballFlicker", "ballMissMessage",
     "storeCaughtMon", "safariAction", "safariEnemyTurn", "drawBallRow",
-    "drawClassic", "isWideBattleLayout", "wideLayout", "uiSize",
+    "drawClassic", "uiSize",
     "sgbPalettes", "trainerPalette", "trainerPicPath", "trainerTrueColor",
     "trainerSprite", "invalidate",
     "imageBattleScale", "resolveBattleScale", "backPlacement",
@@ -1922,11 +1940,12 @@ COVERAGE["src.battle.BattleState"] = {
   backed = "update draw __index isOpaque openParty swapMoves "
     .. "lowHealthAlarmActive playVictoryMusic say sayAuto openItems "
     .. "openReplacementMenu finish askNicknameUI playEntranceCry stampOT "
-    .. "tryRun wantsFillScale bgMode BG_WORLD_DIM",
+    .. "tryRun wantsFillScale bgMode BG_WORLD_DIM "
+    .. "isWideBattleLayout wideLayout",
   warned = "tryRun askNicknameUI",
   absent = "newWild newTrainer makeSafari makeGhost makeBattler resolveTurn "
     .. "computeDamage catchAttempt runRoll enter exit sgbPalettes "
-    .. "isWideBattleLayout wideLayout uiSize letterboxWhite "
+    .. "uiSize letterboxWhite "
     .. "holdsUIAnchors trainerPalette trainerPicPath "
     .. "trainerTrueColor trainerSprite invalidate "
     .. "backPlacement frontPlacement StatBox drawClassic drawBallRow "

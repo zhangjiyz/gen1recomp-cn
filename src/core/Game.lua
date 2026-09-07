@@ -413,8 +413,7 @@ function Game:update(dt)
   -- Audio runs off real time at a fixed 60Hz regardless of game speed or
   -- display refresh, so fades and chip synthesis keep their intended tempo
   -- whether we are at 1X, 10X, or running with vsync disabled.  One-shot
-  -- SFX stay at natural pitch too (#1990/#1991/#1997); WaitForSoundToFinish
-  -- gates still release early at high speed via their logic-frame budget.
+  -- SFX stay at natural pitch too (#1990/#1991/#1997).
   local step = FixedStep.STEP
   self.audioAccum = math.min((self.audioAccum or 0) + dt, 0.25)
   while self.audioAccum >= step do
@@ -1289,14 +1288,25 @@ function Game:updateSync(dt)
   local eng = self:syncEngine()
   if not eng then return end
   if not (eng.state.enabled and eng:linked()) and not eng:busy() then return end
+  local wasBusy = eng:busy()
   pcall(eng.update, eng, dt)
+  if wasBusy and not eng:busy() then self:adoptPlaythroughId() end
+end
+
+function Game:adoptPlaythroughId()
+  local save = self.save
+  local meta = type(save) == "table" and save.meta
+  if type(meta) ~= "table" or meta.savedAt == nil then return end
+  if type(meta.playthroughId) == "string" and meta.playthroughId ~= "" then return end
+  local id = SaveData.selectedPlaythroughId(save)
+  if type(id) == "string" and id ~= "" then meta.playthroughId = id end
 end
 
 -- Persist options.lua only (Options menu / hotkeys 2-5).  Keeps settings
 -- across New Game without touching the progress save.
 function Game:writeOptions()
   if not (self.save and self.save.options) then return end
-  SaveData.saveOptions(self.save.options)
+  SaveData.saveLiveOptions(self.save)
 end
 
 -- Push the live options table into audio + display subsystems.
@@ -1327,6 +1337,7 @@ function Game:applyOptions(opts)
   require("src.core.ScreenPosition").applyOptions(opts)
   require("src.core.VSync").applyOptions(opts)
   require("src.core.FrameCap").applyOptions(opts)
+  require("src.core.LogicClock").applyOptions(opts)
   require("src.core.PresentSync").applyFixedStepPeriod()
   -- Scale the optional presentation extras to the device's performance
   -- tier.  Every heavy feature was just applied from the stored options
@@ -1421,12 +1432,20 @@ function Game:restoreCheckpointSave(loaded)
   self.save = loaded
   self:adoptSave(loaded)
   while self.stack:top() do self.stack:pop() end
-  -- freshBoot unconditionally: Checkpoint.resume (src/core/Checkpoint.lua)
-  -- is this method's only caller, and it is itself gated to the title
-  -- session (isTitleSession).
+  -- setMap zeroes poisonSteps on every non-seamless map entry, mirroring
+  -- ClearVariablesOnEnterMap.  Re-entering the map is how a restore installs
+  -- the world, but it is not a map entry from the player's point of view, and
+  -- Checkpoint.restore verifies the applied state against the checkpoint --
+  -- so the discarded counter failed the comparison and rolled the whole
+  -- restore back three steps out of four (#1971).
+  local poisonSteps = loaded.poisonSteps
+  -- freshBoot unconditionally: both callers arrive through Checkpoint.apply
+  -- (src/core/Checkpoint.lua), which serves Checkpoint.resume from the title
+  -- session and Checkpoint.restore from a settled runtime.
   self.stack:push(self.overworld, loaded.player.map,
                   loaded.player.x, loaded.player.y, loaded.player.facing,
                   { via = "checkpoint", checkpoint = true, freshBoot = true })
+  self.save.poisonSteps = poisonSteps
 end
 
 -- Install a reconstructed battle without calling BattleState:enter(), whose

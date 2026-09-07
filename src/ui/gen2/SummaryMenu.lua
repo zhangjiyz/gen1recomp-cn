@@ -61,11 +61,12 @@ local Assets = require("src.render.Assets")
 local Chrome = require("src.ui.gen2.Chrome")
 local Font = require("src.render.Font")
 local GbcPalette = require("src.render.GbcPalette")
-local Battle = require("src.battle.gen2.Battle")
 local HpBar = require("src.battle.gen2.HpBar")
 local ItemEffects = require("src.core.gen2.ItemEffects")
+local Status = require("src.battle.Status")
+local TypeChart = require("src.battle.TypeChart")
 local Mon = require("src.battle.gen2.Mon")
-local MonAnim = require("src.render.MonAnim")
+local MonAnimView = require("src.render.MonAnimView")
 local Palettes = require("src.world.gen2.Palettes")
 local Pokerus = require("src.core.gen2.Pokerus")
 local Strings = require("src.core.Strings")
@@ -116,17 +117,25 @@ local PAGE_TINTS = {
 -- PrintTempMonStats' .StatNames, and the wTempMon fields it prints beside
 -- them.  <NEXT> steps two rows, so the five labels are 2 rows apart and the
 -- values start one row below the first label.
-local STAT_LABELS = { "ATTACK", "DEFENSE", "SPCL.ATK", "SPCL.DEF", "SPEED" }
+local STAT_LABELS = {
+  Strings.source("ATTACK"), Strings.source("DEFENSE"),
+  Strings.source("SPCL.ATK"), Strings.source("SPCL.DEF"),
+  Strings.source("SPEED"),
+}
 local STAT_KEYS = {
   "attack", "defense", "specialAttack", "specialDefense", "speed",
 }
 
--- data/types/names.asm.  Every type constant prints as its own name except
--- the two the extractor has to disambiguate against Lua-unfriendly ids.
-local TYPE_NAMES = {
-  PSYCHIC_TYPE = "PSYCHIC",
-  CURSE_TYPE = "???",
-}
+local FAINTED_LABEL = Strings.source("FNT")
+local OK_LABEL = Strings.source("OK")
+local POKERUS_LABEL = Strings.source("POKéRUS")
+local TO_LABEL = Strings.source("TO")
+local PP_LABEL = Strings.source("PP")
+local ATTACK_POWER_LABEL = Strings.source("ATTK/")
+local OT_LABEL = Strings.source("OT/")
+local ID_LABEL = Strings.source("<ID>№.")
+local DEX_NUMBER_LABEL = Strings.source("№.")
+local EGG_LABEL = Strings.source("EGG")
 
 -- Gen 2 pics are 5x5, 6x6 or 7x7 and PadFrontpic centres the small ones in
 -- the 7x7 block PrepMonFrontpic lays at hlcoord 0, 0.  Same table the dex
@@ -145,24 +154,15 @@ end
 -- are the ASM's own `cp $6 / cp $b / cp $29` ladder, and the lines join with
 -- <NEXT> exactly as the db/next strings do.
 local EGG_FLAVOR = {
-  { below = 0x6, text = Strings.source(
-      "It's making sounds<NEXT>inside. It's going"
-      .. "<NEXT>to hatch soon!") },
-  { below = 0xb, text = Strings.source(
-      "It moves around<NEXT>inside sometimes."
-      .. "<NEXT>It must be close<NEXT>to hatching.") },
-  { below = 0x29, text = Strings.source(
-      "Wonder what's<NEXT>inside? It needs"
-      .. "<NEXT>more time, though.") },
-  { text = Strings.source(
-      "This EGG needs a<NEXT>lot more time to<NEXT>hatch.") },
+  { below = 0x6, text = Strings.source("It's making sounds<NEXT>inside. It's going<NEXT>to hatch soon!") },
+  { below = 0xb, text = Strings.source("It moves around<NEXT>inside sometimes.<NEXT>It must be close<NEXT>to hatching.") },
+  { below = 0x29, text = Strings.source("Wonder what's<NEXT>inside? It needs<NEXT>more time, though.") },
+  { text = Strings.source("This EGG needs a<NEXT>lot more time to<NEXT>hatch.") },
 }
 
 local function eggFlavor(cycles)
   for _, entry in ipairs(EGG_FLAVOR) do
-    if not entry.below or cycles < entry.below then
-      return Strings(entry.text)
-    end
+    if not entry.below or cycles < entry.below then return Strings(entry.text) end
   end
 end
 
@@ -227,14 +227,19 @@ end
 -- PlaceStatusString (engine/pokemon/mon_stats.asm): three letters, and a mon
 -- with no HP reads FNT whatever its status byte says.  Same lookup the party
 -- list makes; both screens call the same routine on the cart.
-local function statusText(data, mon)
-  if (mon.hp or 0) <= 0 then return "FNT" end
+local function statusText(mon, statuses)
+  if (mon.hp or 0) <= 0 then return Strings(FAINTED_LABEL) end
   local status = mon.status
   if not status then return nil end
-  local record = Battle.statusRecordFor(data, status)
-  if record then return record.hudLabel or record.label end
-  local class = ItemEffects.STATUS_CLASS[tostring(status):lower()]
-  return class and class:upper()
+  local key = tostring(status):lower()
+  if statuses and statuses[key] then
+    return Strings(Status.hudLabelFor(statuses, key))
+  end
+  local class = ItemEffects.STATUS_CLASS[key]
+  if not class then return nil end
+  if not statuses then return class:upper() end
+  local id = Status.GEN2_ID_ALIASES[key] or key
+  return Strings(Status.hudLabelFor(statuses, id))
 end
 
 -- wTempMonPokerusStatus is one byte: the low nibble counts the days left and
@@ -340,48 +345,25 @@ end
 -- with no `anim` row -- every Gold and Silver one -- leaves picAnim nil.
 -- ../pokecrystal/engine/pokemon/stats_screen.asm:889-901
 function SummaryMenu:startPicAnim()
-  self.picAnim = nil
   local mon = self.mon
-  local def = mon and self.pokemon and self.pokemon[mon.species]
-  if not def then return end
-  local data = def.anim
-  if mon.species == Unown.SPECIES and def.letters then
-    local entry = def.letters[Unown.name(Unown.monLetter(mon))]
-    if entry and entry.anim then data = entry.anim end
-  end
-  if not data then return end
-  local sheet = self:picImage(data.sheet)
-  if not sheet then return end
-  local runner = MonAnim.new(data, "menu")
-  if not runner then return end
-  self.picAnim = { runner = runner, sheet = sheet, size = data.tiles * 8,
-    quads = {} }
+  self.picAnim = MonAnimView.start(
+    mon and self.pokemon and self.pokemon[mon.species], mon, "menu",
+    function(path) return self:picImage(path) end)
 end
 
 -- AnimateFrontpic's .loop, one scene command per frame.
 -- ../pokecrystal/engine/gfx/pic_animation.asm:79-89
 function SummaryMenu:stepPicAnim()
-  local state = self.picAnim
-  if not state then return end
-  state.runner:update()
-  if state.runner:finished() then self.picAnim = nil end
+  local anim = self.picAnim
+  if not anim then return end
+  if anim:step() then self.picAnim = nil end
 end
 
 -- The sheet is one column of whole pictures, base picture first.
 function SummaryMenu:picAnimFrame()
-  local state = self.picAnim
-  if not state then return nil end
-  local frame = state.runner:currentFrame()
-  if frame <= 0 then return nil end
-  local quad = state.quads[frame]
-  if not quad then
-    local w, h = state.sheet:getDimensions()
-    if (frame + 1) * state.size > h then return nil end
-    quad = love.graphics.newQuad(0, frame * state.size, state.size, state.size,
-      w, h)
-    state.quads[frame] = quad
-  end
-  return state.sheet, quad, state.size
+  local anim = self.picAnim
+  if not anim then return nil end
+  return anim:frame()
 end
 
 function SummaryMenu:speciesDef()
@@ -464,7 +446,7 @@ function SummaryMenu:typeNames()
   local second = types[2] or first
   local function name(id)
     if not id then return nil end
-    return TYPE_NAMES[id] or id
+    return TypeChart.displayName(id, self.game and self.game.data)
   end
   -- PrintMonTypes' .hide_type_2: a single-typed mon really has two of the same
   -- type, and the second name is blanked rather than printed twice.
@@ -481,7 +463,7 @@ function SummaryMenu:upperPlacements()
   local out = {}
   -- (8,0) '№' and (9,0) '.' are two `ld [hl]` writes, then PrintNum puts the
   -- dex number in three leading-zero digits at (10,0).
-  put(out, "№.", 8, 0)
+  put(out, Strings(DEX_NUMBER_LABEL), 8, 0)
   put(out, num(def and def.dex or 0, 3, true), 10, 0)
   put(out, levelText(mon.level), 14, 0)
   put(out, mon.nickname or mon.name or mon.species, 8, 2)
@@ -514,16 +496,17 @@ function SummaryMenu:pinkPlacements()
 
   -- .Status_Type is "STATUS/" <NEXT> "TYPE/", and <NEXT> is two rows down at
   -- the same column -- so the second label is at row 14, not row 13.
-  put(out, "STATUS/", 0, 12)
-  put(out, "TYPE/", 0, 14)
+  put(out, Strings("STATUS/"), 0, 12)
+  put(out, Strings("TYPE/"), 0, 14)
 
   local pokerus = pokerusState(mon)
   if pokerus == "infected" then
     -- .PkrsStr is "#RUS", and '#' is the four-tile POKé compression byte.
-    put(out, "POKéRUS", 1, 13)
+    put(out, Strings(POKERUS_LABEL), 1, 13)
   else
     if pokerus == "immune" then put(out, ".", 8, 8) end
-    put(out, statusText(self.game and self.game.data, mon) or "OK", 6, 13)
+    put(out, statusText(mon, self.game and self.game.data
+      and self.game.data.gen2Statuses) or Strings(OK_LABEL), 6, 13)
   end
 
   -- PrintMonTypes writes type 1 at (1,15) and type 2 two rows below it, and
@@ -533,13 +516,13 @@ function SummaryMenu:pinkPlacements()
   put(out, type1, 1, 15)
   put(out, type2, 1, 16)
 
-  put(out, "EXP POINTS", 10, 9)
+  put(out, Strings("EXP POINTS"), 10, 9)
   -- `lb bc, 3, 7`: a three-byte value in seven columns, so the field runs
   -- (13,10) to (19,10).
   put(out, num(mon.experience, 7), 13, 10)
-  put(out, "LEVEL UP", 10, 12)
+  put(out, Strings("LEVEL UP"), 10, 12)
   put(out, num(self:expToNext(), 7), 13, 13)
-  put(out, "TO", 14, 14)
+  put(out, Strings(TO_LABEL), 14, 14)
   -- The level printed at (17,14) is the NEXT one: LoadPinkPage bumps
   -- wTempMonLevel, calls PrintLevel, and puts it back.  MAX_LEVEL stays put.
   local level = mon.level or 1
@@ -551,9 +534,9 @@ end
 
 function SummaryMenu:greenPlacements()
   local out = {}
-  put(out, "ITEM", 0, 8)
+  put(out, Strings("ITEM"), 0, 8)
   put(out, self:itemName() or "---", 6, 8)
-  put(out, "MOVE", 0, 10)
+  put(out, Strings("MOVE"), 0, 10)
 
   -- ListMoves runs from (8,10) with wListMovesLineSpacing = SCREEN_WIDTH * 2,
   -- so the four names are two rows apart; ListMovePP runs from (12,11) with
@@ -568,7 +551,7 @@ function SummaryMenu:greenPlacements()
       put(out, self:moveName(entry), 8, nameY)
       -- Two $3e "P" tiles: `ld [hli], a` then `ld [hld], a` writes the same
       -- tile at (12,y) and (13,y).
-      put(out, "PP", 12, ppY)
+      put(out, Strings(PP_LABEL), 12, ppY)
       -- `pop hl` then three `inc hl` lands the numbers at (15,y): two digits,
       -- the '/' PrintNum's caller writes, then two more.
       put(out, num(entry.pp, 2), 15, ppY)
@@ -589,9 +572,9 @@ function SummaryMenu:bluePlacements()
   local out = {}
   -- IDNoString is "<ID>№." -- three single tiles, not the seven letters of
   -- "ID No." -- and OTString is "OT/".
-  put(out, "<ID>№.", 0, 9)
+  put(out, Strings(ID_LABEL), 0, 9)
   put(out, num(self:otId(), 5, true), 2, 10)
-  put(out, "OT/", 0, 12)
+  put(out, Strings(OT_LABEL), 0, 12)
   local ot = self:otName()
   put(out, ot, SummaryMenu.otColumn(ot), 13)
 
@@ -599,7 +582,7 @@ function SummaryMenu:bluePlacements()
   -- two rows apart, then `add hl, bc` and one more SCREEN_WIDTH puts the first
   -- value at (17,9) -- three columns wide, so every value ends at column 19.
   for i, label in ipairs(STAT_LABELS) do
-    put(out, label, 11, 8 + (i - 1) * 2)
+    put(out, Strings(label), 11, 8 + (i - 1) * 2)
     local value = (mon.stats or {})[STAT_KEYS[i]]
     put(out, num(value, 3), 17, 9 + (i - 1) * 2)
   end
@@ -630,7 +613,7 @@ function SummaryMenu:moveDetailPlacements()
     local entry = moves[slot]
     if entry then
       put(out, self:moveName(entry), 2, nameY)
-      put(out, "PP", 10, ppY)
+      put(out, Strings(PP_LABEL), 10, ppY)
       put(out, num(entry.pp, 2), 13, ppY)
       put(out, "/", 15, ppY)
       put(out, num(entry.maxPp or entry.pp, 2), 16, ppY)
@@ -646,20 +629,21 @@ function SummaryMenu:moveDetailPlacements()
     put(out, "┌─────┐", 0, 10)
     put(out, "│", 0, 11)
     put(out, "└", 6, 11)
-    put(out, "Where?", 1, 12)
+    put(out, Strings("Where?"), 1, 12)
     return out
   end
 
   -- String_MoveType_Top / _Bottom are box-drawing glyphs, and the plaque is
   -- open on its right: "┌─────┐" over "│TYPE/└".
   put(out, "┌─────┐", 0, 10)
-  put(out, "│TYPE/└", 0, 11)
-  put(out, "ATTK/", 11, 12)
+  put(out, "│" .. Strings("TYPE/") .. "└", 0, 11)
+  put(out, Strings(ATTACK_POWER_LABEL), 11, 12)
 
   local entry = moves[self.moveIndex]
   local def = entry and self:moveDef(entry.id)
   local moveType = def and def.type
-  put(out, moveType and (TYPE_NAMES[moveType] or moveType) or "---", 2, 12)
+  put(out, moveType and TypeChart.displayName(moveType,
+    self.game and self.game.data) or "---", 2, 12)
   -- `cp 2; jr c, .no_power`: a move with power 0 or 1 prints String_MoveNoPower
   -- rather than a number.
   local power = (def and def.power) or 0
@@ -669,11 +653,15 @@ function SummaryMenu:moveDetailPlacements()
     put(out, "---", 16, 12)
   end
 
-  -- PrintMoveDescription at (1,14).  Two-line cartridge descriptions retain
-  -- their blank middle row; a three-line translation uses rows 14-16.
+  -- PrintMoveDescription at (1,14).  Descriptions join their lines with
+  -- <NEXT>, which is two rows down at the same column, so the second line is
+  -- at row 16 and not row 15.
   local description = def and def.description or ""
-  for _, row in ipairs(Chrome.descriptionRows(description)) do
-    put(out, row.text, 1, 14 + row.row)
+  local ty = 14
+  for line in (tostring(description) .. "<NEXT>"):gmatch("(.-)<NEXT>") do
+    if ty > 16 then break end
+    if line ~= "" then put(out, line, 1, ty) end
+    ty = ty + 2
   end
   return out
 end
@@ -689,12 +677,12 @@ end
 function SummaryMenu:eggPlacements()
   local mon = self.mon or {}
   local out = {}
-  put(out, "EGG", 8, 1)
+  put(out, Strings(EGG_LABEL), 8, 1)
   -- IDNoString / OTString, the same strings the blue page prints, with
   -- FiveQMarkString beside each: an egg's OT and ID are hidden.
-  put(out, "<ID>№.", 8, 3)
+  put(out, Strings(ID_LABEL), 8, 3)
   put(out, "?????", 11, 3)
-  put(out, "OT/", 8, 5)
+  put(out, Strings(OT_LABEL), 8, 5)
   put(out, "?????", 11, 5)
   local ty = 9
   for line in ((eggFlavor(mon.eggSteps or 0) or "") .. "<NEXT>")
@@ -794,6 +782,30 @@ function SummaryMenu:playSwapSfx()
   end
 end
 
+local function waitPlaySfx()
+  local ok, mod = pcall(require, "src.ui.gen2.WaitPlaySFX")
+  return ok and mod or nil
+end
+
+-- mon_menu.asm:1040
+function SummaryMenu:playSwapSfxTwice()
+  self:playSwapSfx()
+  local WaitPlaySFX = waitPlaySfx()
+  if WaitPlaySFX then
+    self.repeatSfx = WaitPlaySFX.arm("Sfx_SwitchPokemon")
+  end
+end
+
+function SummaryMenu:tickRepeatSfx()
+  local pending = self.repeatSfx
+  if not pending then return false end
+  local WaitPlaySFX = waitPlaySfx()
+  if WaitPlaySFX and WaitPlaySFX.waiting(pending) then return true end
+  self.repeatSfx = nil
+  self:playSwapSfx()
+  return false
+end
+
 -- MoveScreenLoop's .joy_loop.  A picks a move up (.a_button stores wMenuCursorY
 -- in wSwappingMove and draws the hollow cursor) and puts it down (.place_move);
 -- B drops it back on the row it came from and only then exits.
@@ -806,7 +818,9 @@ function SummaryMenu:updateMoveDetail(input)
     self.moveIndex = self.moveIndex < count and self.moveIndex + 1 or 1
   elseif input:wasPressed("a") then
     if self.swapFrom then
-      if self:swapMoves(self.swapFrom, self.moveIndex) then self:playSwapSfx() end
+      if self:swapMoves(self.swapFrom, self.moveIndex) then
+        self:playSwapSfxTwice()
+      end
       self.swapFrom = nil
     elseif moves[self.moveIndex] then
       self.swapFrom = self.moveIndex
@@ -834,6 +848,8 @@ function SummaryMenu:update(_dt)
   self:stepPicAnim()
   local input = self.game and self.game.input
   if not input then return end
+  -- mon_menu.asm:1040
+  if self:tickRepeatSfx() then return end
   if self.moveDetail then
     self:updateMoveDetail(input)
     return
@@ -1288,7 +1304,6 @@ end
 
 SummaryMenu.STAT_LABELS = STAT_LABELS
 SummaryMenu.STAT_KEYS = STAT_KEYS
-SummaryMenu.TYPE_NAMES = TYPE_NAMES
 SummaryMenu.PAGE_PALETTES = PAGE_PALETTES
 SummaryMenu.PAGE_TINTS = PAGE_TINTS
 SummaryMenu.levelText = levelText

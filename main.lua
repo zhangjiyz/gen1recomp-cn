@@ -415,20 +415,36 @@ end
 local function returnToLauncher(opts)
   if not Game then return end
 
+  if require("src.core.RequireGuard").repair() then
+    print("boot: restored love.filesystem searcher (see #2001)")
+  end
+
   local GameVersion = require("src.core.GameVersion")
   local currentVersion = GameVersion.get()
   SessionLifecycle.endGameSession(Game)
   Game = nil
   pcall(function() require("src.online.Trade").hostIsLive = nil end)
+  local syncEngine = package.loaded["src.sync.SyncEngine"]
+  if type(syncEngine) == "table" and type(syncEngine._shared) == "table" then
+    pcall(syncEngine._shared.protectPlaythrough, syncEngine._shared, nil, nil)
+  end
   autopilot = nil
   driverCo = nil
   -- Leave the cart's scope behind: the launcher's own settings and slots are
   -- the base game's, not the cart's.  The speed ladder is cart state too, so
   -- a 1x/2x cart must not pin the launcher or the next game.
-  require("src.core.SaveData").setCart(nil)
+  local SaveData = require("src.core.SaveData")
+  local cartId = SaveData.getCart()
+  SaveData.setCart(nil)
   require("src.core.GameSpeed").setAllowed(nil)
 
   SessionLifecycle.endMountedSession(currentVersion)
+
+  -- Slot lists are resolved once per process.  Invalidate only the game
+  -- (and cart, if any) we just left so the new launcher can migrate a flat
+  -- in-game SAVE into a visible slot -- nothing else is rewritten.
+  SaveData.refreshSlotResolution(currentVersion)
+  if cartId then SaveData.refreshSlotResolution("cart_" .. cartId) end
 
   applySavedOrientation()
 
@@ -438,12 +454,19 @@ local function returnToLauncher(opts)
   end
 
   Importer = makeLauncher({ initialTab = opts and opts.tab or nil })
+  -- Finger that confirmed EXIT GAME is often still down over Import Save.
+  if Importer.ignoreReturningPointer then
+    Importer:ignoreReturningPointer()
+  end
 end
 
 local pendingLauncherReturn
 
 function bootGame(version, cartId, opts)
   opts = opts or {}
+  if require("src.core.RequireGuard").repair() then
+    print("boot: restored love.filesystem searcher (see #2001)")
+  end
   pcall(function()
     require("src.online.Trade").hostIsLive = function() return true end
   end)
@@ -601,6 +624,8 @@ function love.load(args)
   -- claim one hidden console on Windows so those children inherit it instead
   -- of each flashing their own cmd.exe window (#606).  No-op elsewhere.
   require("src.core.HostShell").hideHostConsole()
+
+  require("src.core.RequireGuard").capture()
 
   -- Hang gen1tls on love.system before mods boot.  Android already has tls*
   -- from JNI; this is the desktop half.  No DLL / no FFI is fine -- ws://
@@ -1402,7 +1427,8 @@ function love.run()
   if love.timer then love.timer.step() end
 
   local FrameCap = require("src.core.FrameCap")
-  FrameCap.bootHandheld()
+  _G.POKEPORT_LOOP_PANEL_SYNC = true
+  FrameCap.bootPanelSync()
   local RefreshRate = require("src.core.RefreshRate")
   local FixedStep = require("src.core.FixedStep")
   local VSync = require("src.core.VSync")

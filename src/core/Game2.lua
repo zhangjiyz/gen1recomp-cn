@@ -33,6 +33,7 @@ local TextBox = require("src.render.TextBox")
 -- finds it in the same place in Gold.
 local TouchControls = require("src.core.TouchControls")
 local World = require("src.world.gen2.World")
+local MapNameSign = require("src.world.gen2.MapNameSign")
 
 -- The mod event/hook buses.  Gold reaches them through Runtime like every
 -- other engine file, so a call site here is the same call site Gen 1 has.
@@ -435,6 +436,8 @@ function Game2:openStartMenu()
   if self.world and self.world.cancelMapNameSign then
     self.world:cancelMapNameSign()
   end
+  -- ../pokecrystal/engine/overworld/events.asm:494-510
+  if self.world and self.world.player then self.world.player:stopForEvent() end
   Screens.push(self, "Gen2StartMenu", {
     save = self.save,
     onClose = function() self.stack:pop() end,
@@ -442,8 +445,29 @@ function Game2:openStartMenu()
   })
 end
 
+-- ../pokecrystal/engine/menus/start_menu.asm:444-518
 function Game2:openStartMenuItem(id)
-  local function back() self.stack:pop() end
+  local MenuFade = require("src.ui.gen2.MenuFade")
+  local party = self.save and self.save.party
+  local white = MenuFade.openWhite(id, party and #party or 0)
+  if not white then return self:pushStartMenuItem(id) end
+  Screens.push(self, "Gen2MenuFade", {
+    kind = "out", white = white,
+    onDone = function() self:pushStartMenuItem(id) end,
+  })
+end
+
+-- ../pokecrystal/home/map.asm:1919-1925
+function Game2:closeStartMenuItem(id)
+  local MenuFade = require("src.ui.gen2.MenuFade")
+  self.stack:pop()
+  local white = MenuFade.closeWhite(id)
+  if not white then return end
+  Screens.push(self, "Gen2MenuFade", { kind = "in", white = white })
+end
+
+function Game2:pushStartMenuItem(id)
+  local function back() self:closeStartMenuItem(id) end
   if id == "pokedex" then
     Screens.push(self, "Gen2PokedexMenu", { onClose = back })
   elseif id == "pokemon" then
@@ -542,8 +566,7 @@ function Game2:learnMoveOn(mon, moveId, onDone)
   -- ForgetMove's AskForgetMoveText + YesNoBox (learn.asm:123-127).
   askForget = function()
     self.stack:push(TextBox.new(self,
-      Strings("%s is\ntrying to learn\v%s.\fBut %s\ncan't learn more\vthan four moves."
-       .. "\fDelete an older\nmove to make room\vfor %s?",
+      Strings("%s is\ntrying to learn\v%s.\fBut %s\ncan't learn more\vthan four moves.\fDelete an older\nmove to make room\vfor %s?",
         name, moveName, name, moveName),
       nil, { choice = function(yes)
         if yes then return pickMove() end
@@ -585,20 +608,19 @@ function Game2:learnMoveOn(mon, moveId, onDone)
         -- The slot is written here rather than through Mon.learnMove, so
         -- pokemon.move_learned is raised here too.
         ModRuntime.emit("pokemon.move_learned", { mon = mon, moveId = moveId })
-        -- engine/pokemon/learn.asm:115, data/text/common_3.asm:119
-        self:say(Strings(
-          "1, 2 and… Poof!\f%s forgot\n%s.\fAnd…\f%s learned\n%s!",
-          name, oldName, name, moveName),
+        -- engine/pokemon/learn.asm:225-229, data/text/common_3.asm:165-173
+        self:say(Strings("1, 2 and…\1 Poof!\1\f%s forgot\n%s.\fAnd…\f%s learned\n%s!",
+            name, oldName, name, moveName),
           function() finish(true) end,
-          TextBox.soundOpts(self, "Sfx_DexFanfare5079"))
+          TextBox.soundOpts(self, "Sfx_DexFanfare5079",
+            { pauseSounds = { "Sfx_SwitchPokemon" } }))
       end,
     })
   end
   -- MoveAskForgetText, a `done` text: the box stays while the list stands on
   -- it (learn.asm:136-137).
   pickMove = function()
-    self.stack:push(TextBox.new(self,
-      Strings("Which move should\nbe forgotten?"), nil,
+    self.stack:push(TextBox.new(self, Strings("Which move should\nbe forgotten?"), nil,
       { stay = { onShown = pushList } }))
   end
   askForget()
@@ -834,6 +856,8 @@ end
 -- the cart's fixed messages to print, the same way the START handler above
 -- is the whole of .MenuReturns for its own button.
 function Game2:useSelectItem()
+  -- ../pokecrystal/engine/overworld/events.asm:494-510
+  if self.world.player then self.world.player:stopForEvent() end
   local outcome, itemId = self.world:useSelectItem()
   if outcome == "not_registered" then
     -- MayRegisterItemText.
@@ -1137,13 +1161,11 @@ function Game2:load(opts)
   -- restored world level stays switched on, as it does for Gen 1.
 
   -- After the merge, so a font override and a translation mod's catalog
-  -- (#501) are both in Data before the first screen draws a glyph.
+  -- (#501) are both in Data before the first screen draws a glyph.  Gen 1
+  -- calls these two here for the same reason (src/core/Game.lua:65,70).
   if self.data.font then
     pcall(Font.load, self.data)
   end
-  -- The CN engine catalog remains the in-game fallback. A translation mod
-  -- still wins because Strings.lookup checks self.data.strings first.
-  Strings.setAppCatalogEnabled(true)
   Strings.load(self.data)
 
   -- The boot skeleton (Game2.new built it, before any bus existed) announced
@@ -1185,7 +1207,7 @@ function Game2:load(opts)
     -- to be visible to THIS logic tick, not the next one, and the cart's own
     -- canned stream must be able to overwrite it the way GetJoypad's arm
     -- overwrites the mirrors.  Payload is Gen 1's exactly: (game, fixed dt).
-    ModRuntime.call("input.step", noop, self, dt or 1 / 60)
+    ModRuntime.call("input.step", noop, self, dt or FixedStep.STEP)
     -- GetJoypad's AUTO_INPUT arm runs ahead of everything that reads the pad,
     -- and it overwrites the mirrors outright, so a stream frame has to land
     -- before Input:step promotes this tick's edges -- otherwise the canned
@@ -1206,7 +1228,7 @@ function Game2:load(opts)
     -- (audio/engine.asm:84, home/vblank.asm:141-143), never off the logic clock.
     local top = self.stack:top()
     if top and top.update then
-      top:update(1 / 60)
+      top:update(FixedStep.STEP)
       return
     end
     if self.phase ~= "play" or not self.world then return end
@@ -1248,6 +1270,12 @@ function Game2:inFillBoot()
   return self.phase == "boot" and self.stack:top() ~= nil
 end
 
+function Game2:logicSpeed()
+  return math.max(1,
+    tonumber(self.speedOverride) or tonumber(self.options and self.options.speed)
+    or 1)
+end
+
 function Game2:update(dt)
   -- _UpdateSound is a VBlank job, so it runs at 60Hz off real time whatever the
   -- logic multiplier is (audio/engine.asm:84, home/vblank.asm:141-143).
@@ -1256,6 +1284,8 @@ function Game2:update(dt)
   while self.audioAccum >= step do
     self.audioAccum = self.audioAccum - step
     Music.update(self.data)
+    -- ../pokecrystal/engine/overworld/events.asm:177-191
+    if self.world and self.world.map then MapNameSign.frame(self.world) end
   end
   -- TILT eases toward its new angle in real time, not on the logic clock, so
   -- fast-forward does not fling the camera over.
@@ -1270,9 +1300,7 @@ function Game2:update(dt)
   -- tempo at every multiplier (#1990/#1991/#1997).  speedOverride is the
   -- driver/CLI hook and wins over the saved option.
   -- pokegold engine/menus/intro_menu.asm:848 IntroSequence: boot cinema runs on the same clock as the overworld
-  local speed = math.max(1,
-    tonumber(self.speedOverride) or tonumber(self.options and self.options.speed)
-    or 1)
+  local speed = self:logicSpeed()
   if self.phase == "boot" then
     FixedStep.maxAccum = FixedStep.catchupLimit(speed)
     FixedStep:update(dt, speed)
@@ -1550,8 +1578,18 @@ function Game2:drawViewportFrame()
   G.origin()
   G.setCanvas(scene)
   G.clear(0, 0, 0, 1)
+  -- A zoomed live overworld gets shaded at its own scale, so the stack that
+  -- sits over it is drawn onto a transparent layer and shaded at FIT instead.
+  self.fxUiLayer = nil
+  self.fxUiDrawn = false
+  if shaderfx and self.world and self.world.map
+     and self.world:zoomScale() ~= self.world:fitScale() then
+    self.fxUiLayer = self:presentCanvas(3, w, h)
+  end
   self:drawContained(w, h)
   G.setCanvas(previous)
+  local uiLayer = self.fxUiDrawn and self.fxUiLayer or nil
+  self.fxUiLayer = nil
 
   if composing and self:compose(scene, zones, w, h) then
     -- the mod owns the window this frame; the HUD still draws over it, as it
@@ -1574,6 +1612,15 @@ function Game2:drawViewportFrame()
       G.setCanvas(tinted)
       G.clear(0, 0, 0, 1)
       self:blitZones(scene, zones, w, h)
+      if uiLayer then
+        local tintedUi = self:presentCanvas(4, w, h)
+        if tintedUi then
+          G.setCanvas(tintedUi)
+          G.clear(0, 0, 0, 0)
+          self:blitZones(uiLayer, zones, w, h)
+          uiLayer = tintedUi
+        end
+      end
       G.setCanvas(previous)
       source = tinted
     end
@@ -1602,35 +1649,25 @@ function Game2:drawViewportFrame()
       local cx, cy, cw, ch = Playfield.cutout(w, h)
       if cx then G.setScissor(cx, cy, cw, ch) end
       if shaderfx then
-        -- rect is physical framebuffer pixels and source is the un-scaled
-        -- size, matching Renderer.lua's fxRectPx / fxSrc contract.
-        -- A live overworld draws edge to edge at World:zoomScale, so the
-        -- faithful 160*scale box would leave the rest of the map unshaded.
-        local rect, srcW, srcH
-        if self.frameWorldActive and self.world then
-          local s = self.world:zoomScale() * dpi
-          srcW = self.world.viewW or 160
-          srcH = self.world.viewH or 144
-          local rw, rh = srcW * s, srcH * s
-          rect = {
-            x = math.floor((pw - rw) / 2), y = math.floor((ph - rh) / 2),
-            w = rw, h = rh, scale = s,
-          }
-        else
-          srcW, srcH = 160, 144
-          rect = {
-            x = ox * dpi, y = oy * dpi,
-            w = 160 * scale * dpi, h = 144 * scale * dpi,
-            scale = scale * dpi,
-          }
+        -- Whole window, matching Renderer.lua: the world at its zoom scale
+        -- when the UI was split off, otherwise everything at FIT.
+        local s = scale * dpi
+        local ws = uiLayer and self.world:zoomScale() * dpi or s
+        ShaderFX.render(source, { x = 0, y = 0, w = pw, h = ph, scale = ws },
+          { w = pw / ws, h = ph / ws }, dpi, dpi)
+        if uiLayer then
+          ShaderFX.render(uiLayer, { x = 0, y = 0, w = pw, h = ph, scale = s },
+            { w = pw / s, h = ph / s }, dpi, dpi, { layer = "ui", mask = true })
         end
-        ShaderFX.render(source, rect, { w = srcW, h = srcH }, dpi, dpi)
       else
         G.setColor(1, 1, 1, 1)
         G.draw(source, 0, 0)
         G.setShader()
       end
       if cx then G.setScissor() end
+    elseif uiLayer then
+      G.setColor(1, 1, 1, 1)
+      G.draw(uiLayer, 0, 0)
     end
   end
   G.pop()
@@ -1690,19 +1727,32 @@ local function battleSurround(stack)
   for i = #states, 1, -1 do
     local state = states[i]
     if state and state.bgMode then
-      return state:bgMode(), state.BG_WORLD_DIM or 0.55
+      return state:bgMode(), state.BG_WORLD_DIM or 0.55, state, i
     end
   end
 end
 
 function Game2:paintBattleSurround(w, h)
-  local mode, dim = battleSurround(self.stack)
+  local mode, dim, owner, at = battleSurround(self.stack)
   if mode ~= "black" and mode ~= "world" then return end
   local alpha = mode == "world" and dim or 1
   if not alpha or alpha <= 0 then return end
   local G = love.graphics
   local scale, ox, oy = panelBlit(self.stack, w, h)
-  local pw, ph = 160 * scale, 144 * scale
+  local stack = self.stack
+  if at and stack and stack.visibleBase then
+    local base = stack:visibleBase()
+    if base and base > at then owner = stack.states[base] end
+  end
+  local sw, sh = 160, 144
+  if owner and owner.panelSize then sw, sh = owner:panelSize() end
+  if sw ~= 160 then
+    if owner.battlePanelScale then
+      scale = owner:battlePanelScale(w, h) or scale
+    end
+    ox, oy = Chrome.fitOriginFor(w, h, scale, sw / 8, sh / 8)
+  end
+  local pw, ph = sw * scale, sh * scale
   G.setColor(0, 0, 0, alpha)
   if oy > 0 then G.rectangle("fill", 0, 0, w, oy) end
   if oy + ph < h then G.rectangle("fill", 0, oy + ph, w, h - oy - ph) end
@@ -1849,6 +1899,15 @@ function Game2:drawScene(w, h)
     -- frames apart.
     self.frameWorldActive = true
     self:letterbox(w, h, true)
+    local layer = self.fxUiLayer
+    local sceneCanvas
+    if layer then
+      sceneCanvas = G.getCanvas()
+      G.setCanvas(layer)
+      G.clear(0, 0, 0, 0)
+      G.setCanvas(sceneCanvas)
+      self.fxUiDrawn = true
+    end
     self.world:draw()
     if self.stack:top() then
       -- ZOOM RESIZES THE MAP, NOT THE UI.  The world fills the window at
@@ -1864,11 +1923,13 @@ function Game2:drawScene(w, h)
       -- here.
       local s = self.world:fitScale()
       local ox, oy = Chrome.fitOrigin(w, h, s)
+      if layer then G.setCanvas(layer) end
       G.push()
       G.translate(ox, oy)
       G.scale(s, s)
       self.stack:draw()
       G.pop()
+      if layer then G.setCanvas(sceneCanvas) end
     end
     return
   end
@@ -2189,6 +2250,7 @@ function Game2:applyOptions()
   require("src.core.ScreenPosition").applyOptions(options)
   require("src.core.VSync").applyOptions(options)
   require("src.core.FrameCap").applyOptions(options)
+  require("src.core.LogicClock").applyOptions(options)
   require("src.core.PresentSync").applyFixedStepPeriod()
   require("src.world.gen2.BorderFill").applyOptions(options)
   -- returns true when a persisted preset name no longer resolves (deleted

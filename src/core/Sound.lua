@@ -184,10 +184,7 @@ local function applyRate(src, base)
   return src
 end
 
--- WaitForSoundToFinish budget in logic frames (home/delay.asm:14).
--- At N× GAME SPEED the same budget passes N× sooner in wall time, so a
--- gate releases early instead of stalling the battle/script on a full-length
--- jingle -- without pitching the SFX (#1952 vs #1990).
+-- WaitForSoundToFinish budget in 60 Hz frames (home/delay.asm:14).
 function Sound.waitFrames(src, fallback)
   if not src then return 0 end
   local okd, dur = pcall(src.getDuration, src)
@@ -572,6 +569,32 @@ local function remainingFrames(src)
   ok, pos = pcall(src.tell, src, "seconds")
   if not ok or type(pos) ~= "number" then return nil end
   return math.max(0, math.ceil((dur - pos) * 60))
+end
+
+-- home/delay.asm:15 WaitForSoundToFinish polls CHAN5/CHAN6/CHAN8
+function Sound.moveSfxBusy()
+  pruneMoveSfx()
+  for _ in pairs(moveSfxChannels) do return true end
+  return false
+end
+
+function Sound.moveSfxWaitFrames()
+  pruneMoveSfx()
+  local worst = 0
+  for _, cur in pairs(moveSfxChannels) do
+    local n = remainingFrames(cur.src)
+    if n then
+      local okp, pitch = pcall(cur.src.getPitch, cur.src)
+      if okp and type(pitch) == "number" and pitch > 0 then
+        n = math.ceil(n / pitch * rate)
+      end
+      n = n + 2
+    else
+      n = Sound.waitFrames(cur.src, 0)
+    end
+    if n > worst then worst = n end
+  end
+  return worst
 end
 
 -- audio/engine_2.asm:1077-1096, :991-1013, :1015-1033

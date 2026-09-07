@@ -96,6 +96,10 @@ if type(audio.sfx) == "table" and audio.sfx.Sfx_CaughtMon then
   check(audio.sfx.Sfx_CaughtMon.generation == 2, "Sfx_CaughtMon is Gen 2 header")
   check(audio.sfxOrder and audio.sfxOrder[3] == "Sfx_CaughtMon",
     "sfxOrder[3] is Sfx_CaughtMon (SFX id 2)")
+  check(audio.sfxOrder and audio.sfxOrder[48] == "Sfx_Kinesis",
+    "sfxOrder[48] is Sfx_Kinesis (SFX id 47)")
+  check(audio.sfxOrder and audio.sfxOrder[21] == "Sfx_WarpFrom",
+    "sfxOrder[21] is Sfx_WarpFrom (SFX id 20)")
   local sfxOk, sfxEng = pcall(ChipSynth.newEngine, data, audio.sfx.Sfx_CaughtMon, {
     sfx = true, allowLoops = false,
   })
@@ -229,6 +233,27 @@ if type(audio.sfx) == "table" and audio.sfx.Sfx_RegisterPhoneNumber then
     "the three-channel Sfx_Fanfare is still named as a jingle")
 else
   check(true, "sfx table absent, re-import Gold for duck coverage (SKIP)")
+end
+
+if bark then
+  local function renderBark(rate, seconds)
+    ChipSynth.setSampleRate(rate)
+    local eng = ChipSynth.newEngine(data, bark, { allowLoops = true })
+    local event = eng.channels[1]:nextEvent()
+    local sd = ChipSynth.soundData(eng, math.floor(seconds * rate), 2)
+    return sd, event
+  end
+  local full, fullEvent = renderBark(44100, 0.5)
+  local half, halfEvent = renderBark(22050, 0.5)
+  ChipSynth.setSampleRate(44100)
+  eq(half:getSampleCount(), math.floor(full:getSampleCount() / 2),
+    "half the synth rate is half the samples for the same half second")
+  eq(half:getSampleRate(), 22050, "and the SoundData is tagged with it")
+  eq(halfEvent.register, fullEvent.register,
+    "the first note's frequency register does not move with the rate")
+  eq(halfEvent.volume, fullEvent.volume, "nor its volume")
+  check(math.abs(halfEvent.duration - fullEvent.duration) < 1e-9,
+    "nor how long it lasts in seconds")
 end
 
 S.finish()

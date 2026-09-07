@@ -613,14 +613,94 @@ function RomExtractorGen2:battleObjectPals()
   return out
 end
 
+-- GBC BG attribute bits (constants/hardware.inc B_BG_*).
+local BG_BANK1_BIT = 0x08
+local BG_XFLIP_BIT = 0x20
+local BG_YFLIP_BIT = 0x40
+local BG_PRIO_BIT  = 0x80
+
+local function decodePalNibble(n)
+  n = n % 16
+  return {
+    palette = (n % 8) + 1,
+    vramBank = math.floor(n / 8) % 2,
+    xFlip = false,
+    yFlip = false,
+    priority = false,
+  }
+end
+
+local function decodePalByte(b)
+  return {
+    palette = (b % 8) + 1,
+    vramBank = math.floor(b / BG_BANK1_BIT) % 2,
+    xFlip = bit.band(b, BG_XFLIP_BIT) ~= 0,
+    yFlip = bit.band(b, BG_YFLIP_BIT) ~= 0,
+    priority = bit.band(b, BG_PRIO_BIT) ~= 0,
+  }
+end
+
+local function assignPalPair(tileId, byte, palettes, attrs, useBytes)
+  if useBytes then
+    local a = decodePalByte(byte)
+    attrs[tileId + 1] = a
+    palettes[tileId + 1] = a.palette
+    return
+  end
+  local low = byte % 16
+  local high = math.floor(byte / 16) % 16
+  for i, n in ipairs({ low, high }) do
+    local id = tileId + (i - 1)
+    local a = decodePalNibble(n)
+    attrs[id + 1] = a
+    palettes[id + 1] = a.palette
+  end
+end
+
+-- Crystal: 48 bytes bank-0 + 16 bytes $ff + 48 bytes bank-1 (gfx/tilesets/*_palette_map.asm).
+-- Bank-1 attrs land on tile ids $80-$df, not on the linear indices after padding.
+function RomExtractorGen2:readCrystalPalMap(address)
+  local raw = self.rom:bytes(self:palMapBank(), address, CRYSTAL_PAL_MAP_BYTES)
+  local palettes = {}
+  local attrs = {}
+  local i = 1
+  local tileId = 0
+  local bank0Count = 0
+  while i <= #raw and bank0Count < 48 do
+    local byte = raw[i]
+    if byte == 0xff then break end
+    assignPalPair(tileId, byte, palettes, attrs, false)
+    tileId = tileId + 2
+    bank0Count = bank0Count + 1
+    i = i + 1
+  end
+  while i <= #raw and raw[i] == 0xff do
+    i = i + 1
+  end
+  tileId = 0x80
+  local bank1Count = 0
+  while i <= #raw and bank1Count < 48 do
+    local byte = raw[i]
+    if byte == 0xff then break end
+    assignPalPair(tileId, byte, palettes, attrs, false)
+    tileId = tileId + 2
+    bank1Count = bank1Count + 1
+    i = i + 1
+  end
+  return palettes, attrs
+end
+
 -- A tileset's PalMap: 48 bytes on Gold and 112 on Crystal, two tiles apiece.
 -- `tilepal` emits `dn (bank | PAL_BG_second), (bank | PAL_BG_first)`, so the
 -- low nibble is the even tile and the high nibble the odd one; masking to 3
 -- bits drops the OAM_BANK flag and leaves the PAL_BG_* slot.  Returned 1-based
 -- so the value indexes an 8-entry Lua palette set directly.
 function RomExtractorGen2:readPalMap(address)
+  if self.edition == "crystal" then
+    local palettes = self:readCrystalPalMap(address)
+    return palettes
+  end
   local length = TILESET_TILE_COUNT / 2
-  if self.edition == "crystal" then length = CRYSTAL_PAL_MAP_BYTES end
   local raw = self.rom:bytes(self:palMapBank(), address, length)
   local out = {}
   for i, byte in ipairs(raw) do
@@ -1002,6 +1082,13 @@ function RomExtractorGen2:extractTilesets()
       }
     end
 
+    local tilePalettes, tileAttrs
+    if twoBank then
+      tilePalettes, tileAttrs = self:readCrystalPalMap(palMapAddress)
+    else
+      tilePalettes = self:readPalMap(palMapAddress)
+    end
+
     out[constName] = {
       id = constName,
       generation = 2,
@@ -1017,7 +1104,9 @@ function RomExtractorGen2:extractTilesets()
       palMap = { bank = self:palMapBank(), address = palMapAddress },
       -- Which of the eight loaded BG palettes each sheet tile draws with,
       -- 1-based into palettes.bg slots (see readPalMap).
-      tilePalettes = self:readPalMap(palMapAddress),
+      tilePalettes = tilePalettes,
+      -- Crystal only: full GBC attribute byte per tile id (palette, bank, flip, priority).
+      tileAttrs = tileAttrs,
     }
     self:tick("World tiles", index, #order)
   end
@@ -2898,7 +2987,11 @@ function RomExtractorGen2:decodeGen2Text(bank, address, charmap, buffers)
     if b == 0x50 then
       if not inString then break end -- TX_END
       inString = false               -- `@`: end of this chunk
-    elseif b == 0x57 or b == 0x58 then -- DONE / PROMPT, both PlaceString's
+    elseif b == 0x57 or b == 0x58 then
+      -- ../pokecrystal/home/text.asm:548 PromptText, :566 DoneText
+      if #out > 0 then
+        out[#out + 1] = (b == 0x58) and "{PROMPT}" or "{DONE}"
+      end
       break
     elseif b == 0x00 then
       inString = true -- TX_START
@@ -4734,6 +4827,65 @@ function RomExtractorGen2:readContestMons()
   return out
 end
 
+-- ../pokecrystal/data/wild/treemons.asm:1 TreeMons
+function RomExtractorGen2:readTreeMons()
+  local symbol = self:symbol("TreeMons")
+  local setOrder = self.manifest.constants.treeMonSetOrder or {}
+  local speciesOrder = self.manifest.constants.speciesOrder or {}
+  local out = {}
+  for index, name in ipairs(setOrder) do
+    local at = self.rom:word(symbol.bank, symbol.address + (index - 1) * 2)
+    local function list()
+      local rows = {}
+      for _ = 1, 16 do
+        if not romAddrOk(symbol.bank, at + 2) then break end
+        local chance = self.rom:byte(symbol.bank, at)
+        if chance == 0xff then
+          at = at + 1
+          break
+        end
+        rows[#rows + 1] = {
+          chance = chance,
+          species = speciesOrder[self.rom:byte(symbol.bank, at + 1)],
+          level = self.rom:byte(symbol.bank, at + 2),
+        }
+        at = at + 3
+      end
+      return rows
+    end
+    -- ../pokecrystal/engine/events/treemons.asm:28 RockMonEncounter
+    if name == "TREEMON_SET_ROCK" then
+      out[name] = { common = list() }
+    else
+      local common = list()
+      out[name] = { common = common, rare = list() }
+    end
+  end
+  return out
+end
+
+-- ../pokecrystal/data/wild/treemons_asleep.asm:3 AsleepTreeMonsNite
+function RomExtractorGen2:readAsleepTreeMons()
+  local speciesOrder = self.manifest.constants.speciesOrder or {}
+  local labels = { MORN = "AsleepTreeMonsMorn", DAY = "AsleepTreeMonsDay",
+                   NITE = "AsleepTreeMonsNite" }
+  local out = {}
+  for key, label in pairs(labels) do
+    local location = self.symbols[label]
+    if not location then return nil end
+    local bank, address = location[1], location[2]
+    local species = {}
+    for offset = 0, 63 do
+      if not romAddrOk(bank, address + offset) then break end
+      local b = self.rom:byte(bank, address + offset)
+      if b == 0xff then break end
+      if speciesOrder[b] then species[#species + 1] = speciesOrder[b] end
+    end
+    out[key] = species
+  end
+  return out
+end
+
 function RomExtractorGen2:extractEncounters()
   self:beginStage("Wild encounters")
   local grass = {}
@@ -4842,41 +4994,9 @@ function RomExtractorGen2:extractEncounters()
   local rocks = self.symbols.RockMonMaps
     and self:readTreeMonMaps("RockMonMaps") or nil
 
-  -- TreeMons: a pointer per TREEMON_SET_*, each aiming at TWO `db %, species,
-  -- level` lists back to back -- the common one and the rare one -- with a
-  -- -1 between them.  Which of the two is rolled comes from how hard the tree
-  -- was hit (engine/events/treemons.asm), so both are carried here.
-  local treeSets = {}
-  local treeMonsSymbol = self.symbols["TreeMons"] and self:symbol("TreeMons")
-  if treeMonsSymbol then
-    local setOrder = self.manifest.constants.treeMonSetOrder or {}
-    for index, name in ipairs(setOrder) do
-      local pointer = self.rom:word(treeMonsSymbol.bank,
-        treeMonsSymbol.address + (index - 1) * 2)
-      local at = pointer
-      local lists = {}
-      for _ = 1, 2 do
-        local rows = {}
-        for _ = 1, 16 do
-          local chance = self.rom:byte(treeMonsSymbol.bank, at)
-          if chance == 0xff then
-            at = at + 1
-            break
-          end
-          local species = self.rom:byte(treeMonsSymbol.bank, at + 1)
-          local level = self.rom:byte(treeMonsSymbol.bank, at + 2)
-          rows[#rows + 1] = {
-            chance = chance,
-            species = (self.manifest.constants.speciesOrder or {})[species],
-            level = level,
-          }
-          at = at + 3
-        end
-        lists[#lists + 1] = rows
-      end
-      treeSets[name] = { common = lists[1] or {}, rare = lists[2] or {} }
-    end
-  end
+  local treeSets = self.symbols.TreeMons and self:readTreeMons() or {}
+  local treeMonsAsleep = self.symbols.AsleepTreeMonsNite
+    and self:readAsleepTreeMons() or nil
 
   -- The Bug Catching Contest's own table.  It sits beside the grass rather
   -- than inside it because the park's encounters come from HERE for the
@@ -4915,6 +5035,7 @@ function RomExtractorGen2:extractEncounters()
     trees = trees,
     rocks = rocks,
     treeSets = treeSets,
+    treeMonsAsleep = treeMonsAsleep,
     bugContest = bugContest,
     swarmGrass = swarmGrass,
     swarmWater = swarmWater,
@@ -5796,6 +5917,14 @@ function RomExtractorGen2:extractMenuGfx()
   hud.expBar = "assets/generated/battle/hud/exp_bar.png"
   hud.expBarFirstTile = 0x55
   hud.expBarCells = 9
+
+  -- (../pokecrystal/engine/sprite_anims/core.asm:547-557).
+  if self.symbols["EndOfExpBarGFX"] then
+    local expBarEnd = self:symbol("EndOfExpBarGFX")
+    self:write2bpp(self.rom:bytes(expBarEnd.bank, expBarEnd.address, 16),
+      8, 8, "battle/hud/exp_bar_end.png", true)
+    hud.expBarEnd = "assets/generated/battle/hud/exp_bar_end.png"
+  end
 
   -- Four OAM tiles at $31 -- normal, statused, fainted, empty -- and OBJ
   -- colour 0 is transparent (engine/battle/trainer_huds.asm:47-99, :225-232).

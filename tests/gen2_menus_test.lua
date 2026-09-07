@@ -208,16 +208,24 @@ confirmInput:press("a")
 confirm:update(0)
 check("A confirms", continued, true)
 
--- The clock box formats 12-hour time with an AM/PM half.
-check("midnight is 12 AM", (function()
-  local m = MainMenu.new(newGame(nil), { hasSave = false, save = false,
-    clock = { hour = 0, minute = 0, weekday = 1 } })
-  local hour = select(1, m:clockParts())
-  local display = hour % 12
-  if display == 0 then display = 12 end
-  return display .. (hour < 12 and " AM" or " PM")
-end)(), "12 AM")
+-- ../pokecrystal/engine/rtc/timeset.asm:675
+do
+  local function pinnedTime(hour, minute)
+    local m = MainMenu.new(newGame(nil), { hasSave = false, save = false,
+      clock = { hour = hour, minute = minute, weekday = 1 } })
+    return MainMenu.timeString(m:clockParts())
+  end
+  check("midnight is NITE 12", pinnedTime(0, 0), "NITE 12:00")
+  check("morning keeps its word", pinnedTime(5, 9), "MORN 5:09")
+  check("noon is DAY 12", pinnedTime(12, 30), "DAY 12:30")
+  check("evening wraps back to NITE", pinnedTime(20, 5), "NITE 8:05")
+end
 check("weekday names", MainMenu.DAYS[6], "FRIDAY")
+
+-- ../pokecrystal/engine/menus/intro_menu.asm:479
+check("CONTINUE reuses SAVE's panel constants",
+  MainMenu.PANEL == require("src.ui.gen2.SaveMenu").PANEL, true)
+check("CONTINUE offsets it to row 8", MainMenu.PANEL_Y, 8)
 
 -- ------------------------------------------------------- naming screen
 
@@ -365,7 +373,7 @@ local options = OptionsMenu.new(optionsGame, {
 })
 -- The cart's seven rows, then the port's: CONTROLS, audio, PERFORMANCE,
 -- speed, display, SHADER FX + SHADER FX 2 (the second slot added alongside
-check("thirty-one rows", #OptionsMenu.ROWS, 31)
+check("thirty-three rows", #OptionsMenu.ROWS, 33)
 check("the cart's rows come first", OptionsMenu.ROWS[7].key, "frame")
 check("then the rebind screen", OptionsMenu.ROWS[8].id, "controls")
 check("then the port's audio group", OptionsMenu.ROWS[9].key, "musicVol")
@@ -783,9 +791,51 @@ dexGame.data.gen2Pokedex = {
   newOrder = { "BULBASAUR", "IVYSAUR" },
   alphabeticalOrder = { "BULBASAUR", "IVYSAUR" },
 }
+dexGame.data.pokemon.BULBASAUR = { types = { "GRASS", "POISON" } }
+dexGame.data.pokemon.IVYSAUR = { types = { "GRASS", "POISON" } }
 local dex = PokedexMenu.new(dexGame, {})
 check("dex lists every entry", #dex.rows, 2)
 check("dex starts in NEW mode", dex:mode(), "NEW")
+
+-- The dex's ROM `db` labels are catalog strings, resolved at draw time.  Stub
+-- its tile primitives and inspect the exact text writes without a GPU.
+require("src.core.Strings").load({ strings = {
+  SEEN = "VUS", OWN = "PRIS", HT = "TAILLE", WT = "POIDS",
+  NEW = "JOHTO", ["NEW POKéDEX MODE"] = "MODE JOHTO",
+  ["<PK><MN> are listed by"] = "Les POKéMON suivent",
+  ["evolution type."] = "leur évolution.", TYPE1 = "TYPE A",
+  TYPE2 = "TYPE B", ["BEGIN SEARCH!!"] = "CHERCHER !!",
+  CANCEL = "ANNULER",
+} })
+drawn = {}
+dex.text = function(_, text, x, y) drawn[x .. ":" .. y] = text end
+dex.fill, dex.border, dex.tile = function() end, function() end, function() end
+dex.blank, dex.drawPic, dex.drawFootprint = function() end, function() end,
+  function() end
+dex:drawMainBackground()
+check("SEEN is localizable", drawn["1:11"], "VUS")
+check("OWN is localizable", drawn["1:14"], "PRIS")
+drawn = {}
+dex.optionIndex = 1
+dex:drawOption()
+check("a mode label is localizable", drawn["3:4"], "MODE JOHTO")
+check("a mode description is localizable",
+  drawn["1:14"], "Les POKéMON suivent")
+drawn = {}
+dex:drawSearch()
+check("TYPE1 is localizable", drawn["3:4"], "TYPE A")
+check("TYPE2 is localizable", drawn["3:6"], "TYPE B")
+check("BEGIN SEARCH is localizable", drawn["3:13"], "CHERCHER !!")
+check("the dex CANCEL row is localizable", drawn["3:15"], "ANNULER")
+drawn = {}
+dex.newEntry = true
+dex:drawEntryBody(dex.rows[1], dex.data.gen2Pokedex.entries.BULBASAUR)
+check("HT is localizable", drawn["9:7"], "TAILLE")
+check("WT is localizable", drawn["9:9"], "POIDS")
+dex.text, dex.fill, dex.border, dex.tile = nil, nil, nil, nil
+dex.blank, dex.drawPic, dex.drawFootprint = nil, nil, nil
+dex.newEntry = nil
+require("src.core.Strings").load(nil)
 -- Pokedex_UpdateMainScreen: SELECT opens the OPTION screen and START the
 -- SEARCH screen.  Neither cycles anything in place -- the mode changes when
 -- the OPTION screen's own cursor picks one and A confirms it.
@@ -811,6 +861,23 @@ end)(), "search")
 -- Pokedex_InitSearchScreen: TYPE1 starts on NORMAL and TYPE2 on "-----".
 check("TYPE1 starts on NORMAL", dex:searchTypeName(1), "NORMAL")
 check("TYPE2 starts blank", dex:searchTypeName(2), "-----")
+-- Display names come from the type registry, while matching stays on the
+-- stable type id.  Translating GRASS must still find a GRASS species.
+dex.data.type_chart = { types = { GRASS = { name = "HERBE" } } }
+dex.searchType[1] = 12 -- GRASS in SEARCH_TYPES
+check("the search wheel draws the translated type name",
+  dex:searchTypeName(1), "HERBE")
+dexSave.pokedex.seen.BULBASAUR = true
+dex:rebuild()
+dex:beginSearch()
+check("translated type display does not change search identity",
+  #dex.searchResults, 1)
+dex.data.type_chart = nil
+dexSave.pokedex.seen.BULBASAUR = nil
+dex.searchType[1] = 1
+dex.searchResults = nil
+dex.searchMessage = nil
+dex.view = "search"
 check("B leaves the SEARCH screen", (function()
   dexGame.input:press("b")
   dex:update(0)
@@ -1697,7 +1764,20 @@ local function newMart(save, opts)
   opts.save = save
   opts.items = martItems
   opts.marts = martData
-  return MartMenu.new(game, opts), input, game
+  local mart = MartMenu.new(game, opts)
+  -- ../pokecrystal/home/print_text.asm:1
+  local step = mart.update
+  function mart:update(dt)
+    local saved = input.wasPressed
+    input.wasPressed = function() return false end
+    for _ = 1, 600 do
+      if not (self.typer and not self.typer:done()) then break end
+      step(self, dt)
+    end
+    input.wasPressed = saved
+    return step(self, dt)
+  end
+  return mart, input, game
 end
 
 -- GetMart: only an id below NUM_MARTS is a mart at all, and everything else
@@ -2471,12 +2551,10 @@ end
 bagPocketChecks()
 
 -- ---------------------------------------------------------------------------
--- SaveMenu's write chime (engine/menus/save.asm:110, `ld de, SFX_SAVE / call
--- PlaySFX` right after ResumeGameLogic).
+-- SaveMenu's save chime (engine/menus/save.asm:259, `ld de, SFX_SAVE / call
 --
 -- SFX_SAVE is an INDEX into the sfx pointer table, so a wrong id plays the
 -- wrong sound rather than nothing, and no assertion here can see the mistake
--- from the number alone.  The check is therefore the resolution: writeNow ->
 -- SaveMenu:playSfx -> sfxOrder[id + 1], against the shipped Gold cache, must
 -- name Sfx_Save.  $1f used to sit there, which is SFX_ENTER_DOOR.
 -- Wrapped in a function for the same 200-local reason as the blocks above.
@@ -2502,12 +2580,77 @@ local function saveSfxChecks()
   local SaveMenu = require("src.ui.gen2.SaveMenu")
   local menu = SaveMenu.new({ data = { audio = audio } },
     { save = {}, existed = false, writer = function() return true end })
-  menu:writeNow()
+  menu:playSfx(SaveMenu.SFX_SAVE)
   Sound.play = realPlay
 
   check("saving rings SFX_SAVE", rang, "Sfx_Save")
 end
 saveSfxChecks()
+
+-- engine/items/pack.asm:1307 .place_insert, home/audio.asm:220 WaitPlaySFX
+local function packSwitchSfxChecks()
+  local Sound = require("src.core.Sound")
+  local realPlay, realBusy, realFrames =
+    Sound.play, Sound.sfxBusy, Sound.waitFramesFor
+  local rang = {}
+  Sound.play = function(_, name) rang[#rang + 1] = name end
+
+  local save = Save.newGame()
+  save.inventory = { POTION = 1, ANTIDOTE = 1 }
+  local game, input = newGame(save)
+  game.data.items = {
+    POTION = { id = "POTION", name = "POTION", pocket = "ITEM", index = 1 },
+    ANTIDOTE = { id = "ANTIDOTE", name = "ANTIDOTE", pocket = "ITEM",
+      index = 2 },
+  }
+  game.data.audio = { sfx = { Sfx_SwitchPokemon = {} } }
+  local menu = PackMenu.new(game, { pocket = "ITEM" })
+  check("two rows to shuffle", #menu.rows, 2)
+
+  menu.index = 1
+  input:press("select")
+  menu:update(0)
+  check("SELECT picks the row up", menu.switching, 1)
+  input:press("down")
+  menu:update(0)
+  check("the cursor moves under it", menu.index, 2)
+  input:press("a")
+  menu:update(0)
+  check("the place ends the switch", menu.switching, nil)
+  check("and beeps once in that frame", #rang, 1)
+  menu:update(0)
+  check("the second beep follows on the next tick", #rang, 2)
+  check("both are the switch cue",
+    rang[1] == "Sfx_SwitchPokemon" and rang[2] == "Sfx_SwitchPokemon", true)
+  menu:update(0)
+  check("and there is no third", #rang, 2)
+
+  -- home/audio.asm:225 WaitSFX, home/delay.asm:14
+  Sound.sfxBusy = function() return true end
+  Sound.waitFramesFor = function() return 3 end
+  rang = {}
+  menu.index = 1
+  input:press("select")
+  menu:update(0)
+  input:press("down")
+  menu:update(0)
+  input:press("a")
+  menu:update(0)
+  check("the place beeps", #rang, 1)
+  local held = menu.index
+  input:press("down")
+  menu:update(0)
+  check("the pending beep holds the list", menu.index, held)
+  check("with no second beep yet", #rang, 1)
+  menu:update(0)
+  check("still waiting", #rang, 1)
+  menu:update(0)
+  check("the budget releases the second beep", #rang, 2)
+
+  Sound.play, Sound.sfxBusy, Sound.waitFramesFor = realPlay, realBusy,
+    realFrames
+end
+packSwitchSfxChecks()
 
 -- ------------------------------------------------- the mod row contract
 --

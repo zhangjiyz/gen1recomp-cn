@@ -164,6 +164,16 @@ local POKEMON = {
     levelMoves = { { level = 1, move = "LICK" } },
     evolutions = {},
   },
+  -- GENDER_UNKNOWN (data/pokemon/base_stats/magnemite.asm).
+  MAGNEMITE = {
+    id = "MAGNEMITE", index = 81, name = "MAGNEMITE",
+    baseStats = { hp = 25, attack = 35, defense = 70, speed = 45,
+      specialAttack = 95, specialDefense = 55 },
+    types = { "ELECTRIC", "STEEL" }, catchRate = 190, baseExp = 89,
+    growthRate = "GROWTH_MEDIUM_FAST", genderRatio = 0xff,
+    levelMoves = { { level = 1, move = "TACKLE" } },
+    evolutions = {},
+  },
 }
 
 local DATA = {
@@ -270,11 +280,16 @@ do
   check("the slot now holds the newcomer", learner.moves[1].id, "SPORE")
   check("the other three are untouched", learner.moves[2].id, "EMBER")
   local ev = b:takeEvents()
-  check("it queues a forgot line then a learned line", #ev, 2)
+  check("it queues count, forgot, learned lines", #ev, 3)
+  check("the count line leads", ev[1].text, "1, 2 and…")
+  -- ../pokecrystal/home/text.asm:887-896
+  check("and is a text_pause, not a prompt", ev[1].textPause, true)
   check("forgot text names the dropped move",
-    ev[1].text:find("forgot TACKLE") ~= nil, true)
+    ev[2].text:find("forgot TACKLE") ~= nil, true)
+  -- engine/pokemon/learn.asm:225-229
+  check("the poof rides the forgot line", ev[2].sfx, "Sfx_SwitchPokemon")
   check("learned text names the new move",
-    ev[2].text:find("learned SPORE") ~= nil, true)
+    ev[3].text:find("learned SPORE") ~= nil, true)
 
   -- Decline keeps the moveset and says so.
   b:declineForget(1, "SPORE")
@@ -835,7 +850,8 @@ do
     if event.kind == "send" then sentOut = event.text end
   end
   check("EnemyWithdrewText comes first", withdrew, "JOEY withdrew GEODUDE!")
-  check("then the send-out line", sentOut, "JOEY sent out PIDGEY!")
+  -- ../pokecrystal/data/text/battle.asm:240-246
+  check("then the send-out line", sentOut, "JOEY\nsent out\vPIDGEY!")
 
   -- A refused RUN costs nothing.  .cant_run_from_trainer leaves
   -- wBattlePlayerAction at BATTLEPLAYERACTION_USEMOVE, so BattleMenu_Run's
@@ -1050,6 +1066,12 @@ local EFFECT_MOVES = {
     accuracy = 100, pp = 20, effect = "EFFECT_HEAL" },
   PROTECT = { id = "PROTECT", name = "PROTECT", power = 0, type = "NORMAL",
     accuracy = 100, pp = 10, effect = "EFFECT_PROTECT" },
+  -- data/moves/moves.asm:203 and the ATTRACT row.
+  BELLY_DRUM = { id = "BELLY_DRUM", name = "BELLY DRUM", power = 0,
+    type = "NORMAL", accuracy = 100, pp = 10,
+    effect = "EFFECT_BELLY_DRUM" },
+  ATTRACT = { id = "ATTRACT", name = "ATTRACT", power = 0, type = "NORMAL",
+    accuracy = 100, pp = 15, effect = "EFFECT_ATTRACT" },
 }
 for id, def in pairs(EFFECT_MOVES) do MOVES[id] = def end
 
@@ -1270,8 +1292,9 @@ do
   magWild.hp = 200
   magWild.maxHp = 200
   local magEvents = magBattle:takeTurn({ kind = "move", move = "MAGNITUDE" })
-  local announced, announceEvent, usedEvent
-  for _, ev in ipairs(magEvents) do
+  local announced, announceEvent, usedEvent, animEvent
+  local announceIndex, animIndex
+  for i, ev in ipairs(magEvents) do
     if ev.kind == "move" and ev.move == "MAGNITUDE" and not usedEvent then
       usedEvent = ev
     end
@@ -1279,6 +1302,12 @@ do
         and ev.text:match("^Magnitude %d+") and not announced then
       announced = ev.text
       announceEvent = ev
+      announceIndex = i
+    end
+    if ev.kind == "message" and ev.moveAnim == "MAGNITUDE"
+        and not animEvent then
+      animEvent = ev
+      animIndex = i
     end
   end
   check("magnitude announces rolled number", announced, "Magnitude 8!")
@@ -1288,12 +1317,52 @@ do
     usedEvent and usedEvent.animDelay, true)
   check("magnitude used-move line owns no animation",
     usedEvent and usedEvent.moveAnim, nil)
-  check("magnitude line carries the animation",
-    announceEvent and announceEvent.moveAnim, "MAGNITUDE")
-  check("magnitude line carries the attacking side",
-    announceEvent and announceEvent.side, "player")
+  -- data/text/battle.asm:1017-1021
+  check("magnitude number line holds without the animation",
+    announceEvent and announceEvent.moveAnim, nil)
+  -- data/moves/effects.asm:1705-1711
+  check("magnitude animation rides its own later event",
+    animIndex ~= nil and announceIndex ~= nil and announceIndex < animIndex,
+    true)
+  check("magnitude anim event carries no text", animEvent and animEvent.text,
+    nil)
+  check("magnitude anim event carries the attacking side",
+    animEvent and animEvent.side, "player")
   check("magnitude deals more than power-1 would",
     magWild.hp < 200, true)
+
+  local missBattle, missPlayer = newBattle({
+    random = function(n)
+      if n == 256 then return 200 end
+      if n == 100 then return 99 end
+      return 0
+    end,
+  })
+  missPlayer.moves = { { id = "MAGNITUDE", pp = 30, maxPp = 30 } }
+  missBattle.stages.enemy.evasion = 6
+  local missEvents = missBattle:takeTurn({ kind = "move", move = "MAGNITUDE" })
+  local missAnnounce, missAnim, missLine
+  for _, ev in ipairs(missEvents) do
+    if ev.kind == "message" and type(ev.text) == "string" then
+      if ev.text:match("^Magnitude %d+") and not missAnnounce then
+        missAnnounce = ev
+      end
+      if ev.text:find("attack missed", 1, true) and not missLine then
+        missLine = ev
+      end
+    end
+    if ev.kind == "message" and ev.moveAnim == "MAGNITUDE"
+        and not missAnim then
+      missAnim = ev
+    end
+  end
+  check("missed magnitude still announces the number",
+    missAnnounce and missAnnounce.text, "Magnitude 8!")
+  check("missed magnitude leaves the number line unmarked",
+    missAnnounce and missAnnounce.missed, nil)
+  check("missed magnitude marks the anim event",
+    missAnim and missAnim.missed, true)
+  check("missed magnitude prints the miss line", missLine ~= nil, true)
 end
 
 -- --------------------------------------------------------------- held items
@@ -2330,8 +2399,8 @@ checkNear("0,0,0,0 is solid white",
   Transition.flashVeil({ 0, 0, 0, 0 }), -1, 0.001)
 checkNear("3,2,1,0 is the identity",
   Transition.flashVeil({ 3, 2, 1, 0 }), 0, 0.001)
-check("the flash runs 72 frames (12 palettes x 2 x 3 passes)",
-  Transition.FLASH_FRAMES, 72)
+check("the flash runs 75 frames (12 palettes x 2 + the terminator, x 3 slots)",
+  Transition.FLASH_FRAMES, 75)
 
 -- The twenty spin steps must black out the whole 20x18 tilemap between them,
 -- which is the point of the wedge table.
@@ -3094,6 +3163,173 @@ end)()
   check("the survivor gets a whole share, not half",
     shared, solo.experience - soloBefore)
   check("and the share is a real number", shared > 0, true)
+end)()
+
+-- BattleCommand_BellyDrum (engine/battle/move_effects/belly_drum.asm): the
+;(function()
+  local function said(events, text)
+    for _, e in ipairs(events) do
+      if e.kind == "message" and e.text == text then return true end
+    end
+    return false
+  end
+  local function drumBattle()
+    local player = Mon.new(DATA, "CYNDAQUIL", 20, { dvs = perfect })
+    player.moves = { { id = "BELLY_DRUM", pp = 10, maxPp = 10 } }
+    local wild = Mon.new(DATA, "PIDGEY", 20, { dvs = perfect })
+    wild.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+    local b = Battle.new({ data = DATA, party = { player }, wild = wild,
+      random = zeroRandom })
+    b:takeEvents()
+    return b, player, wild
+  end
+
+  local b, player, wild = drumBattle()
+  player.maxHp, player.hp = 40, 40
+  b:useMove(player, wild, "BELLY_DRUM")
+  local events = b:takeEvents()
+  check("Belly Drum pays half the max HP", player.hp, 20)
+  check("and maximizes ATTACK", b.stages.player.attack, 6)
+  check("with BellyDrumText's second box",
+    said(events, "maximized ATTACK!"), true)
+
+  -- CheckUserHasEnoughHP (engine/battle/core.asm:1930) returns the borrow, so
+  local half, halfPlayer, halfWild = drumBattle()
+  halfPlayer.maxHp, halfPlayer.hp = 40, 20
+  half:useMove(halfPlayer, halfWild, "BELLY_DRUM")
+  check("exactly half HP refuses the move", halfPlayer.hp, 20)
+  check("...and says so", said(half:takeEvents(), "But it failed!"), true)
+  check("but the opening attackup2 is kept", half.stages.player.attack, 2)
+
+  local low, lowPlayer, lowWild = drumBattle()
+  lowPlayer.maxHp, lowPlayer.hp = 40, 19
+  low:useMove(lowPlayer, lowWild, "BELLY_DRUM")
+  check("below half refuses it too", lowPlayer.hp, 19)
+
+  local capped, cappedPlayer, cappedWild = drumBattle()
+  cappedPlayer.maxHp, cappedPlayer.hp = 40, 40
+  capped.stages.player.attack = 6
+  capped:useMove(cappedPlayer, cappedWild, "BELLY_DRUM")
+  check("a maxed ATTACK costs no HP", cappedPlayer.hp, 40)
+  check("and leaves the stage where it was", capped.stages.player.attack, 6)
+  check("with the failure line",
+    said(capped:takeEvents(), "But it failed!"), true)
+
+  -- GetHalfMaxHP floors (engine/battle/core.asm:1821).
+  local odd, oddPlayer, oddWild = drumBattle()
+  oddPlayer.maxHp, oddPlayer.hp = 21, 21
+  odd:useMove(oddPlayer, oddWild, "BELLY_DRUM")
+  check("an odd max HP floors the cost", oddPlayer.hp, 11)
+end)()
+
+-- BattleCommand_Attract (engine/battle/move_effects/attract.asm), the
+-- SUBSTATUS_IN_LOVE arm of CheckPlayerTurn (effect_commands.asm:291-310) and
+-- BreakAttraction (engine/battle/core.asm:3871).
+;(function()
+  local function said(events, text)
+    for _, e in ipairs(events) do
+      if e.kind == "message" and e.text == text then return true end
+    end
+    return false
+  end
+  local femaleDvs = { attack = 0, defense = 15, speed = 15, special = 15 }
+  femaleDvs.hp = Mon.hpDV(femaleDvs)
+  check("a 0 Attack DV PIDGEY is female",
+    Mon.new(DATA, "PIDGEY", 20, { dvs = femaleDvs }).gender, "female")
+  check("and the perfect one is male",
+    Mon.new(DATA, "PIDGEY", 20, { dvs = perfect }).gender, "male")
+  check("MAGNEMITE has no gender at all",
+    Mon.new(DATA, "MAGNEMITE", 20, { dvs = perfect }).gender, "unknown")
+
+  local function attractBattle(species, dvs, userSpecies)
+    local player = Mon.new(DATA, userSpecies or "CYNDAQUIL", 20,
+      { dvs = perfect })
+    player.moves = { { id = "ATTRACT", pp = 15, maxPp = 15 },
+      { id = "TACKLE", pp = 35, maxPp = 35 } }
+    local bench = Mon.new(DATA, "TOTODILE", 20, { dvs = perfect })
+    bench.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+    local wild = Mon.new(DATA, species, 20, { dvs = dvs })
+    wild.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+    local b = Battle.new({ data = DATA, party = { player, bench },
+      wild = wild, random = zeroRandom })
+    b:takeEvents()
+    return b, player, wild
+  end
+
+  local b, player, wild = attractBattle("PIDGEY", femaleDvs)
+  b:useMove(player, wild, "ATTRACT")
+  check("ATTRACT infatuates the opposite sex", b:volatile(wild).attract, true)
+  check("with FellInLoveText",
+    said(b:takeEvents(), b:monName(wild) .. "\nfell in love!"), true)
+  b:useMove(player, wild, "ATTRACT")
+  check("a second ATTRACT on the same target fails",
+    said(b:takeEvents(), "But it failed!"), true)
+
+  local same, samePlayer, sameWild = attractBattle("PIDGEY", perfect)
+  same:useMove(samePlayer, sameWild, "ATTRACT")
+  check("same sex sets nothing", same:volatile(sameWild).attract, nil)
+  check("and fails outright",
+    said(same:takeEvents(), "But it failed!"), true)
+
+  local none, nonePlayer, noneWild = attractBattle("MAGNEMITE", perfect)
+  none:useMove(nonePlayer, noneWild, "ATTRACT")
+  check("a genderless target sets nothing",
+    none:volatile(noneWild).attract, nil)
+
+  local selfless, selflessPlayer, selflessWild =
+    attractBattle("PIDGEY", femaleDvs, "MAGNEMITE")
+  selfless:useMove(selflessPlayer, selflessWild, "ATTRACT")
+  check("a genderless user sets nothing",
+    selfless:volatile(selflessWild).attract, nil)
+
+  local turn, turnPlayer, turnWild = attractBattle("PIDGEY", femaleDvs)
+  turn:volatile(turnPlayer).attract = true
+  turn.random = maxRandom
+  check("a high byte keeps the mon from attacking",
+    turn:canAct(turnPlayer, "TACKLE"), false)
+  local lostEvents = turn:takeEvents()
+  check("the in-love line opens on the user", said(lostEvents,
+    turn:monName(turnPlayer) .. "\nis in love with"), true)
+  check("and scrolls onto the target", said(lostEvents,
+    "is in love with\n" .. turn:monName(turnWild) .. "!"), true)
+  check("InfatuationText opens on the user", said(lostEvents,
+    turn:monName(turnPlayer) .. "'s\ninfatuation kept"), true)
+  check("and scrolls onto the refusal", said(lostEvents,
+    "infatuation kept\nit from attacking!"), true)
+  -- constants/text_constants.asm:32
+  local widest = 0
+  for _, e in ipairs(lostEvents) do
+    if e.kind == "message" then
+      local rows = 0
+      for row in (e.text .. "\n"):gmatch("([^\n]*)\n") do
+        rows = rows + 1
+        widest = math.max(widest, #row)
+      end
+      check("every infatuated box is at most two rows", rows <= 2, true)
+    end
+  end
+  check("and no row overflows the message box", widest <= 18, true)
+  turn.random = zeroRandom
+  check("a low byte lets the move go",
+    turn:canAct(turnPlayer, "TACKLE"), true)
+  local keptEvents = turn:takeEvents()
+  check("but the in-love pair still prints", said(keptEvents,
+    turn:monName(turnPlayer) .. "\nis in love with"), true)
+  check("both halves of it", said(keptEvents,
+    "is in love with\n" .. turn:monName(turnWild) .. "!"), true)
+  check("and nothing was kept from attacking", said(keptEvents,
+    "infatuation kept\nit from attacking!"), false)
+
+  local sw, swPlayer, swWild = attractBattle("PIDGEY", femaleDvs)
+  sw:useMove(swPlayer, swWild, "ATTRACT")
+  sw:volatile(swPlayer).attract = true
+  sw:volatile(swWild).attract = true
+  sw:takeEvents()
+  sw:switch(2)
+  check("the mon that left drops its own", (swPlayer.volatile or {}).attract,
+    nil)
+  check("and the one that stayed loses it too",
+    sw:volatile(swWild).attract, nil)
 end)()
 
 print(("gen2 battle: %d checks, %d failures"):format(checks, failures))

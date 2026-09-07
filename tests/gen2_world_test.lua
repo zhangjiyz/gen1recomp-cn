@@ -188,6 +188,71 @@ local function fakePlayer(x, y, facing)
   }
 end
 
+-- ../pokecrystal/engine/overworld/events.asm:349-353
+do
+  local Movement = require("src.script.gen2.Movement")
+  local w = World.new({ data = { audio = { sfxOrder = {} } },
+    save = { player = {} } })
+  w.player = { cellX = 0, cellY = 0, facing = "down" }
+  local sfx = {}
+  w.playSfxNamed = function(_, name) sfx[#sfx + 1] = name end
+
+  w:startSkyfall()
+  eq(sfx[1], "Sfx_Kinesis", "the fall opens on SFX_KINESIS")
+  check(w.playerMasked, "OBJECT_ACTION_00 is SetFacingStanding: nothing drawn")
+  check(w:busy(), "and the applymovement holds the overworld")
+  for _ = 1, 16 do w:updateSkyfall() end
+  check(not w.playerMasked, "the sprite comes back for the descent")
+  eq(w.player.spriteYOffset, nil, "and has not moved yet")
+
+  w:updateSkyfall()
+  eq(w.player.spriteYOffset, Movement.teleportYOffset(1),
+    "the first falling frame is off the top of the screen")
+  local last = w.player.spriteYOffset
+  for _ = 1, 14 do
+    w:updateSkyfall()
+    check(w.player.spriteYOffset > last, "the drop eases down every frame")
+    last = w.player.spriteYOffset
+  end
+  w:updateSkyfall()
+  eq(w.player.spriteYOffset, 0, "landing flush on the tile")
+  check(w.skyfall == nil, "and the state is done")
+  check(not w:busy(), "so the world is walkable again")
+  eq(sfx[2], "Sfx_Strength", "SFX_STRENGTH on the landing")
+  eq(#sfx, 2, "and no warpsound anywhere in the fall")
+  eq(w.shake and w.shake.amplitude, 1, "earthquake 16 is a one-pixel shake")
+  eq(w.shake and w.shake.left, 16, "for sixteen frames")
+end
+
+-- engine/events/overworld.asm:864-872
+do
+  local Movement = require("src.script.gen2.Movement")
+  local w = World.new({ data = { audio = { sfxOrder = {} } },
+    save = { player = {} } })
+  local spins = {}
+  w.player = {
+    cellX = 0, cellY = 0, facing = "down", moving = false,
+    scriptSpin = function(_, frames, flicker)
+      spins[#spins + 1] = { frames = frames, flicker = flicker }
+    end,
+  }
+  w:beginMovement(0, Movement.digOutBytes())
+  w:updateMovement()
+  eq(spins[1] and spins[1].frames, 32, "step_dig 32 spins for 32 frames")
+  check(not spins[1].flicker, "and the out-spin does not strobe")
+  check(not w.playerHidden, "hide_object has not been read yet")
+  for _ = 1, 33 do w:updateMovement() end
+  check(w.playerHidden, "hide_object hides the player for the fade")
+  check(w.moveState == nil, "and the stream ends on step_end")
+
+  w:beginMovement(0, Movement.digReturnBytes())
+  w:updateMovement()
+  check(not w.playerHidden, "show_object brings them back on the far side")
+  eq(spins[2] and spins[2].frames, 32, "return_dig 32 spins for 32 too")
+  eq(spins[2] and spins[2].flicker, true,
+    "and StepFunction_DigTo strobes it on the odd frames")
+end
+
 -- A world with the render half replaced: no love here, so the seams that would
 -- push a TextBox, a ChoiceBox or the battle screen record instead.  `log` is
 -- the script trace the assertions read.
@@ -369,6 +434,16 @@ eq(seaGame.stack.cleared, 1, "rod on water quits the PACK")
 check(seaWorld.fishing ~= nil, "rod on water starts the cast")
 eq(seaWorld.fishing.outcome, "battle", "and the roll already hooked something")
 check(seaWorld:busy(), "the cast holds the world")
+-- ../pokecrystal/engine/menus/start_menu.asm:492
+check(seaWorld.mapSetup ~= nil, "the rod quits the PACK through ExitAllMenus")
+do
+  local exitGuard = 0
+  while seaWorld.mapSetup and exitGuard < 120 do
+    seaWorld:step()
+    exitGuard = exitGuard + 1
+  end
+end
+eq(seaWorld.fishing.phase, "cast", "the cast has not started under the white")
 -- pause 40, the bite, pause 40, then RodBiteText.
 runFrames(seaWorld, 41)
 eq(seaWorld.fishing.phase, "bite", "the cast runs out into the bite")
@@ -414,7 +489,6 @@ end
 -- that differs between the three items, wRepelEffect already set refuses
 -- without touching either the counter or the bag, and only the success arm
 -- goes through UseDisposableItem.
---
 -- Scoped in its own `do` block: the file is already brushing Lua's 200-local
 -- ceiling, and this test needs its own world/game/pack rather than reusing
 -- the rod fixtures above.
@@ -616,6 +690,8 @@ local hitWorld, hitGame = fakeWorld(treeCells, fakePlayer(5, 5, "up"), {
   { species = "HOOTHOOT", nickname = "OWL",
     moves = { { id = "HEADBUTT", pp = 15 } } },
 })
+-- ../pokecrystal/engine/events/treemons.asm:126 GetTreeMon
+hitWorld.treemonRandom = function() return 0 end
 check(hitWorld:interact(), "the ask opens again")
 advanceText(hitWorld)
 answerYesNo(hitWorld, true)
@@ -652,6 +728,64 @@ local pastWorld = fakeWorld(treeCells, fakePlayer(5, 5, "down"), {
     moves = { { id = "HEADBUTT", pp = 15 } } },
 })
 check(not pastWorld:interact(), "facing away from the tree does nothing")
+
+-- ../pokecrystal/engine/events/treemons.asm:199 GetTreeScore
+do
+  local Enc = require("src.battle.gen2.Encounter")
+  eq(Enc.treeScore(5, 4, 12345), Enc.TREEMON_SCORE_GOOD,
+    "diff 1..4 is a GOOD tree")
+  eq(Enc.treeScore(5, 4, 17), Enc.TREEMON_SCORE_RARE,
+    "diff 0 is the 1-in-10 RARE tree")
+  eq(Enc.treeScore(5, 4, 0), Enc.TREEMON_SCORE_BAD, "diff 5..9 is BAD")
+  check(Enc.treeScore(0, 0, 0) ~= Enc.treeScore(-4, -4, 0),
+    "RefreshPlayerCoords' +4 is in the coordinate half")
+  check(Enc.treeScore(5, 4, 12345) ~= Enc.treeScore(5, 4, 0),
+    "and wPlayerID is in the other half")
+
+  -- ../pokecrystal/engine/events/treemons.asm:96 GetTreeMons
+  eq(Enc.treeSetUsable("TREEMON_SET_NONE", "crystal"), false,
+    "TREEMON_SET_NONE never rolls")
+  eq(Enc.treeSetUsable("TREEMON_SET_CITY", "crystal"), true,
+    "Crystal has no CITY set to refuse")
+  eq(Enc.treeSetUsable("TREEMON_SET_CITY", "gs"), false,
+    "but G/S's CITY table is dead data")
+  eq(Enc.treeSetUsable("TREEMON_SET_UNUSED", "gs"), false, "so is UNUSED")
+
+  -- ../pokecrystal/engine/battle/core.asm:6422 CheckSleepingTreeMon
+  eq(Enc.treeMonAsleep("SPEAROW", "NITE", "crystal"), true,
+    "SPEAROW is on the Nite list")
+  eq(Enc.treeMonAsleep("SPEAROW", "DARK", "crystal"), true,
+    "DARKNESS_F falls through to Nite")
+  eq(Enc.treeMonAsleep("SPEAROW", "DAY", "crystal"), false,
+    "and is awake by day")
+  eq(Enc.treeMonAsleep("HOOTHOOT", "DAY", "crystal"), true,
+    "HOOTHOOT is on the Day list")
+  eq(Enc.treeMonAsleep("HOOTHOOT", "DAY", "gs"), false,
+    "pokegold has no asleep table at all")
+end
+
+-- ../pokecrystal/engine/events/treemons.asm:126 GetTreeMon's three gates
+do
+  local function headbutt(rolls, otId)
+    local world = fakeWorld(treeCells, fakePlayer(5, 5, "up"), {
+      { species = "HOOTHOOT", nickname = "OWL",
+        moves = { { id = "HEADBUTT", pp = 15 } } },
+    })
+    world.game.save.player.id = otId
+    local index = 0
+    world.treemonRandom = function()
+      index = index + 1
+      return rolls[index] or 0
+    end
+    return world:tryHeadbutt(5, 4)
+  end
+  eq(headbutt({ 0 }, 0), "battle", "a BAD tree gives up a mon on a 0")
+  eq(headbutt({ 1 }, 0), "nothing", "and nothing on a 1")
+  eq(headbutt({ 4 }, 12345), "battle", "a GOOD tree still answers a 4")
+  eq(headbutt({ 5 }, 12345), "nothing", "but not a 5")
+  eq(headbutt({ 7 }, 17), "battle", "a RARE tree answers a 7")
+  eq(headbutt({ 8 }, 17), "nothing", "and refuses an 8")
+end
 
 -- ---- C. the cave encounter gate ------------------------------------------
 -- CanEncounterWildMon (engine/overworld/events.asm): a CAVE or DUNGEON map
@@ -1690,13 +1824,11 @@ else
 end
 
 -- ------------------------------------------------------- the script VM hooks
---
 -- The 81 opcodes the interpreter grew are inert without these: an `appear` that
 -- reaches no World never spawns the object, a `changeblock` never opens the
 -- door, and a `warpcheck` never drops the player through the hole.  Every hook
 -- the VM guards with `if self.xFn then` is asserted here against real World
 -- behaviour rather than against the closure that forwards to it.
---
 -- The world under test is built with World.new and then poked directly: the
 -- constructor is love-free, and each method below is the WORLD half of one
 -- transcribed command, so a stub map and a stub save are the whole rig.
@@ -1782,7 +1914,6 @@ eq(hookWorld({ version = "silver" }):gsVersion(), 1, "and a Silver save is 1")
 -- reload comes back with every flag the player set and with each map still on
 -- the scene it had reached.  World:load runs this before the first setMap;
 -- these are the halves of it on their own.
---
 -- The seed is InitializeEventsScript's setevent list, which the cache carries
 -- as data/generated/initial_events.lua.  Three of its ids stand in for it here:
 -- EVENT_ILEX_FOREST_APPRENTICE 1794, EVENT_EARLS_ACADEMY_EARL 1739, and
@@ -1842,7 +1973,6 @@ end
 -- it rode the save, a reload walked the player off the BICYCLE and off the
 -- water: everything the state decides follows from this one field, so all
 -- three of the things it decides are checked here.
---
 -- Wrapped in a function for the same reason bikeChecks is, and called on the
 -- spot rather than through a name of its own: block locals count against the
 -- main chunk's 200-local ceiling and this file has none left.
@@ -1948,6 +2078,44 @@ check(objWorld.objectMasks["TEST_MAP:2"], "a flagless disappear masks by key")
 objWorld:appearObject(3)
 check(objWorld.objectMasks["TEST_MAP:2"] == false,
   "and appear unmasks it, so the pair is not one-way")
+
+-- maps/LancesRoom.asm:118
+do
+  local rebuildsBefore = objWorld.rebuilds or 0
+  objWorld:disappearObject(0)
+  check(objWorld.playerMasked == true,
+    "disappear PLAYER masks the player sprite")
+  check(objWorld.objectMasks["TEST_MAP:-1"] == nil, "and touches no map object")
+  eq(objWorld.rebuilds or 0, rebuildsBefore, "and rebuilds nobody")
+  objWorld:appearObject(0)
+  check(not objWorld.playerMasked, "appear PLAYER unmasks it")
+end
+
+-- NewBarkTown_RivalShovesYouOutMovement maps/NewBarkTown.asm:178-183
+do
+  local Player = require("src.world.gen2.Player")
+  local jw = hookWorld()
+  jw.player = Player.new(3, 4, "down")
+  local done = false
+  jw:beginMovement(0, { 0x01, 0x3b, 0x30, 0x3a, 0x47 }, function() done = true end)
+  jw:updateMovement()
+  eq(jw.player.facing, "up", "turn_head UP turns the player")
+  jw:updateMovement()
+  check(jw.player.moving and jw.player.jumping, "jump_step DOWN is a jump")
+  eq(jw.player.targetY, 6, "two cells long")
+  eq(jw.player.facing, "up", "under fix_facing the player keeps facing up")
+  eq(jw.moveState and jw.moveState.pendingStep, nil, "with no second walk queued")
+  local lowest = 0
+  for _ = 1, 32 do
+    jw.player:update()
+    lowest = math.min(lowest, jw.player.spriteYOffset or 0)
+    jw:updateMovement()
+  end
+  eq(lowest, -12, "the sprite arcs twelve pixels up on the way")
+  eq(jw.player.cellY, 6, "and lands two cells down")
+  check(done, "then the stream ends")
+  check(not jw.player.fixedFacing, "remove_fixed_facing released the facing")
+end
 
 -- Three object_events SHARING one MAPOBJECT_EVENT_FLAG is ordinary: the
 -- animated Burned Tower beasts all carry EVENT_BURNED_TOWER_B1F_BEASTS_1
@@ -2253,23 +2421,45 @@ eq(doorSfx[1], 3, "warpsound runs BEFORE the load, off the tile underfoot")
 check(doorLoad == nil, "and the map does not load on the frame it is taken")
 check(doorWorld:busy(),
   "the setup script is a blocking call, so the world is busy for it")
--- FadeOutToWhite / FadeInFromWhite are `ld b, $4` steps of ConvertTimePals*HL,
--- each followed by DelayFrames 2: four steps, eight frames, per half.
-for _ = 1, 7 do doorWorld:updateMapSetup() end
-check(doorLoad == nil, "seven frames in, the fade out is still running")
-eq(doorWorld.fade, "white", "and the sheet it fades to is FillWhiteBGColor's")
-doorWorld:updateMapSetup()
-check(doorLoad ~= nil, "the eighth frame is where the load lands")
-eq(doorLoad.id, "OTHER_MAP", "on the destination map")
-eq(doorLoad.x, 1, "at the destination WARP's own cell")
-eq(doorWorld.fadeLevel, 1,
-  "with the sheet re-armed, because the load cleared it")
-for _ = 1, 7 do doorWorld:updateMapSetup() end
-check(doorWorld.mapSetup ~= nil, "the fade in takes another eight")
-doorWorld:updateMapSetup()
-check(doorWorld.mapSetup == nil, "and the sixteenth frame ends the chain")
-check(doorWorld.fade == nil, "with nothing left over the world")
-check(not doorWorld:busy(), "and control back")
+-- engine/tilesets/timeofday_pals.asm:115-128
+do
+  -- (engine/tilesets/timeofday_pals.asm:160-187)
+  -- follows it is pure white (home/lcd.asm:35-72)
+  local doorOut = (World.FADE_STEPS + 1) * World.FADE_STEP_FRAMES
+  local doorHold = World.MAP_LOAD_WHITE_FRAMES + World.FADE_STEP_FRAMES
+  local doorIn = (World.FADE_STEPS - 1) * World.FADE_STEP_FRAMES
+  local doorChain = doorOut + doorHold + doorIn
+  for _ = 1, doorOut - 1 do doorWorld:updateMapSetup() end
+  check(doorLoad == nil, "one frame short of the fade out, it is still running")
+  eq(doorWorld.fade, "white", "and the sheet it fades to is FillWhiteBGColor's")
+  eq(doorWorld.fadeLevel, 1, "whose last row is the colour-0 plane")
+  check(doorWorld.fadeWhiten,
+    "drawn through the remap with pals 1-6 whitened, not as a white sheet")
+  eq(doorWorld.fadeHold, nil, "so nothing holds the flat sheet yet")
+  doorWorld:updateMapSetup()
+  check(doorLoad ~= nil, "the load lands after that last row, under the LCD")
+  eq(doorLoad.id, "OTHER_MAP", "on the destination map")
+  eq(doorLoad.x, 1, "at the destination WARP's own cell")
+  eq(doorWorld.fadeLevel, 1,
+    "with the sheet re-armed, because the load cleared it")
+  eq(doorWorld.fadeHold, World.MAP_LOAD_WHITE_FRAMES,
+    "and the pure white held for the LCD-off window alone")
+  eq(doorWorld.fadeWhiten, nil,
+    "LoadMapPalettes put the plain time-of-day set back")
+  for _ = 1, World.MAP_LOAD_WHITE_FRAMES do doorWorld:updateMapSetup() end
+  eq(doorWorld.fadeHold, nil, "the LCD comes back on")
+  eq(doorWorld.fadeLevel, 1,
+    "on FadeInFromWhite's own first row, a palette row again")
+  for _ = 1, doorHold + doorIn - 1 - World.MAP_LOAD_WHITE_FRAMES do
+    doorWorld:updateMapSetup()
+  end
+  check(doorWorld.mapSetup ~= nil, "the fade in runs out the remaining rows")
+  doorWorld:updateMapSetup()
+  check(doorWorld.mapSetup == nil,
+    "and frame " .. doorChain .. " ends the chain")
+  check(doorWorld.fade == nil, "with nothing left over the world")
+  check(not doorWorld:busy(), "and control back")
+end
 
 -- MapSetupScript_Connection and _Submenu are the only two rows with no fade at
 -- all: an edge cross must not hitch.  Everything else fades back IN at least,
@@ -2281,8 +2471,11 @@ setupWorld.setMap = function() setupLoads = setupLoads + 1 return true end
 setupWorld:runMapSetup(0xf7, function() return setupWorld:setMap() end)
 eq(setupLoads, 1, "MAPSETUP_CONNECTION loads on the spot")
 check(setupWorld.mapSetup == nil, "with no chain behind it")
+setupWorld.playerMasked = true
 setupWorld:runMapSetup(0xf1, function() return setupWorld:setMap() end)
 eq(setupLoads, 2, "MAPSETUP_WARP opens on DisableLCD, so it loads at once too")
+check(setupWorld.playerMasked == nil,
+  "and the load respawns a `disappear`ed player")
 eq(setupWorld.mapSetup.phase, "in", "and only fades back in")
 setupWorld.mapSetup = nil
 setupWorld:runMapSetup(0xf6, function() return setupWorld:setMap() end)
@@ -2451,11 +2644,9 @@ phoneWorld:setSpecialCall(0)
 eq(phoneWorld:specialCall(), 0, "and SPECIALCALL_NONE clears it")
 
 -- ---- roaming legendaries --------------------------------------------------
---
 -- engine/overworld/wildmons.asm InitRoamMons / CheckEncounterRoamMon /
 -- UpdateRoamMons / JumpRoamMons, and data/wild/roammon_maps.asm.  All of it is
 -- pure state, so none of these need a map loaded.
---
 -- Wrapped in a function because Lua 5.1 caps a chunk at 200 active locals and
 -- this suite is already close to it; the alternative is renaming everything
 -- above, which would make the diff lie about what changed.
@@ -2677,7 +2868,6 @@ check(Roamers.afterWildBattle(driftSave, "ROUTE_30", seeded({ 16, 2, 1, 1 })),
   "and the sixteenth moves them")
 
 -- ---- swarms ---------------------------------------------------------------
---
 -- engine/events/specials.asm StoreSwarmMapIndices / SetSwarmFlag /
 -- CheckSwarmFlag, and _SwarmWildmonCheck's place in front of the normal table.
 
@@ -2991,10 +3181,8 @@ check(selGame.save.registeredItem == nil,
 end
 
 -- ---- the BICYCLE ----------------------------------------------------------
---
 -- BikeFunction (engine/events/overworld.asm) end to end: where the bike may be
 -- got on, what the queued script does, and the Cycling Road's two flags.
---
 -- Wrapped in a function rather than a `do` block: block locals still count
 -- against the main chunk's 200-local ceiling and this file is already near it.
 local function bikeChecks()

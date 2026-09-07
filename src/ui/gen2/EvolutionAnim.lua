@@ -31,10 +31,12 @@ local Chrome = require("src.ui.gen2.Chrome")
 local Evolution = require("src.core.gen2.Evolution")
 local GbcPalette = require("src.render.GbcPalette")
 local Mon = require("src.battle.gen2.Mon")
+local MonAnimView = require("src.render.MonAnimView")
 local Music = require("src.core.Music")
 local Palettes = require("src.world.gen2.Palettes")
 local Sound = require("src.core.Sound")
 local SpriteAnims = require("src.ui.gen2.SpriteAnims")
+local Strings = require("src.core.Strings")
 
 local EvolutionAnim = {}
 EvolutionAnim.__index = EvolutionAnim
@@ -66,6 +68,29 @@ local BLACKOUT = Palettes.BLACKOUT
 -- full, so the balls of light cap out at ten on screen no matter how many
 -- .GenerateBallOfLight would like to make.
 local BALL_LIMIT = 10
+
+local EVOLVING_TEXT = Strings.source("What? %s\nis evolving!")
+local STOPPED_TEXT = Strings.source("Huh? %s\nstopped evolving!")
+local CONGRATS_TEXT = Strings.source("Congratulations!\nYour %s")
+local EVOLVED_TEXT = Strings.source("evolved into\n%s!")
+local LEARNED_TEXT = Strings.source("%s learned\n%s!")
+local WANTS_TO_LEARN_TEXT = Strings.source("%s wants to\nlearn %s!")
+
+-- Deliberately \n-only, unlike CommonText.pages/pagesOf elsewhere in Gen2
+-- UI: every template above is a fixed two-line cart message, and the box
+-- below (BOX_H = 6, TEXT_LINE = 2) only has room for two printed lines
+-- before a third would land past its bottom edge. self.lines is drawn as a
+-- flat list with no page break at all, so a translation that needs a third
+-- line here would silently overflow instead of paginating -- route through
+-- CommonText.pages instead if that is ever needed.
+local function messageLines(source, ...)
+  local translated = Strings(source, ...)
+  local out = {}
+  for line in (translated .. "\n"):gmatch("(.-)\n") do
+    out[#out + 1] = line
+  end
+  return out
+end
 
 --------------------------------------------------------------------------
 -- Construction
@@ -127,9 +152,47 @@ end
 --------------------------------------------------------------------------
 
 function EvolutionAnim:playCry(species)
-  if not species then return end
+  if not species then return nil end
   local cries = self.data.audio and self.data.audio.cries
-  if cries and cries[species] then Sound.playCry(self.data, species) end
+  if not (cries and cries[species]) then return nil end
+  return Sound.playCry(self.data, species)
+end
+
+-- ../pokecrystal/engine/pokemon/stats_screen.asm:1183-1195
+function EvolutionAnim:statused()
+  local mon = self.mon
+  if not mon then return false end
+  if (mon.hp or 0) <= 0 then return true end
+  return mon.status == "sleep" or mon.status == "freeze"
+end
+
+-- ../pokecrystal/engine/movie/evolution_animation.asm:88-89
+function EvolutionAnim:startEvolutionMusic()
+  local songs = self.data.audio and self.data.audio.songs
+  if songs and songs.Music_Evolution then
+    Music.play(self.data, "Music_Evolution", true, { reason = "evolution" })
+  end
+end
+
+-- ../pokecrystal/home/pokemon.asm:124-127
+function EvolutionAnim:beginCry(species, after)
+  self.crySrc = self:playCry(species)
+  self.cryT = 0
+  self.cryAfter = after
+  self.cryWait = self.crySrc ~= nil
+  if not self.cryWait then return after() end
+end
+
+function EvolutionAnim:updateCry()
+  self.cryT = self.cryT + 1
+  local src = self.crySrc
+  local playing = src and src.isPlaying and src:isPlaying()
+  if self.cryT >= 3 and (not playing or self.cryT > 180) then
+    self.cryWait, self.crySrc = false, nil
+    local after = self.cryAfter
+    self.cryAfter = nil
+    if after then after() end
+  end
 end
 
 function EvolutionAnim:playSfx(name)
@@ -157,22 +220,19 @@ function EvolutionAnim:setPhase(phase)
     -- PrintText EvolvingText, then `ld c, 50 / call DelayFrames`.  The pics are
     -- not placed yet: on the cart the battle screen is still up behind this
     -- line and ClearBox only wipes rows 0..11 once the delay is over.
-    self.lines = { "What? " .. self.nick, "is evolving!" }
+    self.lines = messageLines(EVOLVING_TEXT, self.nick)
     self.timer = Evolution.EVOLVING_FRAMES
     return
   end
 
   if phase == "cry" then
-    -- PlayMonCry of the OLD species, then MUSIC_EVOLUTION, then 80 frames.
-    -- PlayMusic MUSIC_NONE ran first, so nothing else is sounding.
+    -- ../pokecrystal/engine/movie/evolution_animation.asm:82-92
     Music.stop()
-    self:playCry(self.oldSpecies)
-    local songs = self.data.audio and self.data.audio.songs
-    if songs and songs.Music_Evolution then
-      Music.play(self.data, "Music_Evolution", true, { reason = "evolution" })
-    end
     self.timer = Evolution.MUSIC_FRAMES
-    return
+    if self:statused() then return self:startEvolutionMusic() end
+    return self:beginCry(self.oldSpecies, function()
+      self:startEvolutionMusic()
+    end)
   end
 
   if phase == "flash" then
@@ -192,25 +252,43 @@ function EvolutionAnim:setPhase(phase)
     self.blackout = false
     self.showNew = not self.canceled
     if self.canceled then
-      -- .PlayEvolvedSFX returns immediately once wEvolutionCanceled is set:
-      -- no SFX_EVOLVED and no balls of light, straight to the cry.
-      self:playCry(self.oldSpecies)
-      return self:setPhase("stopped")
+      -- ../pokecrystal/engine/movie/evolution_animation.asm:151-158
+      if self:statused() then return self:setPhase("stopped") end
+      return self:beginCry(self.oldSpecies, function()
+        self:setPhase("stopped")
+      end)
     end
     self:playSfx("Sfx_Evolved")
     self.timer = Evolution.BALL_SPAWN_FRAMES + Evolution.BALL_TAIL_FRAMES
     return
   end
 
+  -- ../pokecrystal/engine/movie/evolution_animation.asm:113-130
+  if phase == "picAnim" then
+    self.balls = {}
+    self.picAnim = nil
+    if not self:statused() then
+      self.picAnim = MonAnimView.start(self:speciesDef(self.newSpecies),
+        self.mon, "evolve",
+        function(path) return self:image(path) end,
+        function() self:playCry(self.newSpecies) end)
+    end
+    if self.picAnim then return end
+    if self:statused() then return self:setPhase("congrats") end
+    return self:beginCry(self.newSpecies, function()
+      self:setPhase("congrats")
+    end)
+  end
+
   if phase == "stopped" then
     -- CancelEvolution: StoppedEvolvingText over the pic, then ClearTilemap.
-    self.lines = { "Huh? " .. self.nick, "stopped evolving!" }
+    self.lines = messageLines(STOPPED_TEXT, self.nick)
     self.timer = PROMPT_FRAMES
     return
   end
 
   if phase == "congrats" then
-    self.lines = { "Congratulations!", "Your " .. self.nick }
+    self.lines = messageLines(CONGRATS_TEXT, self.nick)
     self.timer = PROMPT_FRAMES
     return
   end
@@ -225,7 +303,7 @@ function EvolutionAnim:setPhase(phase)
   if phase == "evolved" then
     -- EvolvedIntoText, then MUSIC_NONE / SFX_CAUGHT_MON / WaitSFX and
     -- `ld c, 40 / call DelayFrames`.
-    self.lines = { "evolved into", self.newName .. "!" }
+    self.lines = messageLines(EVOLVED_TEXT, self.newName)
     Music.stop()
     self:playSfx("Sfx_CaughtMon")
     self.timer = Evolution.CONGRATS_FRAMES
@@ -282,7 +360,7 @@ function EvolutionAnim:nextLearn()
   local ok, reason = Mon.learnMove(self.evolved, moveId, self.data)
   if ok then
     self.learned[#self.learned + 1] = moveId
-    self.lines = { self.nick .. " learned", moveName .. "!" }
+    self.lines = messageLines(LEARNED_TEXT, self.nick, moveName)
   elseif reason == "full" then
     if self.game and self.game.learnMoveOn then
       self.phase = "waitingLearn"
@@ -296,7 +374,7 @@ function EvolutionAnim:nextLearn()
       end)
     end
     self.full[#self.full + 1] = moveId
-    self.lines = { self.nick .. " wants to", "learn " .. moveName .. "!" }
+    self.lines = messageLines(WANTS_TO_LEARN_TEXT, self.nick, moveName)
   else
     return self:nextLearn()
   end
@@ -332,6 +410,9 @@ function EvolutionAnim:update(_dt)
     return
   end
 
+  -- ../pokecrystal/home/pokemon.asm:124-127
+  if self.cryWait then return self:updateCry() end
+
   if phase == "flash" then
     return self:updateFlash(input)
   end
@@ -339,13 +420,16 @@ function EvolutionAnim:update(_dt)
   if phase == "reveal" then
     self:updateBalls()
     self.timer = self.timer - 1
-    if self.timer <= 0 then
-      -- ClearSpriteAnims, then PlayMonCry of the species the screen is now
-      -- showing.
-      self:playCry(self.newSpecies)
-      self:setPhase("congrats")
-    end
+    -- ../pokecrystal/engine/movie/evolution_animation.asm:113-114
+    if self.timer <= 0 then self:setPhase("picAnim") end
     return
+  end
+
+  -- ../pokecrystal/engine/gfx/pic_animation.asm:79-89
+  if phase == "picAnim" then
+    if self.picAnim and not self.picAnim:step() then return end
+    self.picAnim = nil
+    return self:setPhase("congrats")
   end
 
   self.timer = (self.timer or 0) - 1
@@ -472,9 +556,11 @@ end
 -- Draw
 --------------------------------------------------------------------------
 
-function EvolutionAnim:pic(species)
-  local def = species and self.data.pokemon and self.data.pokemon[species]
-  local path = def and def.spriteFront
+function EvolutionAnim:speciesDef(species)
+  return species and self.data.pokemon and self.data.pokemon[species] or nil
+end
+
+function EvolutionAnim:image(path)
   if not path then return nil end
   local cached = self.picCache[path]
   if cached == nil then
@@ -485,6 +571,11 @@ function EvolutionAnim:pic(species)
     self.picCache[path] = cached
   end
   return cached or nil
+end
+
+function EvolutionAnim:pic(species)
+  local def = self:speciesDef(species)
+  return self:image(def and def.spriteFront)
 end
 
 -- The four colours the box draws through right now: the mon's own while the
@@ -503,6 +594,10 @@ function EvolutionAnim:drawPic()
   if not image then return end
   local G = love.graphics
   local w, h = image:getDimensions()
+  -- ../pokecrystal/engine/gfx/pic_animation.asm:431-435
+  local sheet, quad, size
+  if self.picAnim then sheet, quad, size = self.picAnim:frame() end
+  if sheet then w, h = size, size end
   -- PlaceGraphic pads the pic into the 7x7 box bottom-first, so a 40x40
   -- Cyndaquil stands on the same ground line a 56x56 Onix does.
   local box = PIC_TILES * 8
@@ -510,7 +605,10 @@ function EvolutionAnim:drawPic()
   local py = PIC_TILE_Y * 8 + (box - h)
   G.setColor(1, 1, 1, 1)
   local colors = self:picColors(species)
-  local function body() G.draw(image, px, py) end
+  local function body()
+    if sheet then return G.draw(sheet, quad, px, py) end
+    G.draw(image, px, py)
+  end
   if colors and GbcPalette.available() then
     GbcPalette.with(colors, body)
   else

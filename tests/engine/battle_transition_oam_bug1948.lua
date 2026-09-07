@@ -37,8 +37,55 @@ do
   Commands.pushBattle(ctx, { kind = "trainer" })
   eq(got, trainer, "a scripted trainer battle keeps the talked-to NPC")
   got = "unset"
+  -- home/text_script.asm:8
   Commands.pushBattle(ctx, { kind = "wild" })
-  eq(got, nil, "a wild battle keeps the player only")
+  eq(got, trainer, "a scripted wild battle keeps the talked-to NPC (#2119)")
+  local oak = { id = "oak" }
+  local bare = { overworld = ctx.overworld }
+  got = "unset"
+  Commands.pushBattle(bare, { kind = "wild" }, oak)
+  eq(got, oak, "an explicit keep wins when the ctx has no npc")
+  got = "unset"
+  Commands.pushBattle(ctx, { kind = "wild" }, oak)
+  eq(got, oak, "an explicit keep wins over ctx.npc")
+  got = "unset"
+  Commands.pushBattle(bare, { kind = "wild" })
+  eq(got, nil, "no npc and no keep: the player only")
+end
+
+-- home/text_script.asm:8
+do
+  local rival = { id = "rival" }
+  local other = { id = "other" }
+  local got
+  local ow = {
+    player = player,
+    pushBattle = function(_, _, keep) got = keep end,
+    npcByIndex = function(_, i)
+      if i == 1 then return rival elseif i == 2 then return other end
+    end,
+  }
+  local ctx = { overworld = ow, runner = {} }
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, nil, "an unaddressed ambush still keeps nothing")
+  Commands.face_object(ctx, 1, "down")
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, rival, "face_object stamps the sprite an ambush battle keeps")
+  Commands.place_npc(ctx, 2, 3, 4)
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, other, "place_npc restamps, like hSpriteIndex being overwritten")
+  Commands.walk_npc(ctx, 1, {})
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, rival, "walk_npc stamps the object it moves")
+  Commands.walk_npc(ctx, "player", {})
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, rival, "walk_npc \"player\" leaves the stamp alone")
+  local talked = { id = "talked" }
+  ctx.npc = talked
+  Commands.pushBattle(ctx, { kind = "trainer" })
+  eq(got, talked, "a talked-to npc still wins over the script stamp")
+  Commands.pushBattle(ctx, { kind = "trainer" }, other)
+  eq(got, other, "an explicit keep still wins over both")
 end
 
 do

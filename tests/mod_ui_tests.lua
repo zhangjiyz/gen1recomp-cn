@@ -286,7 +286,7 @@ local WANT_IDS = { "textSpeed", "animations", "battleStyle", "battleLayout",
                    "ruleset", "musicVol", "sfxVol", "musicFilter",
                    "performance", "colors",
                    "tilt", "uiLetterbox", "shaderfx", "shaderfx2", "zoom", "voidFill",
-                   "videoMode", "faithfulRes", "screenPos", "fpsCap", "vsync",
+                   "videoMode", "faithfulRes", "screenPos", "fpsCap", "vsync", "logicClock",
                    "speedOverworld", "speedBattle", "speedMenu",
                    "mods", "controls", "dateFormat", "timeFormat" }
 local function orow(menu, id)
@@ -421,9 +421,7 @@ orow(om, "vsync").step(om.game, 1)
 check(om.game.save.options.vsync == "off", "VSYNC steps ON to OFF")
 check(orow(om, "vsync").value(om.game) == "OFF", "and renders it")
 orow(om, "vsync").step(om.game, 1)
-check(om.game.save.options.vsync == "adaptive", "then OFF to ADAPTIVE")
-orow(om, "vsync").step(om.game, 1)
-check(om.game.save.options.vsync == "on", "and ADAPTIVE wraps to ON")
+check(om.game.save.options.vsync == "on", "then OFF wraps to ON")
 
 do
   local PS = require("src.core.PresentSync")

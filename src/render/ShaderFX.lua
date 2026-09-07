@@ -335,9 +335,51 @@ end
 local lib
 local libError
 
+-- Survives only when a previous run died inside the bridge (#2092, #2098).
+ShaderFX.PROBE_REL = "shaderfx-bridge.probe"
+
+local function probeFs()
+  return love and love.filesystem or nil
+end
+
+local function probeArmed()
+  local fs = probeFs()
+  if not (fs and fs.getInfo) then return nil end
+  local ok, info = pcall(fs.getInfo, ShaderFX.PROBE_REL)
+  if not ok or not info then return nil end
+  local okR, body = pcall(fs.read, ShaderFX.PROBE_REL)
+  return (okR and body and body ~= "") and body or "unknown"
+end
+
+local function armProbe(tag)
+  local fs = probeFs()
+  if not (fs and fs.write) then return end
+  pcall(fs.write, ShaderFX.PROBE_REL, tostring(tag))
+end
+
+local function disarmProbe()
+  local fs = probeFs()
+  if not (fs and fs.remove) then return end
+  pcall(fs.remove, ShaderFX.PROBE_REL)
+end
+
+-- A boot that died inside dlopen or the translate call leaves the probe file
+-- behind; the next boot refuses the bridge instead of freezing again.
+function ShaderFX.clearBridgeQuarantine()
+  disarmProbe()
+  if libError and libError:find("quarantined", 1, true) then libError = nil end
+end
+
 local function ensureLib()
   if lib then return lib end
   if libError then return nil, libError end
+  local armed = probeArmed()
+  if armed then
+    libError = "librashader bridge quarantined after a failed load (" .. armed
+      .. "); reinstalling the app or re-selecting the preset retries it"
+    ShaderFX.recordError("bridge", libError)
+    return nil, libError
+  end
   local okFfi, ffi = pcall(require, "ffi")
   if not okFfi or type(ffi) ~= "table" then
     libError = "this build has no ffi, so presets cannot be converted here"
@@ -352,7 +394,9 @@ local function ensureLib()
     -- A bare name goes to the system loader; a path only when a file is there.
     local bare = not path:find("[/\\]")
     if bare or fileReadable(path) then
+      armProbe("dlopen " .. path)
       local ok, loaded = pcall(ffi.load, path)
+      disarmProbe()
       if ok then lib = loaded; return lib end
     end
     tried[#tried + 1] = path
@@ -392,7 +436,9 @@ function ShaderFX.translate(fullPath, es)
   local ok, l, lerr = pcall(ensureLib)
   if not ok then return nil, "ffi.load failed: " .. tostring(l) end
   if not l then return nil, tostring(lerr or libError or "librashader bridge not available") end
+  armProbe("call " .. tostring(fullPath))
   local ptr = l.librashader_translate_preset(fullPath, es and 1 or 0)
+  disarmProbe()
   if ptr == nil then return nil, "librashader_translate_preset returned NULL" end
   local json = ffi.string(ptr)
   l.librashader_free_string(ptr)
@@ -608,42 +654,15 @@ end
 
 -- Runs pass `i`, drawing `srcImg` into a freshly sized canvas. `lutByName`
 -- resolves a User-semantic sampler by the name the translation reported.
-local function runPass(state, i, pass, outputs, frameSource, lutByName, viewport, original)
+local function runPass(state, i, pass, outputs, frameSource, lutByName, viewport, original, layer)
   local dims = computePassDims(state, i, pass, viewport, original)
   state.outputDims[i] = dims
 
   -- Compiled once per (state, pass): a pass's GLSL and manifest depend only on
   -- the preset, never on per-frame input. fragManifest is cached alongside it.
-  local cached = state.shaderCache[i]
-  local shader, fragManifest
-  if cached then
-    shader, fragManifest = cached.shader, cached.fragManifest
-  else
-    local fixedFragBody
-    fixedFragBody, fragManifest = Fixup.fragment(pass.fragment)
-    local fixedVert, vertManifest = Fixup.vertex(pass.vertex)
-    assert(#fragManifest == #vertManifest, ("pass%d: PUSH struct member count differs"):format(i))
-
-    local validateErrs = {}
-    local isEs = defaultEs()
-    for headIdx, head in ipairs(Fixup.PREC_HEADS) do
-      local fixedFrag = head .. fixedFragBody
-      local okShader, err = love.graphics.validateShader(isEs, fixedFrag, fixedVert)
-      if okShader then
-        shader = love.graphics.newShader(fixedFrag, fixedVert)
-        break
-      else
-        validateErrs[#validateErrs + 1] = ("variant %d: %s"):format(headIdx, tostring(err))
-      end
-    end
-    if not shader then
-      require("src.core.Logger").error("ShaderFX: pass%d shader failed to validate -- %s",
-        i, table.concat(validateErrs, " | "))
-    end
-    assert(shader, ("pass%d: no PREC_HEADS variant validated (%s)")
-      :format(i, table.concat(validateErrs, " | ")))
-    state.shaderCache[i] = { shader = shader, fragManifest = fragManifest }
-  end
+  local cached = assert(state.shaderCache[i],
+    ("pass%d: shader was not built at activate"):format(i))
+  local shader, fragManifest = cached.shader, cached.fragManifest
 
   for _, s in ipairs(pass.samplers) do
     local img
@@ -666,15 +685,21 @@ local function runPass(state, i, pass, outputs, frameSource, lutByName, viewport
   local srcDims = passInputDims(state, i, original)
   local drawScaleX, drawScaleY = dims.w / srcDims.w, dims.h / srcDims.h
 
-  -- Reallocated only when this pass's resolved size actually changes.
-  local cc = state.canvasCache[i]
+  -- Reallocated only when this pass's resolved size actually changes; each
+  -- layer keeps its own set so a split world/UI frame does not thrash.
+  local layerCache = state.canvasCache[layer]
+  if not layerCache then
+    layerCache = {}
+    state.canvasCache[layer] = layerCache
+  end
+  local cc = layerCache[i]
   local canvas
   if cc and cc.w == dims.w and cc.h == dims.h then
     canvas = cc.canvas
   else
     canvas = love.graphics.newCanvas(dims.w, dims.h)
     canvas:setFilter("nearest", "nearest")
-    state.canvasCache[i] = { canvas = canvas, w = dims.w, h = dims.h }
+    layerCache[i] = { canvas = canvas, w = dims.w, h = dims.h }
   end
 
   love.graphics.push("all")
@@ -694,11 +719,12 @@ end
 
 -- Runs the whole chain once over `frameSource` (sized `original`), with
 -- `viewport` the size "viewport" scale_type passes resolve against.
-function ShaderFX.runChain(state, frameSource, lutByName, viewport, original)
+function ShaderFX.runChain(state, frameSource, lutByName, viewport, original, layer)
+  layer = layer or "main"
   local outputs = {}
   state.outputDims = {}
   for i = 0, state.preset.pass_count - 1 do
-    runPass(state, i, state.preset.passes[i + 1], outputs, frameSource, lutByName, viewport, original)
+    runPass(state, i, state.preset.passes[i + 1], outputs, frameSource, lutByName, viewport, original, layer)
   end
   return outputs[state.preset.pass_count - 1]
 end
@@ -829,12 +855,87 @@ ShaderFX.OPTION_KEY = { main = "shaderfx", secondary = "shaderfxSecondary" }
 local slots = { main = {}, secondary = {} } -- slots[s] = { state=, entry= }
 local autoActivateTried = false -- see applyOptions()/tryAutoActivateFromEnv() below
 
+ShaderFX.ERROR_LOG_REL = "shaderfx-error.log"
+local MAX_ERRORS = 8
+ShaderFX._lastErrors = {}
+local lastCropError = nil
+
+local function rendererInfo()
+  if not (love.graphics and love.graphics.getRendererInfo) then return "?" end
+  local ok, name, version, vendor, device = pcall(love.graphics.getRendererInfo)
+  if not ok then return "?" end
+  return table.concat({ tostring(name), tostring(version), tostring(vendor), tostring(device) }, " | ")
+end
+
+local function glsl3Supported()
+  if not (love.graphics and love.graphics.getSupported) then return "?" end
+  local ok, t = pcall(love.graphics.getSupported)
+  if not ok or type(t) ~= "table" then return "?" end
+  return tostring(t.glsl3)
+end
+
+function ShaderFX.recordError(presetName, message)
+  local line = ("%s: %s"):format(tostring(presetName), tostring(message))
+  local errs = ShaderFX._lastErrors
+  errs[#errs + 1] = line
+  while #errs > MAX_ERRORS do table.remove(errs, 1) end
+  require("src.core.Logger").error("ShaderFX: %s", line)
+  if love.filesystem and love.filesystem.write then
+    local head = ("es=%s glsl3=%s renderer=%s\n\n"):format(
+      tostring(defaultEs()), glsl3Supported(), rendererInfo())
+    pcall(love.filesystem.write, ShaderFX.ERROR_LOG_REL, head .. table.concat(errs, "\n\n") .. "\n")
+  end
+  return line
+end
+
+function ShaderFX.lastError()
+  local errs = ShaderFX._lastErrors
+  return errs[#errs]
+end
+
+local function buildPassShader(i, pass)
+  local okF, fixedFragBody, fragManifest = pcall(Fixup.fragment, pass.fragment)
+  if not okF then return nil, ("pass%d: fragment fixup: %s"):format(i, tostring(fixedFragBody)) end
+  local okV, fixedVert, vertManifest = pcall(Fixup.vertex, pass.vertex)
+  if not okV then return nil, ("pass%d: vertex fixup: %s"):format(i, tostring(fixedVert)) end
+  if #fragManifest ~= #vertManifest then
+    return nil, ("pass%d: PUSH struct member count differs"):format(i)
+  end
+  if not (love.graphics and love.graphics.newShader) then
+    return nil, ("pass%d: love.graphics.newShader unavailable"):format(i)
+  end
+  local errs, isEs = {}, defaultEs()
+  for headIdx, head in ipairs(Fixup.PREC_HEADS) do
+    local fixedFrag = head .. fixedFragBody
+    local okValidate, verr = true, nil
+    if love.graphics.validateShader then
+      okValidate, verr = love.graphics.validateShader(isEs, fixedFrag, fixedVert)
+    end
+    if okValidate then
+      local okNew, shaderOrErr = pcall(love.graphics.newShader, fixedFrag, fixedVert)
+      if okNew and shaderOrErr then return shaderOrErr, fragManifest end
+      errs[#errs + 1] = ("variant %d newShader: %s"):format(headIdx, tostring(shaderOrErr))
+    else
+      errs[#errs + 1] = ("variant %d validate: %s"):format(headIdx, tostring(verr))
+    end
+  end
+  return nil, ("pass%d: %s"):format(i, table.concat(errs, " | "))
+end
+
 -- Loads `entry`'s cached artifact into `slot` and makes it that slot's active
 -- preset. `paramOverrides` layers a player's pragma edits over ALL_DEFAULTS.
 function ShaderFX.activate(slot, entry, paramOverrides)
   assert(slots[slot], "ShaderFX.activate: unknown slot " .. tostring(slot))
   local state, err = ShaderFX.load(entry)
   if not state then return false, err end
+  for i, pass in ipairs(state.preset.passes) do
+    local shader, manifestOrErr = buildPassShader(i - 1, pass)
+    if not shader then
+      ShaderFX.recordError(entry.name, manifestOrErr)
+      return false, manifestOrErr
+    end
+    state.shaderCache[i - 1] = { shader = shader, fragManifest = manifestOrErr }
+  end
   if paramOverrides then
     for id, value in pairs(paramOverrides) do state.ALL_DEFAULTS[id] = value end
   end
@@ -851,6 +952,7 @@ end
 
 -- `slot` nil deactivates both.
 function ShaderFX.deactivate(slot)
+  lastCropError = nil
   if slot then
     slots[slot].state, slots[slot].entry = nil, nil
   else
@@ -911,15 +1013,21 @@ function ShaderFX.applyOptions(opts)
         ShaderFX.deactivate(slot)
         cleared = true
       else
-        -- isConverted() is existence-only with no staleness check, so a saved
-        -- choice reconverts here too -- at boot/options-save, never per frame.
-        local convOk, convErr = ShaderFX.convert(entry)
-        if not convOk then
-          require("src.core.Logger").error("ShaderFX.applyOptions: reconvert failed for %s (%s): %s",
-            want, slot, tostring(convErr))
+        -- A cached artifact boots without touching the native bridge; a
+        -- missing or stale one converts here, never per frame (#2092, #2098).
+        if not ShaderFX.isConverted(entry) then
+          local convOk, convErr = ShaderFX.convert(entry)
+          if not convOk then
+            require("src.core.Logger").error("ShaderFX.applyOptions: convert failed for %s (%s): %s",
+              want, slot, tostring(convErr))
+          end
         end
         local paramOverrides = opts.shaderfxParams and opts.shaderfxParams[entry.name]
         local ok, err = ShaderFX.activate(slot, entry, paramOverrides)
+        if not ok and ShaderFX.isConverted(entry) and ShaderFX.canConvert() then
+          local convOk = ShaderFX.convert(entry)
+          if convOk then ok, err = ShaderFX.activate(slot, entry, paramOverrides) end
+        end
         if not ok then
           require("src.core.Logger").error("ShaderFX.applyOptions: %s (%s) failed to activate: %s",
             want, slot, tostring(err))
@@ -955,8 +1063,8 @@ end
 
 -- Crops the playfield rect out of `canvas` at `renderScale`. The output canvas
 -- is cached module-wide and reallocated only on a real size change.
-local cropCanvasCache
-local function cropToGbSource(canvas, rect, srcW, srcH, renderScale)
+local cropCanvasCache = {}
+local function cropToGbSource(canvas, rect, srcW, srcH, renderScale, layer)
   -- Cheap insurance against a read-after-write hazard between this draw and
   -- whatever last rendered into `canvas`.
   love.graphics.flushBatch()
@@ -964,12 +1072,13 @@ local function cropToGbSource(canvas, rect, srcW, srcH, renderScale)
   local quad = love.graphics.newQuad(rect.x, rect.y, rect.w, rect.h,
     canvas:getPixelWidth(), canvas:getPixelHeight())
   local out
-  if cropCanvasCache and cropCanvasCache.w == outW and cropCanvasCache.h == outH then
-    out = cropCanvasCache.canvas
+  local cached = cropCanvasCache[layer]
+  if cached and cached.w == outW and cached.h == outH then
+    out = cached.canvas
   else
     out = love.graphics.newCanvas(outW, outH)
     out:setFilter("nearest", "nearest")
-    cropCanvasCache = { canvas = out, w = outW, h = outH }
+    cropCanvasCache[layer] = { canvas = out, w = outW, h = outH }
   end
   local invScale = renderScale / rect.scale
   love.graphics.push("all")
@@ -991,11 +1100,31 @@ local function chainRenderScale()
   return (caps and tonumber(caps.shaderfx)) or 1.0
 end
 
+local maskShader
+local function maskedDraw()
+  if maskShader == nil then
+    local ok, sh = pcall(love.graphics.newShader, [[
+      extern Image mask;
+      vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {
+        vec4 c = Texel(tex, uv);
+        return vec4(c.rgb, Texel(mask, uv).a) * color;
+      }
+    ]])
+    maskShader = ok and sh or false
+  end
+  return maskShader or nil
+end
+
 -- Renderer.lua's endFrame entry point. `canvas` is the finished window-size
 -- composite; `rect` is this frame's real game rect in PHYSICAL framebuffer
 -- pixels and `source` the content size it frames. See docs/shaderfx.md.
-function ShaderFX.render(canvas, rect, source, dpiX, dpiY)
+-- `opts.layer` names a second chain of the same frame (its own canvases);
+-- `opts.mask` composites that layer over what is already on screen, keyed
+-- by `canvas`'s own alpha, instead of replacing the screen with it.
+function ShaderFX.render(canvas, rect, source, dpiX, dpiY, opts)
   if not autoActivateTried then tryAutoActivateFromEnv() end
+  local layer = opts and opts.layer or "main"
+  local masked = opts and opts.mask and maskedDraw() or nil
   if not slots.main.state and not slots.secondary.state then
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(canvas, 0, 0)
@@ -1012,47 +1141,62 @@ function ShaderFX.render(canvas, rect, source, dpiX, dpiY)
   local scale = chainRenderScale()
   local viewport = { w = roundDim(uRect.w * scale), h = roundDim(uRect.h * scale) }
 
-  -- exposed for tests only (tests/drivers/gold_shaderfx_zoom_sizing_test.lua)
-  ShaderFX._lastRect, ShaderFX._lastSource = rect, source
+  if layer == "main" then
+    -- exposed for tests only (tests/drivers/gold_shaderfx_zoom_sizing_test.lua)
+    ShaderFX._lastRect, ShaderFX._lastSource = rect, source
 
-  local dt = love.timer and love.timer.getDelta() or 0
-  updateYawTwist(slots.main.state, dt)
-  updateYawTwist(slots.secondary.state, dt)
-  -- Test seam: the live per-frame integration, before it rides into the shader.
-  ShaderFX._lastYawTwist = {
-    main = slots.main.state and slots.main.state.yawTwist,
-    secondary = slots.secondary.state and slots.secondary.state.yawTwist,
-  }
+    local dt = love.timer and love.timer.getDelta() or 0
+    updateYawTwist(slots.main.state, dt)
+    updateYawTwist(slots.secondary.state, dt)
+    -- Test seam: the live per-frame integration, before it rides into the shader.
+    ShaderFX._lastYawTwist = {
+      main = slots.main.state and slots.main.state.yawTwist,
+      secondary = slots.secondary.state and slots.secondary.state.yawTwist,
+    }
+  end
 
-  local ok, chainOut, chainPreset = pcall(function()
-    local frameSource = cropToGbSource(canvas, rect, source.w, source.h, scale)
+  local chainOut, chainPreset
+  local okCrop, frameSource = pcall(cropToGbSource, canvas, rect, source.w, source.h, scale, layer)
+  if okCrop then
+    lastCropError = nil
     -- exposed for tests only (gold_shaderfx_menu_black_crop_test.lua)
-    ShaderFX._lastCrop = frameSource
+    if layer == "main" then ShaderFX._lastCrop = frameSource end
     local dims = { w = frameSource:getWidth(), h = frameSource:getHeight() }
-    local img, preset = frameSource, nil
-    if slots.main.state then
-      img = ShaderFX.runChain(slots.main.state, img, slots.main.state.luts, viewport, dims)
-      dims = { w = img:getWidth(), h = img:getHeight() }
-      preset = slots.main.state.preset
+    local img = frameSource
+    for _, slotName in ipairs(ShaderFX.SLOTS) do
+      local s = slots[slotName]
+      if s.state then
+        local okChain, out = pcall(ShaderFX.runChain, s.state, img, s.state.luts, viewport, dims, layer)
+        if okChain and out then
+          img, chainOut, chainPreset = out, out, s.state.preset
+          dims = { w = out:getWidth(), h = out:getHeight() }
+        else
+          ShaderFX.recordError(s.entry and s.entry.name,
+            ("%s chain failed, preset deactivated: %s"):format(slotName,
+              tostring(okChain and "no output" or out)))
+          s.state, s.entry = nil, nil
+        end
+      end
     end
-    if slots.secondary.state then
-      img = ShaderFX.runChain(slots.secondary.state, img, slots.secondary.state.luts, viewport, dims)
-      dims = { w = img:getWidth(), h = img:getHeight() }
-      preset = slots.secondary.state.preset
+  else
+    local msg = tostring(frameSource)
+    if msg ~= lastCropError then
+      lastCropError = msg
+      ShaderFX.recordError("crop", msg)
     end
-    return img, preset
-  end)
-
-  if not ok or not chainOut then
-    require("src.core.Logger").error(
-      "ShaderFX.render chain failed ok=%s chainOut=%s err=%s",
-      tostring(ok), tostring(chainOut), tostring(not ok and chainOut or nil))
   end
 
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.setBlendMode("replace")
-  love.graphics.draw(canvas, 0, 0)
-  if ok and chainOut then
+  if masked then
+    if not chainOut then
+      love.graphics.setBlendMode("alpha")
+      love.graphics.draw(canvas, 0, 0)
+    end
+  else
+    love.graphics.setBlendMode("replace")
+    love.graphics.draw(canvas, 0, 0)
+  end
+  if chainOut then
     -- A chain's final pass need not land on the viewport size (most presets end
     -- at scale_type="source"), so stretch, using that pass's own filter.
     local cw, ch = chainOut:getWidth(), chainOut:getHeight()
@@ -1061,10 +1205,12 @@ function ShaderFX.render(canvas, rect, source, dpiX, dpiY)
     chainOut:setFilter(mode, mode)
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setBlendMode("alpha")
+    if masked then
+      love.graphics.setShader(masked)
+      masked:send("mask", canvas)
+    end
     love.graphics.draw(chainOut, uRect.x, uRect.y, 0, uRect.w / cw, uRect.h / ch)
-  elseif not ok then
-    require("src.core.Logger").error("ShaderFX.render: chain failed, showing unprocessed frame: %s",
-      tostring(chainOut))
+    if masked then love.graphics.setShader() end
   end
   love.graphics.setBlendMode("alpha")
   -- Test seam; set only after the real chain ran.

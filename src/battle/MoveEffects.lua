@@ -13,9 +13,11 @@
 
 local Damage = require("src.battle.Damage")
 local Logger = require("src.core.Logger")
+local Status = require("src.battle.Status")
 local StatusRegistry = require("src.battle.StatusRegistry")
 local TurnOrder = require("src.battle.TurnOrder")
 local TypeChart = require("src.battle.TypeChart")
+local Timing = require("src.core.Timing")
 local romText = require("src.core.RomText")
 local Strings = require("src.core.Strings")
 
@@ -54,9 +56,10 @@ local function changeStage(battle, who, stat, delta, fromEnemy)
     return { romText(battle.data, "_NothingHappenedText", "Nothing happened!") }
   end
   who.stages[stat] = new
-  -- effects.asm:505-506: after any stat-stage change, modified stats are
-  -- recomputed and QuarterSpeedDueToParalysis/HalveAttackDueToBurn re-run,
-  -- re-baking the burn/para penalty and ending Haze's temporary lift.
+  -- effects.asm:414-415
+  local foe = (who == battle.player) and battle.enemy or battle.player
+  Status.afterStatChange(battle, who, stat, fromEnemy and who or foe)
+  -- pokered engine/battle/effects.asm:505-506
   who.hazeStatReset = nil
   if battle.ruleset and battle.ruleset.badgeBoostReapplyBug
      and battle.kind ~= "link" and who == battle.player then
@@ -101,10 +104,19 @@ end
 local function statusMove(status)
   return function(battle, user, target, move)
     if target.mon.status then
-      return { romText(battle.data, "_ButItFailedText", "But, it failed!") }
+      -- engine/battle/effects.asm:44-47
+      if status == "SLP" and target.mon.status == "SLP" then
+        return { romText(battle.data, "_AlreadyAsleepText",
+                         "%s's\nalready asleep!", displayName(target)) }
+      end
+      -- effects.asm:51, move_effects/paralyze.asm:12
+      return { romText(battle.data, "_DidntAffectText",
+                       "It didn't affect\n%s!", displayName(target)) }
     end
     if status == "PSN" and target.substituteHP then
-      return { romText(battle.data, "_ButItFailedText", "But, it failed!") }
+      -- effects.asm:88 .noEffect falls into .didntAffect for POISON_EFFECT
+      return { romText(battle.data, "_DidntAffectText",
+                       "It didn't affect\n%s!", displayName(target)) }
     end
     local msgs = inflictStatus(battle, target, status, {
       toxic = move and move.id == "TOXIC",
@@ -264,6 +276,7 @@ MoveEffects.primary = {
       -- Attack-halving and paralysis Speed-quartering on BOTH battlers
       -- until the next stat recompute (a stage change or switch-in).
       b.hazeStatReset = true
+      if b.statusPenaltyStacks then b.statusPenaltyStacks = {} end
       b.badgeExtraBoosts = nil
     end
     -- Gen 1 also removes the enemy's major status; if that cured sleep
@@ -287,6 +300,10 @@ MoveEffects.primary = {
   -- battle (#644).  The failed flag rides the message list so performMove can
   -- peel the announcement-time anim row without matching on printed text.
   SUBSTITUTE_EFFECT = function(battle, user)
+    -- ../pokered/engine/battle/move_effects/substitute.asm:2-3
+    if battle.waitBeforeMoveAnim then
+      battle:waitBeforeMoveAnim(Timing.SUBSTITUTE_ENTRY)
+    end
     if user.substituteHP then
       return { romText(battle.data, "_HasSubstituteText", "%s\nhas a SUBSTITUTE!", displayName(user)),
                failed = true }
@@ -302,6 +319,15 @@ MoveEffects.primary = {
     end
     user.mon.hp = user.mon.hp - cost
     user.substituteHP = cost + 1
+    -- ../pokered/engine/battle/move_effects/substitute.asm:47-55
+    user.substitutePending = true
+    if battle.animationsOn and battle.cancelMoveAnim
+       and not battle:animationsOn() then
+      battle:cancelMoveAnim()
+    end
+    if battle.actNext then
+      battle:actNext(function() user.substitutePending = nil end)
+    end
     -- _SubstituteText
     return { romText(battle.data, "_SubstituteText", "It created a\nSUBSTITUTE!") }
   end,
@@ -322,12 +348,18 @@ MoveEffects.primary = {
   -- returned strings can't express.
 
   TRANSFORM_EFFECT = function(battle, user, target)
-    -- transform.asm:31-53 (AnimationTransformMon) morphs the user's
-    -- on-screen pic into the target species; the port swaps user.sprite
-    -- via the same getImage/monPalette path makeBattler uses so the
-    -- change is visible (the renderer draws battler.sprite directly).
-    user.sprite = battle:speciesSprite(target.mon.species, user.isPlayer)
-                  or user.sprite
+    -- transform.asm:37-45
+    local pic = battle:speciesSprite(target.mon.species, user.isPlayer)
+    if battle.animationsOn and battle.cancelMoveAnim and not battle:animationsOn() then
+      battle:cancelMoveAnim()
+    end
+    if pic and battle.actNext then
+      battle:actNext(function()
+        user.sprite = pic
+        local pf = battle.picFxFor and battle:picFxFor(user)
+        if pf then pf.minimized = nil end
+      end)
+    end
     user.curStats = {
       hp = user.mon.stats.hp, -- HP is kept
       attack = target.curStats.attack, defense = target.curStats.defense,

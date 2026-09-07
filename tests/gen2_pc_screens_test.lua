@@ -63,9 +63,11 @@ local check, eq = S.check, S.eq
 local Bag = require("src.inventory.Bag")
 local CenterPcMenu = require("src.ui.gen2.CenterPcMenu")
 local ItemPcMenu = require("src.ui.gen2.ItemPcMenu")
+local PcMenu = require("src.ui.gen2.PcMenu")
 local Map = require("src.world.gen2.Map")
 local Save = require("src.core.gen2.Save")
 local Screens = require("src.ui.Screens")
+local Strings = require("src.core.Strings")
 local Vm = require("src.script.gen2.Vm")
 local World = require("src.world.gen2.World")
 
@@ -122,8 +124,17 @@ local function newSave(partySize)
 end
 
 -- Drive a screen: press the buttons one at a time, updating after each.
+-- ../pokecrystal/home/print_text.asm:1
+local function settle(screen)
+  for _ = 1, 600 do
+    if not (screen.typer and not screen.typer:done()) then break end
+    screen:update(0)
+  end
+end
+
 local function press(screen, input, ...)
   for _, button in ipairs({ ... }) do
+    settle(screen)
     input:press(button)
     screen:update(0)
   end
@@ -143,6 +154,142 @@ eq(Screens.get(sg, "Gen2CenterPcMenu"), CenterPcMenu,
   "Gen2CenterPcMenu resolves to its builtin")
 eq(Screens.get(sg, "Gen2ItemPcMenu"), ItemPcMenu,
   "Gen2ItemPcMenu resolves to its builtin")
+
+-- Built-in PC rows are finite UI labels.  The player's name remains raw and
+-- is interpolated only after the surrounding label has been translated.
+do
+  local Chrome = require("src.ui.gen2.Chrome")
+  local priorPrint = Chrome.print
+  local printed = {}
+  Chrome.print = function(text) printed[#printed + 1] = text end
+  Strings.load({ strings = {
+    ["BILL's PC"] = "PC DE LEO",
+    ["%s's PC"] = "PC DE %s",
+    ["TURN OFF"] = "ETEINDRE",
+    ["WITHDRAW <PK><MN>"] = "RETIRER <PK><MN>",
+    ["WITHDRAW ITEM"] = "RETIRER OBJET",
+    ["LOG OFF"] = "DECONNEXION",
+  } })
+
+  local save = newSave(1)
+  local game = newGame(save)
+  local center = CenterPcMenu.new(game, { save = save })
+  center.message = nil
+  -- drawPanel only draws the entry rows once booted (dev's PC boot-sequence
+  -- gate); this check is about label translation, not the boot animation.
+  center.booted = true
+  center:drawPanel()
+  local pc = PcMenu.new(game, { save = save, bills = true })
+  pc:drawPanel()
+  local items = ItemPcMenu.new(game, { save = save })
+  items:drawPanel()
+  local all = table.concat(printed, "|")
+  check(all:find("PC DE LEO", 1, true) ~= nil, "BILL's PC is translated")
+  check(all:find("PC DE GOLD", 1, true) ~= nil,
+    "the player name stays raw inside a translated PC label")
+  check(all:find("RETIRER <PK><MN>", 1, true) ~= nil,
+    "the storage PC action is translated")
+  check(all:find("RETIRER OBJET", 1, true) ~= nil,
+    "the item PC action is translated")
+  check(all:find("DECONNEXION", 1, true) ~= nil,
+    "the item PC exit is translated")
+
+  Strings.load({})
+  Chrome.print = priorPrint
+end
+
+-- PC messages are whole catalog keys, including the dynamic item-name and
+-- quantity templates. Names supplied by registries remain raw arguments.
+do
+  Strings.load({ strings = {
+    ["{PLAYER} turned on\nthe PC."] = "{PLAYER} ACTIVE\nPC-FR.",
+    ["BILL's PC\naccessed.\n\n#MON Storage\nSystem opened."] =
+      "PC LEO OUVERT.\n\nSTOCKAGE OUVERT.",
+    ["What do you want\nto do?"] = "QUE FAIRE?",
+    ["Withdrew %d\n%s(S)."] = "PRIS %d\n%s.",
+    ["Toss out how many\n%s(S)?"] = "JETER COMBIEN\n%s?",
+    POTION = "INTERDIT",
+  } })
+  local save = newSave(1)
+  save.pcItems.POTION = 2
+  local game = newGame(save)
+
+  local center = CenterPcMenu.new(game, { save = save })
+  eq(center.message.pages[1][1], "{PLAYER} ACTIVE",
+    "the Center PC boot message is translated as a whole key")
+  center.message = nil
+  center.index = 1
+  center:choose()
+  eq(center.message.pages[1][1], "PC LEO OUVERT.",
+    "the Center PC access flow is translated")
+
+  local itemPc = ItemPcMenu.new(game, { save = save, items = ITEMS })
+  itemPc:withdraw({ id = "POTION", name = "POTION" }, 1)
+  eq(itemPc.message.pages[1][1], "PRIS 1",
+    "the item PC quantity template is translated")
+  eq(itemPc.message.pages[1][2], "POTION.",
+    "an item name remains a raw template argument")
+  itemPc.message = nil
+  itemPc.rows = { { id = "POTION", name = "POTION", count = 1 } }
+  itemPc.listIndex = 1
+  itemPc:chooseToss()
+  eq(itemPc.qtyState.prompt[1], "JETER COMBIEN",
+    "the item PC toss prompt is translated")
+  eq(itemPc.qtyState.prompt[2], "POTION?",
+    "the toss prompt also preserves the item name argument")
+  Strings.load({})
+end
+
+-- A mod may intentionally reuse a built-in source label. Only rows marked by
+-- the engine are translated; collision labels injected through the hook stay
+-- byte-for-byte mod content.
+do
+  local Chrome = require("src.ui.gen2.Chrome")
+  local Hooks = require("src.mods.Hooks")
+  local Runtime = require("src.mods.Runtime")
+  local priorEvents, priorHooks, priorErrors =
+    Runtime.events, Runtime.hooks, Runtime.errors
+  local priorPrint = Chrome.print
+  local printed = {}
+  Chrome.print = function(text) printed[#printed + 1] = text end
+  Strings.load({ strings = {
+    ["WITHDRAW <PK><MN>"] = "RETIRER MON",
+    ["WITHDRAW ITEM"] = "RETIRER OBJET",
+  } })
+
+  local function hookedWith(label)
+    local hooks = Hooks.new()
+    hooks:wrap("ui.pc.items", function(nextFn, game, entries)
+      entries = nextFn(game, entries)
+      entries[#entries + 1] = { id = "collision", label = label }
+      return entries
+    end)
+    Runtime.install(priorEvents, hooks, priorErrors or {})
+  end
+
+  local save = newSave(1)
+  local game = newGame(save)
+  hookedWith("WITHDRAW <PK><MN>")
+  PcMenu.new(game, { save = save, bills = true }):drawPanel()
+  local all = table.concat(printed, "|")
+  check(all:find("RETIRER MON", 1, true) ~= nil,
+    "PcMenu translates its marked built-in row")
+  check(all:find("WITHDRAW <PK><MN>", 1, true) ~= nil,
+    "PcMenu leaves a colliding hook label raw")
+
+  printed = {}
+  hookedWith("WITHDRAW ITEM")
+  ItemPcMenu.new(game, { save = save }):drawPanel()
+  all = table.concat(printed, "|")
+  check(all:find("RETIRER OBJET", 1, true) ~= nil,
+    "ItemPcMenu translates its marked built-in row")
+  check(all:find("WITHDRAW ITEM", 1, true) ~= nil,
+    "ItemPcMenu leaves a colliding hook label raw")
+
+  Strings.load({})
+  Chrome.print = priorPrint
+  Runtime.install(priorEvents, priorHooks, priorErrors)
+end
 
 -- ------------------------------------------------- the whose-PC gating
 
@@ -188,6 +335,15 @@ do
   local pc = CenterPcMenu.new(game, { save = save,
     onClose = function() closed = true end })
   check(pc.message ~= nil, "an empty party gets the Bzzzzt! refusal")
+  -- data/text/common_2.asm:725 _PokecenterPCCantUseText ends in `cont`.
+  local refusal = pc.message.pages
+  eq(#refusal, 2, "the refusal is two pages, not one three-line page")
+  eq(#refusal[1], 2, "page 1 fills the two-row box")
+  eq(#refusal[2], 2, "page 2 too")
+  eq(refusal[2][1], refusal[1][2], "the scroll keeps 'have a #MON to' on top")
+  eq(refusal[2][2], "use this!", "and lands the cont line under it")
+  press(pc, input, "a")
+  check(pc.message ~= nil, "the cont waits for its own A press")
   press(pc, input, "a")
   check(closed, "and the PC never opens")
   eq(#game.stack._items, 0, "nothing was pushed")
@@ -252,6 +408,66 @@ do
   check(sawCounts, "the counts page names 3 seen")
   check(sawRating, "2 owned lands on OakRating01")
   check(pc.closed == false, "the OAK flow drops back to the menu, not out")
+end
+
+-- Two rows to the box (constants/text_constants.asm:32 TEXTBOX_INNERY); the
+-- ratings' third lines are `cont` (data/text/common_2.asm:841).
+do
+  local function ratingPages(caught)
+    local save = newSave(1)
+    save.engineFlags = { [CenterPcMenu.ENGINE_POKEDEX] = true }
+    local dex = {}
+    for i = 1, caught do dex["SPECIES" .. i] = true end
+    save.pokedex = { seen = dex, caught = dex }
+    local game, input = newGame(save)
+    local pc = CenterPcMenu.new(game, { save = save })
+    press(pc, input, "a")
+    pc:oakRate()
+    return pc.message.pages
+  end
+
+  local function indexOf(pages, first)
+    for i, page in ipairs(pages) do
+      if page[1] == first then return i end
+    end
+    return nil
+  end
+
+  -- One caught count per band (data/events/pokedex_ratings.asm).
+  local tall = {}
+  for _, caught in ipairs({ 5, 15, 25, 40, 55, 70, 85, 100, 115, 130, 145,
+      160, 175, 190, 205, 220, 235, 245, 251 }) do
+    for _, page in ipairs(ratingPages(caught)) do
+      if #page ~= 2 then
+        tall[#tall + 1] = caught .. ":" .. table.concat(page, "/")
+      end
+    end
+  end
+  eq(table.concat(tall, " "), "",
+    "every band pages exactly two lines, the box's two rows")
+
+  local pages = ratingPages(205)
+  eq(table.concat(pages[1], "/"), "Current #DEX/completion level:",
+    "_OakPCText2 opens the flow")
+  eq(table.concat(pages[2], "/"), "205 #MON seen/205 #MON owned",
+    "then the two counts")
+  eq(table.concat(pages[3], "/"), "PROF.OAK's/Rating:",
+    "and the para clears the box for the rating header")
+
+  local at = indexOf(pages, "Wow! You've hit")
+  check(at ~= nil, "205 owned lands on _OakRating15")
+  eq(pages[at][2], "200! Your #DEX", "page 1 is text + line")
+  eq(pages[at + 1][1], "200! Your #DEX", "the cont scroll keeps line 2 on top")
+  eq(pages[at + 1][2], "is looking great!", "with the cont line under it")
+  eq(pages[at + 2], nil, "and that is the last page")
+
+  pages = ratingPages(25)
+  at = indexOf(pages, "You're getting")
+  check(at ~= nil, "25 owned lands on _OakRating03")
+  eq(table.concat(pages[at], "/"), "You're getting/good at this.",
+    "page 1 is text + line")
+  eq(table.concat(pages[at + 1], "/"), "But you have a/long way to go.",
+    "and the para page shares no line with it")
 end
 
 -- TURN OFF: the Link closed line, then the shutdown.
@@ -373,11 +589,83 @@ do
   for i, row in ipairs(pc.rows) do rowY[row.id] = i * 2 end
   local counts = {}
   for _, p in ipairs(printed) do
-    if p.x == 7 then counts[p.y] = p.text end
+    if p.x == 14 then counts[p.y] = p.text end
   end
   eq(counts[rowY.POTION + 1], TIMES .. " 3", "the POTION stack keeps its xNN")
   eq(counts[rowY.HM_CUT + 1], nil,
     "and the HM row draws none (PlaceMenuItemQuantity .done)")
+  local names = {}
+  for _, p in ipairs(printed) do names[p.text] = p.x .. "," .. p.y end
+  eq(names.POTION, "5," .. rowY.POTION, "the name column is menu_coords 4 + 1")
+  eq(names.CANCEL, "5," .. (#pc.rows + 1) * 2, "and CANCEL shares it")
+end
+
+-- (engine/events/pokecenter_pc.asm:641) and .a_1 (:628) leaves the row A
+-- picked hollow, the way engine/menus/scrolling_menu.asm:86 does everywhere
+-- (engine/items/buy_sell_toss.asm:205), menu_coords 15, 9.
+do
+  local save = newSave(1)
+  local game = newGame(save)
+  save.pcItems = { POTION = 3 }
+  local pc = ItemPcMenu.new(game, { save = save, items = ITEMS })
+  local Chrome = require("src.ui.gen2.Chrome")
+  local saved = { print = Chrome.print, box = Chrome.box,
+    cursor = Chrome.cursor, clear = Chrome.clear }
+  local boxes, cursors
+  Chrome.print = function() end
+  Chrome.box = function(x, y, w, h) boxes[#boxes + 1] = { x, y, w, h } end
+  Chrome.cursor = function(x, y, hollow)
+    cursors[#cursors + 1] = { x = x, y = y, hollow = hollow or false }
+  end
+  Chrome.clear = function() end
+  pc.phase = "withdraw"
+  pc:rebuild()
+
+  local function shot()
+    boxes, cursors = {}, {}
+    pc:drawPanel()
+    return boxes, cursors
+  end
+
+  local _, idle = shot()
+  eq(idle[1] and idle[1].x, 4, "the PC list cursor sits in menu_coords 4")
+  eq(idle[1] and idle[1].hollow, false, "solid while the list has the joypad")
+
+  pc.qtyState = { qty = 1, max = 3, prompt = { "How many?" } }
+  local qtyBoxes, qtyCursors = shot()
+  eq(qtyCursors[1] and qtyCursors[1].hollow, true,
+    "hollow once A opened the quantity prompt")
+  local qtyBox
+  for _, b in ipairs(qtyBoxes) do
+    if b[1] == 15 and b[2] == 9 then qtyBox = b end
+  end
+  eq(qtyBox and qtyBox[3], 5, "TossItem_MenuHeader is five columns wide")
+  eq(qtyBox and qtyBox[4], 3, "and three rows tall, bottom-right of the list")
+  local strayBox = false
+  for _, b in ipairs(qtyBoxes) do
+    if b[1] == 7 and b[2] == 15 then strayBox = true end
+  end
+  eq(strayBox, false, "and nothing sits at BuyItem_MenuHeader's 7, 15")
+
+  pc.qtyState = nil
+  pc.confirm = { prompt = { "Throw away?" }, choice = 1 }
+  local _, confirmCursors = shot()
+  eq(confirmCursors[1] and confirmCursors[1].hollow, true,
+    "hollow under the yes/no too")
+
+  pc.confirm = nil
+  pc.message = { pages = { { "Withdrew POTION." } }, page = 1 }
+  local _, messageCursors = shot()
+  eq(messageCursors[1] and messageCursors[1].hollow, true,
+    "and under the text box A ends on")
+
+  pc.message = nil
+  local _, backCursors = shot()
+  eq(backCursors[1] and backCursors[1].hollow, false,
+    "filling back in when the list gets the joypad back")
+
+  Chrome.print, Chrome.box = saved.print, saved.box
+  Chrome.cursor, Chrome.clear = saved.cursor, saved.clear
 end
 
 -- An empty bag never opens the PACK (.CheckItemsInBag).
@@ -749,6 +1037,43 @@ do
   press(menu, input, "select")
   eq(#game.stack._items, 0, "SELECT on the move screen opens nothing")
   eq(census(save), 5, "and releases nothing")
+end
+
+-- Box-screen labels and complete prompts are translated at draw/use time;
+-- box names and nicknames remain save content even when they collide with a
+-- catalog key.
+do
+  local BoxMenu = require("src.ui.gen2.BoxMenu")
+  local Boxes = require("src.core.gen2.Boxes")
+  local Strings = require("src.core.Strings")
+  Strings.load({ strings = {
+    ["PARTY <PK><MN>"] = "EQUIPE <PK><MN>",
+    ["Choose a <PK><MN>."] = "Choisissez un <PK><MN>.",
+    ["What's up?"] = "Que faire ?",
+    ["Release <PK><MN>?"] = "Relacher le <PK><MN> ?",
+    ["BOX CUSTOM"] = "NE PAS TRADUIRE",
+  } })
+  local save = newSave(3)
+  save.boxNames = save.boxNames or {}
+  save.boxNames[1] = "BOX CUSTOM"
+  Boxes.box(save, 1)[1] = { species = "PIDGEY", nickname = "BOX CUSTOM",
+    hp = 10, maxHp = 10, level = 3 }
+  local game = newGame(save)
+  local move = BoxMenu.new(game, { save = save, mode = "move" })
+  eq(move:prompt(), "Choisissez un <PK><MN>.",
+    "the complete choose-mon prompt passes through Strings")
+  move.phase = "submenu"
+  eq(move:prompt(), "Que faire ?", "the complete submenu prompt is translated")
+  move.boxIndex = 0
+  eq(move:title(), "EQUIPE <PK><MN>", "the built-in PARTY title is translated")
+  move.boxIndex = 1
+  eq(move:title(), "BOX CUSTOM", "a user-defined box name remains raw")
+
+  local withdraw = BoxMenu.new(game, { save = save, mode = "withdraw" })
+  withdraw:askRelease()
+  eq(withdraw.message, "Relacher le <PK><MN> ?",
+    "the complete release prompt passes through Strings")
+  Strings.load({})
 end
 
 S.finish()

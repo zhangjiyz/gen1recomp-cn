@@ -28,6 +28,14 @@ return function(game)
 
   local function tap(btn) U.tap(game, btn) U.wait(3) end
   local function top() return game.stack:top() end
+  local function waitFor(id, limit)
+    for _ = 1, limit or 120 do
+      local state = top()
+      if (state and state.screenId or nil) == id then return true end
+      U.wait(1)
+    end
+    return false
+  end
 
   U.wait(45)
   local world = game.world
@@ -80,6 +88,7 @@ return function(game)
   end
   tap("a")
 
+  waitFor("Gen2PartyMenu", 90)
   local party = top()
   if not ok(party and party.screenId == "Gen2PartyMenu",
       "POKeMON opened the party list") then
@@ -103,6 +112,7 @@ return function(game)
   end
   tap("a")
   U.wait(10)
+  waitFor("Gen2Pokegear", 120)
 
   local picker = top()
   if not ok(picker and picker.screenId == "Gen2Pokegear" and picker.fly,
@@ -113,7 +123,11 @@ return function(game)
   U.wait(6)
 
   U.tap(game, "a")
-  U.wait(3)
+  -- ExitAllMenus runs before .FlyScript (../pokecrystal/home/map.asm:1927)
+  for _ = 1, 120 do
+    if world.flyAnim then break end
+    U.wait(1)
+  end
   if not ok(world.flyAnim ~= nil and world.flyAnim.phase == "from",
       "A started FlyFromAnim") then
     error("fly1960: the flight collapsed into a warp")

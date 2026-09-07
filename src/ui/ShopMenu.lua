@@ -23,16 +23,16 @@ local function txt(game, key, fallback)
   return game.data.text[key] or fallback
 end
 
--- engine/events/pokemart.asm:204 (.returnToMainPokemartMenu)
+-- pokered engine/events/pokemart.asm:204
 local function anythingElse(game)
   return txt(game, "_PokemartAnythingElseText",
              Strings("Is there anything\nelse I can do?"))
 end
 
--- prompt refusals leave the list for the mart menu -- pokemart.asm:113
+-- .returnToMainPokemartMenu -- pokered engine/events/pokemart.asm:199-206
 local function refuse(game, menu, list, text)
-  if list then list:close() end
   game.stack:push(TextBox.new(game, text, function()
+    if list then list:close() end
     menu.footer = anythingElse(game)
   end))
 end
@@ -123,7 +123,7 @@ local function sellItems(game)
     table.insert(items, {
       value = id,
       label = def and def.name or id,
-      right = (not keyed) and ("x" .. game.save.inventory[id]) or nil,
+      count = (not keyed) and game.save.inventory[id] or nil,
     })
   end
   items[#items + 1] = { cancel = true, label = Strings("CANCEL") }
@@ -207,7 +207,7 @@ local function sell(game, menu)
             Bag.remove(game.save, item.value, qty)
             local left = game.save.inventory[item.value]
             if left then
-              item.right = "x" .. left
+              item.count = left
             else
               list:removeCurrent()
             end

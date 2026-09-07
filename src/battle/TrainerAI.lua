@@ -20,6 +20,7 @@
 
 local TypeChart = require("src.battle.TypeChart")
 local Strings = require("src.core.Strings")
+local Status = require("src.battle.Status")
 local romText = require("src.core.RomText")
 
 local TrainerAI = {}
@@ -54,9 +55,7 @@ function TrainerAI.classFor(battle)
   return require("data.scripts.ai_classes")[id]
 end
 
--- Item use / switching per trainer class (engine/battle/trainer_ai.asm
--- via the ai_classes registry).  Runs before move choice each enemy
--- turn; returns an action { special = "aiItem"/"aiSwitch", ... } or nil.
+-- engine/battle/trainer_ai.asm:290-320, engine/battle/core.asm:416,454
 -- battle.aiUses is initialized per enemy Pokémon (wAICount).
 function TrainerAI.classAction(battle)
   if battle.kind ~= "trainer" or not battle.trainer then return nil end
@@ -133,6 +132,9 @@ function TrainerAI.useItem(battle, item)
   elseif X_STAT[item] then
     local stat = X_STAT[item]
     enemy.stages[stat] = math.min(6, (enemy.stages[stat] or 0) + 1)
+    -- trainer_ai.asm:719 -> effects.asm:414-415
+    Status.afterStatChange(battle, enemy, stat, battle.player)
+    enemy.hazeStatReset = nil
     table.insert(msgs, Strings("%s's\n%s rose!", displayName(enemy), Strings(STAT_LABEL[stat])))
   elseif item == "GUARD_SPEC" then
     enemy.mist = true

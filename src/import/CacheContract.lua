@@ -8,15 +8,17 @@ local GameVersion = require("src.core.GameVersion")
 
 local CacheContract = {}
 
-CacheContract.FORMAT = "rom-cache-v10:"
+CacheContract.FORMAT = "rom-cache-v11:"
 CacheContract.VERSION_FORMAT = {
   -- v11: Gen 2 maps carry their object list's ROM address, which a .sav
   -- export re-anchoring a save onto another map writes back into
   -- wCurMapObjectEventsPointer. A v10 cache has no address to write, and
   -- such an export is refused until the ROM re-imports.
-  gold = "rom-cache-v11:",
-  silver = "rom-cache-v11:",
-  crystal = "rom-cache-v11-crystal4:",
+  gold = "rom-cache-v12:",
+  silver = "rom-cache-v12:",
+  crystal = "rom-cache-v12-crystal4:",
+  -- engine/overworld/map_sprites.asm:181
+  yellow = "rom-cache-v11-yellow1:",
 }
 CacheContract.MARKER_PATH = "rom-cache.complete"
 
@@ -167,8 +169,8 @@ local SEMANTIC_MODULES = {
   },
   [2] = {
     "pokemon", "moves", "items", "type_chart", "audio", "font", "maps",
-    "tilesets", "text", "trainers", "encounters", "sprites", "palettes",
-    "icons", "battle_anims", "constants", "landmarks",
+    "tilesets", "text", "rom_text", "trainers", "encounters", "sprites",
+    "palettes", "icons", "battle_anims", "constants", "landmarks",
   },
 }
 

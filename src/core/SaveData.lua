@@ -322,6 +322,7 @@ function SaveData.defaultOptions()
     screenPos = "center",
     -- hard render frame-rate cap; render-only pacing (issue #88, FrameCap.lua)
     fpsCap = 60,
+    logicClock = "60",
     -- graphics performance tier: auto | high | balanced | low.  "auto"
     -- picks a default from the device (ARM handhelds/phones drop the heavy
     -- extras); scales TILT / survey ZOOM / FPS but never game logic.  See
@@ -483,6 +484,27 @@ end
 -- lingering tmp/bak there is harmless
 local function remove(fs, name)
   if fs.remove then fs.remove(name) end
+end
+
+-- Options decode cache.  Immediate-mode UI polls loadOptions once per frame
+-- (the launcher's skins tab and SkinStudio's library both re-read it just to
+-- learn the active skin), and every call was a getInfo+read+decode of the
+-- whole options file against the save volume.  The file can only change
+-- through saveOptions (or loadOptions' own recovery write below), so a
+-- per-filesystem revision counter is enough: saveOptions bumps it and
+-- loadOptions re-reads only when it moved.  Callers still receive a deep
+-- copy per call, never the cached tree -- the no-aliasing contract above is
+-- unchanged, and the cart overlay keeps applying per call because the
+-- active cart can move between reads without any write.
+local optionsCache = setmetatable({}, { __mode = "k" })
+
+local function optionsCacheSlot(fs)
+  local slot = optionsCache[fs]
+  if not slot then
+    slot = { rev = 0, atRev = -1, tree = nil }
+    optionsCache[fs] = slot
+  end
+  return slot
 end
 
 -- ------- options
@@ -653,40 +675,52 @@ function SaveData.saveOptions(opts, fs)
   fs.write(OPTIONS_BACKUP_FILENAME, encoded)
   -- the staged witness has served its purpose; the main file is verified
   remove(fs, OPTIONS_TMP_FILENAME)
+  -- the cached decode no longer matches the bytes on disk
+  local slot = optionsCacheSlot(fs)
+  slot.rev = slot.rev + 1
   -- hand back the cart's view, matching what loadOptions would answer
   return applyCartOverlay(opts)
 end
 
 function SaveData.loadOptions(fs)
   fs = persistFs(fs)
-  local data, err = readTable(fs, OPTIONS_FILENAME)
-  if not data then
-    if fs.getInfo(OPTIONS_FILENAME) then
-      Logger.error("options load failed: %s", tostring(err))
-    end
-    -- #828: answering defaults here is what "closing the game reset all my
-    -- settings" looked like -- one interrupted whole-file rewrite and every
-    -- preference, the mod enable-state and the slot registry were gone.
-    -- Promote the staged copy, then the rolled-aside backup, exactly as
-    -- SaveData.load does for progress, and heal the main file from whichever
-    -- one parsed.
-    local recovered = readTable(fs, OPTIONS_TMP_FILENAME)
-    local from = "tmp"
-    if not recovered then
-      recovered = readTable(fs, OPTIONS_BACKUP_FILENAME)
-      from = "bak"
-    end
-    if recovered then
-      Logger.warn("options.lua %s; recovered from %s copy",
-        fs.getInfo(OPTIONS_FILENAME) and "corrupt" or "missing", from)
-      if fs.write then
-        fs.write(OPTIONS_FILENAME, SaveSerializer.encode(recovered))
+  local slot = optionsCacheSlot(fs)
+  if slot.atRev ~= slot.rev then
+    local data, err = readTable(fs, OPTIONS_FILENAME)
+    if not data then
+      if fs.getInfo(OPTIONS_FILENAME) then
+        Logger.error("options load failed: %s", tostring(err))
       end
-      return applyCartOverlay(SaveData.mergeOptions(recovered))
+      -- #828: answering defaults here is what "closing the game reset all my
+      -- settings" looked like -- one interrupted whole-file rewrite and every
+      -- preference, the mod enable-state and the slot registry were gone.
+      -- Promote the staged copy, then the rolled-aside backup, exactly as
+      -- SaveData.load does for progress, and heal the main file from whichever
+      -- one parsed.
+      local recovered = readTable(fs, OPTIONS_TMP_FILENAME)
+      local from = "tmp"
+      if not recovered then
+        recovered = readTable(fs, OPTIONS_BACKUP_FILENAME)
+        from = "bak"
+      end
+      if recovered then
+        Logger.warn("options.lua %s; recovered from %s copy",
+          fs.getInfo(OPTIONS_FILENAME) and "corrupt" or "missing", from)
+        if fs.write then
+          fs.write(OPTIONS_FILENAME, SaveSerializer.encode(recovered))
+        end
+        slot.tree = SaveData.mergeOptions(recovered)
+      else
+        slot.tree = SaveData.defaultOptions()
+      end
+    else
+      slot.tree = SaveData.mergeOptions(data)
     end
-    return SaveData.defaultOptions()
+    slot.atRev = slot.rev
   end
-  return applyCartOverlay(SaveData.mergeOptions(data))
+  -- A copy, not the cache: callers mutate what they load (then re-save), and
+  -- applyCartOverlay writes the cart's keys into whatever it is handed.
+  return applyCartOverlay(deepCopy(slot.tree))
 end
 
 -- ------- per-game mod enablement
@@ -1189,11 +1223,10 @@ function SaveData.listSlots(version)
   return listSlotsIn(version)
 end
 
-function SaveData.readSlotSource(version, slotId, injectedFs)
-  version = version or GameVersion.get()
-  if not knownVersion(version) or type(slotId) ~= "string" then return nil end
+local function readSlotSourceIn(key, slotId, injectedFs)
+  if type(slotId) ~= "string" then return nil end
   local fs = persistFs(injectedFs)
-  local main, bak, tmp = slotNames(version, slotId)
+  local main, bak, tmp = slotNames(key, slotId)
   for _, name in ipairs({ main, tmp, bak }) do
     if fs.getInfo(name) then
       local body = fs.read(name)
@@ -1203,6 +1236,12 @@ function SaveData.readSlotSource(version, slotId, injectedFs)
     end
   end
   return nil
+end
+
+function SaveData.readSlotSource(version, slotId, injectedFs)
+  version = version or GameVersion.get()
+  if not knownVersion(version) then return nil end
+  return readSlotSourceIn(version, slotId, injectedFs)
 end
 
 -- Give a registered slot a custom label (#205: "a way to name save slots so
@@ -1383,6 +1422,12 @@ local function deleteSlotIn(key, slotId)
     reg.active = reg.list[1]  -- may be nil when the list is now empty
   end
   putRegistry(opts, key, reg)
+  local ids = type(opts.playthroughIds) == "table" and opts.playthroughIds[key]
+  if type(ids) == "table" then
+    ids[slotId] = nil
+    if next(ids) == nil then opts.playthroughIds[key] = nil end
+    if next(opts.playthroughIds) == nil then opts.playthroughIds = nil end
+  end
   SaveData.saveOptions(opts, fs)
   slotsChecked[key] = true
   activeSlotCache[key] = reg.active or false
@@ -1395,13 +1440,26 @@ function SaveData.deleteSlot(version, slotId)
   return deleteSlotIn(version, slotId)
 end
 
--- Test seam: drop the process-global slot cache (and the active cart) so a
--- suite can exercise migration/resolution against a freshly injected
--- filesystem.  Unused by the game, which resolves each scope exactly once per
--- boot.
-function SaveData.resetSlotState()
+-- Drop the process-global "have we resolved slots for this scope" cache so
+-- the next listSlots/saveNames re-reads disk (and can migrate a flat legacy
+-- SAVE into slot1).  Pass a version id or cart scope key to invalidate just
+-- that list; nil clears every scope (test seam / resetSlotState).
+-- Does not touch carts, seals, options.lua, or any other launcher setup.
+function SaveData.refreshSlotResolution(scope)
+  if scope ~= nil then
+    if type(scope) ~= "string" or scope == "" then return end
+    activeSlotCache[scope] = nil
+    slotsChecked[scope] = nil
+    return
+  end
   for k in pairs(activeSlotCache) do activeSlotCache[k] = nil end
   for k in pairs(slotsChecked) do slotsChecked[k] = nil end
+end
+
+-- Test seam: full process-global reset (slot resolution + cart + seal) so a
+-- suite can exercise migration against a freshly injected filesystem.
+function SaveData.resetSlotState()
+  SaveData.refreshSlotResolution()
   freshPlaythrough = nil
   activeCart, activeCartHash = nil, nil
   sealBroken = false
@@ -1501,6 +1559,26 @@ function SaveData.listCartSlots(cartId)
   return listSlotsIn(key)
 end
 
+function SaveData.cartsWithSlots(injectedFs)
+  local opts = SaveData.loadOptions(injectedFs)
+  local root = type(opts.cartSlots) == "table" and opts.cartSlots or {}
+  local out = {}
+  for id, reg in pairs(root) do
+    if cartKey(id) and type(reg) == "table" and type(reg.list) == "table"
+        and #reg.list > 0 then
+      out[#out + 1] = id
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+function SaveData.readCartSlotSource(cartId, slotId, injectedFs)
+  local key = cartKey(cartId or activeCart)
+  if not key then return nil end
+  return readSlotSourceIn(key, slotId, injectedFs)
+end
+
 function SaveData.createCartSlot(cartId)
   local key = cartKey(cartId or activeCart)
   if not key then return nil end
@@ -1537,9 +1615,13 @@ function SaveData.writeCartSlot(cartId, slotId, saveTable)
   if not key then return false, "unknown cart" end
   local ok, err = writeSlotIn(key, slotId, saveTable)
   if not ok then return ok, err end
-  local hash = type(saveTable.meta) == "table" and saveTable.meta.cartHash or nil
+  local meta = type(saveTable.meta) == "table" and saveTable.meta or nil
+  local hash = meta and meta.cartHash or nil
   if type(hash) == "string" and hash ~= "" then
     SaveData.setSlotCartHash(cartId or activeCart, slotId, hash)
+  end
+  if meta and meta.sealBroken == true then
+    SaveData.markSlotSealBroken(cartId or activeCart, slotId)
   end
   return true
 end
@@ -1665,10 +1747,7 @@ local function playthroughScope(version, injectedFs)
 end
 
 local function rememberPlaythroughId(save, opts, injectedFs)
-  local meta = type(save) == "table" and save.meta
-  local id = type(meta) == "table" and meta.playthroughId
-  if type(id) ~= "string" or id == "" then return opts, false end
-  local version = save.version or GameVersion.get()
+  local version = type(save) == "table" and save.version or GameVersion.get()
   local scope, key = playthroughScope(version, injectedFs)
   local persisted = SaveData.loadOptions(injectedFs)
   if opts then
@@ -1681,6 +1760,16 @@ local function rememberPlaythroughId(save, opts, injectedFs)
     opts.playthroughIds = deepCopy(persisted.playthroughIds)
   else
     opts = persisted
+  end
+  local meta = type(save) == "table" and save.meta
+  local id = type(meta) == "table" and meta.playthroughId
+  if type(id) ~= "string" or id == "" then
+    local byVersion = opts.playthroughIds and opts.playthroughIds[key]
+    local mapped = byVersion and byVersion[scope]
+    if type(meta) == "table" and type(mapped) == "string" and mapped ~= "" then
+      meta.playthroughId = mapped
+    end
+    return opts, false
   end
   opts.playthroughIds = opts.playthroughIds or {}
   opts.playthroughIds[key] = opts.playthroughIds[key] or {}
@@ -1727,6 +1816,36 @@ function SaveData.ensurePlaythroughId(save, injectedFs)
   end
   save.meta.playthroughId = id
   return id
+end
+
+local function slotPlaythroughIdIn(key, slotId, save, injectedFs)
+  if type(slotId) ~= "string" or slotId == "" then return nil end
+  local meta = type(save) == "table" and save.meta
+  local stamped = type(meta) == "table" and meta.playthroughId
+  local opts = SaveData.loadOptions(injectedFs)
+  local byScope = opts.playthroughIds and opts.playthroughIds[key]
+  local mapped = byScope and byScope[slotId]
+  local id = (type(stamped) == "string" and stamped ~= "") and stamped or mapped
+  if type(id) ~= "string" or id == "" then id = SaveData.newPlaythroughId() end
+  if mapped ~= id then
+    opts.playthroughIds = opts.playthroughIds or {}
+    opts.playthroughIds[key] = opts.playthroughIds[key] or {}
+    opts.playthroughIds[key][slotId] = id
+    SaveData.saveOptions(opts, injectedFs)
+  end
+  return id
+end
+
+function SaveData.slotPlaythroughId(version, slotId, save, injectedFs)
+  version = version or GameVersion.get()
+  if not knownVersion(version) then return nil end
+  return slotPlaythroughIdIn(version, slotId, save, injectedFs)
+end
+
+function SaveData.cartSlotPlaythroughId(cartId, slotId, save, injectedFs)
+  local key = cartKey(cartId or activeCart)
+  if not key then return nil end
+  return slotPlaythroughIdIn(key, slotId, save, injectedFs)
 end
 
 -- Resolve the already-selected playthrough without changing the supplied save
@@ -1818,6 +1937,7 @@ function SaveData.buildMeta(mods, previous, sessionStart)
     savedAt = savedAt,
     sessionStart = started,
     playthroughId = type(previous) == "table" and previous.playthroughId or nil,
+    cartId = type(previous) == "table" and previous.cartId or nil,
     cartHash = type(previous) == "table" and previous.cartHash or nil,
     sealBroken = (type(previous) == "table" and previous.sealBroken == true) or nil,
     mods = list,
@@ -2026,6 +2146,12 @@ end)
 
 -- ------- write
 
+function SaveData.saveLiveOptions(data)
+  if type(data) ~= "table" or type(data.options) ~= "table" then return nil end
+  data.options = rememberPlaythroughId(data, data.options)
+  return SaveData.saveOptions(data.options)
+end
+
 -- Game progress only; options are written separately via saveOptions.
 -- If `data.options` is present it is also flushed to options.lua so an
 -- F1 / in-game save keeps the live settings in sync, then stripped from
@@ -2036,22 +2162,18 @@ function SaveData.save(data, mods)
   -- write to the file matching this save's own version, not just the active
   -- one, so Blue/Yellow playthroughs land in save_blue.lua / save_yellow.lua
   local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(data.version)
-  if data.options then
-    local opts = data.options
-    if data.meta and data.meta.playthroughId then
-      opts = rememberPlaythroughId(data, data.options)
-    end
-    data.options = opts
-    SaveData.saveOptions(opts)
-  elseif data.meta and data.meta.playthroughId then
-    local opts, changed = rememberPlaythroughId(data)
-    if changed then SaveData.saveOptions(opts) end
-  end
   if mods ~= nil or data.meta == nil then
     data.meta = SaveData.buildMeta(mods, data.meta)
   end
-  if activeCart and activeCartHash and type(data.meta) == "table" then
-    data.meta.cartHash = activeCartHash
+  if data.options then
+    SaveData.saveLiveOptions(data)
+  else
+    local opts, changed = rememberPlaythroughId(data)
+    if changed then SaveData.saveOptions(opts) end
+  end
+  if activeCart and type(data.meta) == "table" then
+    data.meta.cartId = activeCart
+    if activeCartHash then data.meta.cartHash = activeCartHash end
   end
   if sealBroken and type(data.meta) == "table" then
     data.meta.sealBroken = true
@@ -2122,6 +2244,10 @@ function SaveData.load(version)
   end
   SaveData.runMigrations(data)
   data.options = SaveData.loadOptions()
+  local mapped = SaveData.selectedPlaythroughId(data)
+  if type(mapped) == "string" and mapped ~= "" then
+    data.meta.playthroughId = mapped
+  end
   Logger.info("loaded save")
   return data, recovered
 end

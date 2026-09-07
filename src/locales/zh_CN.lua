@@ -238,11 +238,19 @@ local catalog = {
   ["add-ons"] = "附加内容",
   ["Return to"] = "返回",
   ["the title"] = "标题画面",
+  ["Return to the\ntitle screen?"] = "返回标题\n画面吗？",
+  ["CAUGHT"] = "捕获",
+  ["LEVEL"] = "等级",
+  ["BALLS:"] = "球数：",
+  ["Would you like to\nend the Contest?"] = "要结束\n捕虫大会吗？",
 
   -- Gold/Silver screens implemented by the engine rather than ROM scripts.
   ["Bzzzzt! You must"] = "滋——！必须",
   ["have a #MON to"] = "携带一只宝可梦",
   ["use this!"] = "才能使用！",
+  ["Bzzzzt! You must\nhave a #MON to\vuse this!"] =
+    "滋——！必须\n携带一只宝可梦\v才能使用！",
+  ["{PLAYER} turned on\nthe PC."] = "{PLAYER}打开了\n电脑。",
   ["%s turned on"] = "%s打开了",
   ["the PC."] = "电脑。",
   ["%s's PC"] = "%s的电脑",
@@ -250,13 +258,23 @@ local catalog = {
   ["HALL OF FAME"] = "名人堂",
   ["The link to PROF."] = "与大木博士的",
   ["OAK's PC closed."] = "电脑连接已关闭。",
+  ["The link to PROF.\nOAK's PC closed."] =
+    "与大木博士的\n电脑连接已关闭。",
+  ["…\nLink closed…"] = "……\n连接关闭……",
   ["Link closed…"] = "连接关闭……",
+  ["BILL's PC\naccessed.\n\n#MON Storage\nSystem opened."] =
+    "连接到\n正辉的电脑。\n\n宝可梦寄存\n系统已启动。",
   ["accessed."] = "已连接。",
   ["#MON Storage"] = "宝可梦寄存",
   ["System opened."] = "系统已启动。",
+  ["Accessed own PC.\n\nItem Storage\nSystem opened."] =
+    "连接到自己的电脑。\n\n道具寄存\n系统已启动。",
   ["Accessed own PC."] = "连接到自己的电脑。",
   ["Item Storage"] = "道具寄存",
+  ["PROF.OAK's PC\naccessed.\n\n#DEX Rating\nSystem opened."] =
+    "连接到\n大木博士的电脑。\n\n图鉴评价\n系统已启动。",
   ["#DEX Rating"] = "图鉴评价",
+  ["Want to get your\n#DEX rated?"] = "要查看图鉴的\n评价吗？",
   ["Want to get your"] = "要查看图鉴的",
   ["#DEX rated?"] = "评价吗？",
   ["Access whose PC?"] = "连接谁的电脑？",
@@ -304,12 +322,17 @@ local catalog = {
   ["MR.MIME    3333"] = "魔墙人偶  3333",
   ["EEVEE      6666"] = "伊布      6666",
   ["PORYGON    9999"] = "多边兽    9999",
+  ["Welcome!\fWe exchange your\ncoins for fabulous\vprizes!"] =
+    "欢迎！\f我们可以用你的\n代币兑换超棒的\v奖品！",
+  ["Welcome!\fWe exchange your\ngame coins for\vfabulous prizes!"] =
+    "欢迎！\f我们可以用你的\n游戏代币兑换\v超棒的奖品！",
 
   ["The trainer blocked the BALL!"] = "训练家挡下了精灵球！",
   ["Don't be a thief!"] = "不能偷别人的宝可梦！",
   ["Wild %s appeared!"] = "野生的%s出现了！",
   ["%s wants to battle!"] = "%s发起了挑战！",
   ["%s sent out %s!"] = "%s派出了%s！",
+  ["%s\nsent out\v%s!"] = "%s\n派出了\v%s！",
   ["Go! %s!"] = "去吧！%s！",
   ["Gotcha! %s was caught!"] = "太好了！抓到%s了！",
   ["%s's data was newly added to the #DEX."] =

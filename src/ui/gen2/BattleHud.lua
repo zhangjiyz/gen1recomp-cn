@@ -128,8 +128,9 @@ function BattleHud:drawTile(key, firstTile, tile, tx, ty, colors, mirror)
       G.draw(image, self:quad(image, index), tx * 8, ty * 8)
     end
   end
-  if colors and GbcPalette.available() then
-    GbcPalette.with(colors, body)
+  -- home/fade.asm:35 (RotateThreePalettesRight)
+  if GbcPalette.available() then
+    GbcPalette.with(colors or GbcPalette.DMG_SHADES, body)
   else
     G.setColor(0, 0, 0, 1)
     body()
@@ -145,8 +146,8 @@ end
 -- HUD's bar minus the "HP:" prefix -- same tiles, same HPBarPals colour, same
 -- one-pixel-at-a-time fill.  Sharing this method is what keeps the two screens
 -- from ever disagreeing about how full a bar looks.
-function BattleHud:drawBar(hp, maxHp, tx, ty, zero)
-  local pixels = HpBar.pixels(hp, maxHp)
+function BattleHud:drawBar(hp, maxHp, tx, ty, zero, pixels)
+  pixels = pixels or HpBar.pixels(hp, maxHp)
   local colors = self:barColors(HpBar.palette(pixels), zero)
   for cell = 0, HpBar.LENGTH_TILES - 1 do
     local remaining = pixels - cell * 8
@@ -162,8 +163,8 @@ end
 -- frame's vertical stub there.
 -- `zero` overrides colour 0: the stats screen puts the page tint there
 -- (engine/gfx/color.asm:386-390).  #1693
-function BattleHud:drawHpBar(hp, maxHp, tx, ty, zero)
-  local pixels = HpBar.pixels(hp, maxHp)
+function BattleHud:drawHpBar(hp, maxHp, tx, ty, zero, pixels)
+  pixels = pixels or HpBar.pixels(hp, maxHp)
   local colors = self:barColors(HpBar.palette(pixels), zero)
   -- The "HP:" badge sits inside the bar's own attrmap region, so it wears the
   -- HP palette too: its background is HPBarPals' light colour (the cream the
@@ -172,7 +173,7 @@ function BattleHud:drawHpBar(hp, maxHp, tx, ty, zero)
   self:drawTile("hpBar", FIRST_BATTLE_EXTRA, TILE_HP_LABEL, tx, ty, colors)
   self:drawTile("hpBar", FIRST_BATTLE_EXTRA, TILE_HP_LABEL + 1, tx + 1, ty,
     colors)
-  self:drawBar(hp, maxHp, tx + 2, ty, zero)
+  self:drawBar(hp, maxHp, tx + 2, ty, zero, pixels)
   self:drawTile("hpBar", FIRST_BATTLE_EXTRA, TILE_BAR_END,
     tx + 2 + HpBar.LENGTH_TILES, ty, colors)
   return tx + 3 + HpBar.LENGTH_TILES
@@ -233,6 +234,23 @@ function BattleHud:drawExpBar(fraction, tx, ty, zero)
       self:drawTile("hpBar", FIRST_BATTLE_EXTRA, TILE_EXP_EMPTY, column, ty,
         colors)
     end
+  end
+  return true
+end
+
+-- than on the tile grid (../pokecrystal/engine/sprite_anims/core.asm:547-608).
+function BattleHud:drawExpBarEnd(x, y, colors)
+  local image = self:image("expBarEnd")
+  if not image then return false end
+  local G = love.graphics
+  G.setColor(1, 1, 1, 1)
+  local function body() G.draw(image, x, y) end
+  if colors and GbcPalette.available() then
+    GbcPalette.with(colors, body)
+  else
+    G.setColor(0, 0, 0, 1)
+    body()
+    G.setColor(1, 1, 1, 1)
   end
   return true
 end

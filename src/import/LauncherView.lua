@@ -249,6 +249,10 @@ end
 
 function LauncherView.touchpressed(imp, id, x, y)
   if not imp._flex then return end
+  -- Leftover finger from EXIT GAME / Close editor: do not start a tap.
+  if imp._ignoreTouch and imp._ignoreTouch[tostring(id)] then
+    return
+  end
   imp._touchAt = imp._touchAt or {}
   imp._touchAt[tostring(id)] = {
     x = x, y = y, started = love.timer.getTime(),
@@ -284,8 +288,21 @@ end
 -- A tap dispatches on RELEASE (not press) so a drag can disqualify it.
 function LauncherView.touchreleased(imp, id, x, y)
   if not imp._flex then return end
-  local start = imp._touchAt and imp._touchAt[tostring(id)]
-  if imp._touchAt then imp._touchAt[tostring(id)] = nil end
+  local tid = tostring(id)
+  if imp._ignoreTouch and imp._ignoreTouch[tid] then
+    imp._ignoreTouch[tid] = nil
+    if imp._touchAt then imp._touchAt[tid] = nil end
+    imp._suppressMouseUntil = love.timer.getTime() + ACT_DEDUP
+    return
+  end
+  local start = imp._touchAt and imp._touchAt[tid]
+  if imp._touchAt then imp._touchAt[tid] = nil end
+  -- A release with no matching press is leftover from the previous host
+  -- (game / save editor), not a launcher tap (#2079).
+  if not start then
+    imp._suppressMouseUntil = love.timer.getTime() + ACT_DEDUP
+    return
+  end
   if start and (start.dragged or start.longPressed) then
     -- Suppress the mouse click SDL will synthesize for this same gesture.
     imp._suppressClickUntil = love.timer.getTime() + ACT_DEDUP
@@ -586,6 +603,65 @@ local function cartQuad(project, x, y, w, h, z)
   }
 end
 
+local OUTLINE_DIRS = {
+  { 1, 0 }, { 0.7071, 0.7071 }, { 0, 1 }, { -0.7071, 0.7071 },
+  { -1, 0 }, { -0.7071, -0.7071 }, { 0, -1 }, { 0.7071, -0.7071 },
+}
+
+local function hullCross(o, a, b)
+  return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1])
+end
+
+local function cartHull(quads)
+  local pts = {}
+  for i = 1, #quads do
+    local q = quads[i]
+    for j = 1, #q do pts[#pts + 1] = q[j] end
+  end
+  if #pts < 3 then return nil end
+  table.sort(pts, function(a, b)
+    if a[1] == b[1] then return a[2] < b[2] end
+    return a[1] < b[1]
+  end)
+  local hull, k = {}, 0
+  for i = 1, #pts do
+    while k >= 2 and hullCross(hull[k - 1], hull[k], pts[i]) <= 0 do k = k - 1 end
+    k = k + 1
+    hull[k] = pts[i]
+  end
+  local lower = k + 1
+  for i = #pts - 1, 1, -1 do
+    while k >= lower and hullCross(hull[k - 1], hull[k], pts[i]) <= 0 do
+      k = k - 1
+    end
+    k = k + 1
+    hull[k] = pts[i]
+  end
+  if k < 4 then return nil end
+  local flat = {}
+  for i = 1, k - 1 do
+    flat[#flat + 1], flat[#flat + 2] = hull[i][1], hull[i][2]
+  end
+  return flat
+end
+
+local function cartOutline(groups, thickness)
+  if not (love.graphics.polygon and love.graphics.push) then return end
+  local hulls = {}
+  for i = 1, #groups do
+    hulls[#hulls + 1] = cartHull(groups[i])
+  end
+  if #hulls == 0 then return end
+  Theme.col(PAL.lineStrong, 1)
+  for i = 1, #OUTLINE_DIRS do
+    local d = OUTLINE_DIRS[i]
+    love.graphics.push()
+    love.graphics.translate(d[1] * thickness, d[2] * thickness)
+    for j = 1, #hulls do love.graphics.polygon("fill", hulls[j]) end
+    love.graphics.pop()
+  end
+end
+
 local function cartFacing(points)
   local area = 0
   for i = 1, #points do
@@ -634,21 +710,31 @@ local function cartLabelMesh(imp, key, label, points)
 end
 
 local CART_HOVER_SHADER = [[
+#if defined(GL_ES) && defined(PIXEL) && !defined(GL_FRAGMENT_PRECISION_HIGH)
+#define CART_HP mediump
+#else
+#define CART_HP highp
+#endif
+
+varying CART_HP vec2 cart_screen_pos;
+
+#ifdef VERTEX
 extern vec2 mouse_screen_pos;
 extern float hovering;
 extern float screen_scale;
 
-#ifdef VERTEX
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  vec4 clip = transform_projection * vertex_position;
+  cart_screen_pos = (clip.xy / clip.w * 0.5 + 0.5) * love_ScreenSize.xy;
   if (hovering <= 0.) {
-    return transform_projection * vertex_position;
+    return clip;
   }
   float mid_dist = length(vertex_position.xy - 0.5 * love_ScreenSize.xy)
     / length(love_ScreenSize.xy);
   vec2 mouse_offset = (vertex_position.xy - mouse_screen_pos.xy) / screen_scale;
   float scale = 0.2 * (-0.03 - 0.3 * max(0., 0.3 - mid_dist))
     * hovering * (length(mouse_offset) * length(mouse_offset)) / (2. - mid_dist);
-  return transform_projection * vertex_position + vec4(0.0, 0.0, 0.0, scale);
+  return clip + vec4(0.0, 0.0, 0.0, scale);
 }
 #endif
 
@@ -656,28 +742,34 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
 // finish: 0 plain, 1 sparkle (glitter suspended in the shell), 2 holographic
 // label sweep.  Both are ours, not ported from anywhere.
 extern float finish;
-extern float finish_time;
-extern float finish_spin;
+extern float finish_twinkle;
+extern float finish_band;
+extern float finish_wave;
 
-float sparkHash(vec2 p) {
-  return fract(sin(dot(p, vec2(41.7321, 289.113))) * 43758.5453);
+const float CART_TAU = 6.2831853;
+
+CART_HP float sparkHash(CART_HP vec2 p) {
+  CART_HP float h = fract(p.x * 0.1031 + p.y * 0.3711 + 0.137);
+  h = fract(h * (h + 47.13));
+  h = fract(h * (h + 19.77));
+  return h;
 }
 
 // Flecks live on a jittered lattice so they read as suspended grains rather
 // than a regular grid, and each one twinkles on its own phase.
-vec3 sparkle(vec2 screen_coords) {
-  vec2 cell = screen_coords / 19.0;
-  vec2 id = floor(cell);
-  vec2 f = fract(cell);
+vec3 sparkle(CART_HP vec2 sc) {
+  CART_HP vec2 cell = sc / 19.0;
+  CART_HP vec2 id = mod(floor(cell), 512.0);
+  CART_HP vec2 f = fract(cell);
   float peak = 0.0;
   for (int oy = -1; oy <= 1; oy++) {
     for (int ox = -1; ox <= 1; ox++) {
-      vec2 n = vec2(float(ox), float(oy));
-      vec2 h = vec2(sparkHash(id + n), sparkHash(id + n + 17.0));
-      float phase = sparkHash(id + n + 71.0) * 6.2831;
-      float tw = sin(finish_time * 2.6 + phase + finish_spin * 3.0) * 0.5 + 0.5;
-      float d = length(f - (n + h));
-      peak = max(peak, smoothstep(0.13, 0.0, d) * pow(tw, 16.0));
+      CART_HP vec2 n = vec2(float(ox), float(oy));
+      CART_HP vec2 h = vec2(sparkHash(id + n), sparkHash(id + n + 17.0));
+      CART_HP float phase = sparkHash(id + n + 71.0) * CART_TAU;
+      float tw = sin(finish_twinkle + phase) * 0.5 + 0.5;
+      CART_HP float d = length(f - (n + h));
+      peak = max(peak, (1.0 - smoothstep(0.0, 0.13, d)) * pow(max(tw, 0.0), 16.0));
     }
   }
   return vec3(peak);
@@ -686,9 +778,9 @@ vec3 sparkle(vec2 screen_coords) {
 // Angle-dependent spectral sweep: a diagonal band whose hue walks with view
 // angle, so tilting the cart moves the rainbow the way real foil does.
 vec3 holo(vec2 uv) {
-  float band = uv.x * 0.9 + uv.y * 0.6 + finish_spin * 0.55 + finish_time * 0.06;
-  vec3 hue = 0.5 + 0.5 * cos(6.2831 * (band + vec3(0.0, 0.33, 0.67)));
-  float interference = 0.5 + 0.5 * sin((uv.x - uv.y) * 62.0 + finish_time * 0.9);
+  float band = uv.x * 0.9 + uv.y * 0.6 + finish_band;
+  vec3 hue = 0.5 + 0.5 * cos(CART_TAU * (band + vec3(0.0, 0.33, 0.67)));
+  float interference = 0.5 + 0.5 * sin((uv.x - uv.y) * 62.0 + finish_wave);
   return hue * (0.55 + 0.45 * interference);
 }
 
@@ -700,12 +792,20 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords) {
     px.rgb = mix(px.rgb, px.rgb * (0.65 + sheen), 0.30 * (0.35 + 0.65 * lum));
     px.rgb += sheen * 0.05 * px.a;
   } else if (finish > 0.5) {
-    px.rgb += sparkle(screen_coords) * 0.70 * px.a;
+    px.rgb += sparkle(cart_screen_pos) * 0.70 * px.a;
   }
   return px;
 }
 #endif
 ]]
+
+local cartShaderError = nil
+
+local function cartShaderIsEs()
+  if not (love.system and love.system.getOS) then return false end
+  local osName = love.system.getOS()
+  return osName == "Android" or osName == "iOS"
+end
 
 local function cartHoverShader(imp)
   if imp._cartHoverShader ~= nil then
@@ -715,32 +815,56 @@ local function cartHoverShader(imp)
     imp._cartHoverShader = false
     return nil
   end
-  local ok, sh = pcall(love.graphics.newShader, CART_HOVER_SHADER)
+  local ok, err = true, nil
+  if love.graphics.validateShader then
+    ok, err = love.graphics.validateShader(cartShaderIsEs(), CART_HOVER_SHADER)
+  end
+  local sh
+  if ok then
+    ok, sh = pcall(love.graphics.newShader, CART_HOVER_SHADER)
+    if not ok then err, sh = sh, nil end
+  end
+  if not ok then
+    cartShaderError = tostring(err)
+    imp._cartShaderError = cartShaderError
+    require("src.core.Logger").error("cart shader: %s", cartShaderError)
+  end
   imp._cartHoverShader = ok and sh or false
   return imp._cartHoverShader or nil
 end
 
 local function cartSendHover(shader, mx, my, hovering, screenScale)
   if not shader or not shader.send then return false end
-  local ok = pcall(function()
-    shader:send("mouse_screen_pos", { mx, my })
-    shader:send("hovering", hovering)
-    shader:send("screen_scale", screenScale)
-  end)
+  local ok = pcall(shader.send, shader, "mouse_screen_pos", { mx, my })
+  ok = pcall(shader.send, shader, "hovering", hovering) and ok
+  ok = pcall(shader.send, shader, "screen_scale", screenScale) and ok
   return ok
 end
 
 -- FINISH_* match the shader's `finish` uniform.
 local FINISH_NONE, FINISH_SPARKLE, FINISH_HOLO = 0, 1, 2
 
+local function cartFinishPhases(spin)
+  local t = Kit.time or 0
+  spin = spin or 0
+  return (t * 2.6 + spin * 3.0) % TAU,
+    (t * 0.06 + spin * 0.55) % 1.0,
+    (t * 0.9) % TAU
+end
+
 local function cartSendFinish(shader, mode, spin)
   if not shader or not shader.send then return end
-  pcall(function()
-    shader:send("finish", mode)
-    shader:send("finish_time", Kit.time or 0)
-    shader:send("finish_spin", spin or 0)
-  end)
+  local twinkle, band, wave = cartFinishPhases(spin)
+  pcall(shader.send, shader, "finish", mode)
+  pcall(shader.send, shader, "finish_twinkle", twinkle)
+  pcall(shader.send, shader, "finish_band", band)
+  pcall(shader.send, shader, "finish_wave", wave)
 end
+
+LauncherView.CART_HOVER_SHADER = CART_HOVER_SHADER
+LauncherView.cartShaderError = function() return cartShaderError end
+LauncherView.cartFinishPhases = cartFinishPhases
+LauncherView.cartHull = cartHull
 
 local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, version)
   local state = cartridgeState(imp, skin.cacheKey)
@@ -842,10 +966,6 @@ local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, ver
   local pressedScale = (active and 0.965 or 1) * state.visScale
 
   Kit._audit("control", x, y, w, h, key)
-  if focused then
-    Theme.strokeRounded(x - 3, y - 3, w + 6, h + 6, PAL.lineStrong,
-      Theme.A.focus, 2, Theme.cardRadius() + 2)
-  end
 
   local halfW, halfH = w / 2, h / 2
   local depth = math.max(6, w * 0.10)
@@ -865,11 +985,6 @@ local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, ver
   love.graphics.translate(cx, cy)
   love.graphics.rotate(juiceR * 2)
   love.graphics.translate(-cx, -cy)
-  if useHover then love.graphics.setShader(shader) end
-  if useHover then
-    cartSendFinish(shader, skin.sparkle and FINISH_SPARKLE or FINISH_NONE,
-      state.spin)
-  end
 
   local capH = h * 3 / 65
   local mainTop = -halfH + capH
@@ -880,6 +995,14 @@ local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, ver
     capRight + halfW, capH, depth)
   local capBack = cartQuad(project, -halfW, -halfH,
     capRight + halfW, capH, -depth)
+  if shader then love.graphics.setShader(shader) end
+  if focused then
+    cartSendFinish(shader, FINISH_NONE, state.spin)
+    cartOutline({ { mainFront, mainBack }, { capFront, capBack } },
+      math.max(2, math.min(w, h) * 0.012))
+  end
+  cartSendFinish(shader, skin.sparkle and FINISH_SPARKLE or FINISH_NONE,
+    state.spin)
   local shell = skin.color
   local side = { math.floor(shell[1] * 0.54), math.floor(shell[2] * 0.54),
     math.floor(shell[3] * 0.54) }
@@ -984,7 +1107,7 @@ local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, ver
     local labelPoints = cartQuad(project, labelX, labelY, labelW, labelH, faceZ + 1.2)
     local label = cartridgeLabel(imp, skin.cacheKey, skin.labelPath, skin.cartId)
     local mesh = label and cartLabelMesh(imp, skin.cacheKey, label, labelPoints)
-    if useHover and skin.holo then
+    if skin.holo then
       cartSendFinish(shader, FINISH_HOLO, state.spin)
     end
     if mesh then
@@ -995,7 +1118,7 @@ local function cartridgeButton(imp, x, y, w, h, key, skin, gameName, action, ver
       love.graphics.draw(label.image, labelPoints[1][1], labelPoints[1][2],
         0, artScale, artScale)
     end
-    if useHover and skin.holo then
+    if skin.holo then
       cartSendFinish(shader, skin.sparkle and FINISH_SPARKLE or FINISH_NONE,
         state.spin)
     end
@@ -2438,13 +2561,22 @@ local function modGameCheckbox(x, y, size, checked, game, id, enabled)
   return enabled and (Kit.press(x, y, size, size) or Kit._activateId == id)
 end
 
+local function cartsWithUpdates(imp)
+  if not imp._updateAllCartRows then return {} end
+  local ok, rows = pcall(imp._updateAllCartRows, imp)
+  return (ok and type(rows) == "table") and rows or {}
+end
+
+local function updateAllRows(imp)
+  if not imp._updateAllRows then return {} end
+  local ok, rows = pcall(imp._updateAllRows, imp)
+  return (ok and type(rows) == "table") and rows or {}
+end
+
 local function modsWithUpdates(imp)
   local names = {}
-  for _, m in ipairs(imp.mods or {}) do
-    local info = imp._modUpdateInfo and imp:_modUpdateInfo(m.id)
-    if info and info.status == "available" and info.best then
-      names[#names + 1] = m.name or m.id
-    end
+  for _, row in ipairs(updateAllRows(imp)) do
+    names[#names + 1] = row.name or row.id
   end
   return names
 end
@@ -2452,17 +2584,17 @@ end
 local function modsWithUpdatesCount(imp)
   local mods = imp.mods or {}
   local rev = imp._modUpdateRev or 0
+  local cartCache = imp._cartUpdateCache
   local cache = imp._modUpdateCountCache
-  if cache and cache.src == mods and cache.n == #mods and cache.rev == rev then
+  if cache and cache.src == mods and cache.n == #mods and cache.rev == rev
+      and cartCache and cache.carts == cartCache.rows then
     return cache.count
   end
-  local n = 0
-  for _, m in ipairs(mods) do
-    local info = imp._modUpdateInfo and imp:_modUpdateInfo(m.id)
-    if info and info.status == "available" and info.best then n = n + 1 end
-  end
-  imp._modUpdateCountCache = { src = mods, n = #mods, rev = rev, count = n }
-  return n
+  local count = #updateAllRows(imp)
+  cartCache = imp._cartUpdateCache
+  imp._modUpdateCountCache = { src = mods, n = #mods, rev = rev,
+    carts = cartCache and cartCache.rows, count = count }
+  return count
 end
 
 local function askUpdateAllMods(imp)
@@ -2471,12 +2603,12 @@ local function askUpdateAllMods(imp)
     imp:pressUpdateAllMods()
     return
   end
-  local lines = { Strings("Update %d mods?", #names) }
+  local lines = { Strings("Update %d items?", #names) }
   for i = 1, math.min(3, #names) do lines[#lines + 1] = names[i] end
   if #names > 3 then
     lines[#lines + 1] = Strings("and %d more", #names - 3)
   end
-  imp._modConfirm = { kind = "updateAll", title = Strings("Update all mods"),
+  imp._modConfirm = { kind = "updateAll", title = Strings("Update all"),
     yesLabel = Strings("Update all"), lines = lines }
 end
 
@@ -2491,6 +2623,7 @@ local function buildModsPanel(imp, x, y, w, availH, m)
   if imp.modCartPlan then cartId, cartReport = imp:modCartPlan() end
   -- a cart owns its mod set: only the pins it already ships may be switched
   local bulkOk = not safeMode and cartId == nil
+  local updateOk = (imp.updateAllAvailable and imp:updateAllAvailable()) == true
 
   -- header: progressive action cluster. Surfaces primary/frequent actions
   -- (Import, Updates, Sort) directly on the bar across screen sizes, placing
@@ -2533,7 +2666,7 @@ local function buildModsPanel(imp, x, y, w, availH, m)
       btn(imp, place(updateAllW), cy, updateAllW, bh, "mods-update-all",
         Strings("Update all"), {
           kind = (modsWithUpdatesCount(imp) > 0) and "warn" or "ghost",
-          font = "small", enabled = bulkOk and imp._updateAll == nil,
+          font = "small", enabled = updateOk,
           action = function() askUpdateAllMods(imp) end })
       btn(imp, place(sortW), cy, sortW, bh, "mods-sort", Strings("Sort"), {
         font = "small",
@@ -2574,6 +2707,15 @@ local function buildModsPanel(imp, x, y, w, availH, m)
     btn(imp, place(importW), cy, importW, bh, "mods-import", importLabel, {
       kind = "accent", font = "small",
       action = function() imp:chooseMod() end })
+    if #cartsWithUpdates(imp) > 0 then
+      local updateAllW = Kit.textWidth("small", Strings("Update all"))
+        + math.floor(20 * m.s)
+      btn(imp, place(updateAllW), cy, updateAllW, bh, "mods-update-all",
+        Strings("Update all"), {
+          kind = "warn", font = "small",
+          enabled = updateOk,
+          action = function() askUpdateAllMods(imp) end })
+    end
   end
   cy = cy + bh + math.floor(8 * m.s)
 
@@ -4087,13 +4229,16 @@ local function buildModHeaderActionsModal(imp, m)
   local w = math.floor(380 * m.s)
   local gap = math.floor(8 * m.s)
   -- same gate as the header cluster: a cart's mod set is not bulk-editable
-  local bulkOk = not imp.safeMode
-    and not (imp.modCartPlan and imp:modCartPlan())
+  local cartId, cartReport
+  if imp.modCartPlan then cartId, cartReport = imp:modCartPlan() end
+  local bulkOk = not imp.safeMode and cartId == nil
+  local updateOk = (imp.updateAllAvailable and imp:updateAllAvailable()) == true
+  local note = (cartId and imp.cartPinsNote) and imp:cartPinsNote(cartId, cartReport) or nil
   local btns = {
     { label = Strings("Mod profiles..."), action = function() imp._profilesPopup = true end },
     { label = Strings("Check for updates"), action = function() imp:_syncModUpdateInfo(true) end },
-    { label = Strings("Update all mods"), kind = "warn",
-      enabled = bulkOk and imp._updateAll == nil,
+    { label = Strings("Update all"), kind = "warn",
+      enabled = updateOk,
       action = function() askUpdateAllMods(imp) end },
     { label = Strings("Enable all mods"), kind = "good", enabled = bulkOk,
       action = function() imp:_setAllMods(true) end },
@@ -4101,12 +4246,19 @@ local function buildModHeaderActionsModal(imp, m)
       action = function() imp:_setAllMods(false) end },
     { label = Strings("Sort mods..."), action = function() imp._sortPopup = "mods" end },
   }
-  local h = pad + Kit.textHeight("button") + math.floor(12 * m.s)
+  local noteW = math.floor(math.min(w, m.W - 2 * m.pad)) - 2 * pad
+  local noteH = note
+    and (Kit.wrapHeight("small", note, noteW, 3) + gap) or 0
+  local h = pad + Kit.textHeight("button") + math.floor(12 * m.s) + noteH
     + #btns * (m.btnH + gap) + m.btnH + pad
   local px, py, pw = modalPanel(m, w, h)
   local cy = py + pad
   Kit.text("button", Strings("More Mod Actions"), px + pad, cy, PAL.heading)
   cy = cy + Kit.textHeight("button") + math.floor(12 * m.s)
+  if note then
+    Kit.textWrapped("small", note, px + pad, cy, noteW, PAL.muted, 3)
+    cy = cy + noteH
+  end
 
   for i, b in ipairs(btns) do
     btn(imp, px + pad, cy, pw - 2 * pad, m.btnH, "modheadact-" .. i, b.label, {

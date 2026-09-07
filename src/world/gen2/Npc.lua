@@ -359,6 +359,26 @@ function NPC:scriptStep(dir)
   return true
 end
 
+-- engine/overworld/movement.asm:741
+function NPC:scriptJump(dir)
+  if self.moving then return false end
+  self.stepDir = dir or self.facing
+  if not self.fixedFacing and not self.sliding then
+    self.facing = self.stepDir
+  end
+  local d = Map.DELTA[self.stepDir]
+  if not d then
+    self.stepDir = nil
+    return false
+  end
+  self.targetX, self.targetY = self.cellX + d[1] * 2, self.cellY + d[2] * 2
+  self.moving, self.jumping = true, true
+  self.inGrass, self.grassShake = false, nil
+  self.progress = 0
+  self.frozen = true
+  return true
+end
+
 -- StepFunction_TeleportFrom / _TeleportTo (engine/overworld/map_objects.asm).
 -- `from` is sixteen frames of OBJECT_ACTION_SPIN on the spot and then sixteen
 -- more spinning while OBJECT_JUMP_HEIGHT walks OBJECT_SPRITE_Y_OFFSET up a
@@ -575,7 +595,7 @@ function NPC:update(map, entities)
   if self.moving then
     -- NormalStep's begin-of-step grass work (engine/overworld/movement.asm:657-674);
     -- UpdateTallGrassFlags only RE-tests while IN_GRASS is set (map_objects.asm:226).
-    if self.progress == 0 and map then
+    if self.progress == 0 and map and not self.jumping then
       local grass = NPC.grassAt(map, self.targetX, self.targetY)
       if self.inGrass then self.inGrass = grass end
       self.grassShake = grass or nil
@@ -585,17 +605,26 @@ function NPC:update(map, entities)
     -- a two-cell move over one step (src/world/gen2/Player.lua:150 does the
     -- same), and `stepFrames` is what lets it keep pace with a bike.
     local frames = self.stepFrames or STEP_FRAMES
+    -- engine/overworld/map_objects.asm:1129
+    if self.jumping then frames = STEP_FRAMES * 2 end
     local moved = math.floor(self.progress * 16 / frames)
     local dx = (self.targetX or self.cellX) - self.cellX
     local dy = (self.targetY or self.cellY) - self.cellY
     self.px = self.cellX * 16 + dx * moved
     self.py = self.cellY * 16 + dy * moved
+    if self.jumping then
+      self.spriteYOffset = Movement.jumpYOffset(self.progress, frames)
+    end
     if self.progress >= frames then
       self.cellX, self.cellY = self.targetX, self.targetY
       self.targetX, self.targetY = nil, nil
       self.px, self.py = self.cellX * 16, self.cellY * 16
       self.moving = false
       self.stepDir = nil
+      if self.jumping then
+        self.jumping = nil
+        self.spriteYOffset = 0
+      end
       self.stepFlip = not self.stepFlip
       -- CopyCoordsTileToLastCoordsTile -> SetTallGrassFlags at the step's end
       -- (map_objects.asm:196-208, :247).
@@ -741,12 +770,12 @@ function NPC:drawBigAsym()
   end
 end
 
-function NPC:draw(ox, oy, scale)
+function NPC:draw(ox, oy, scale, oamRow)
   -- Gen 1 spells this draw(camX, camY) and SpriteRenderer subtracts them
   -- (src/world/NPC.lua:129).  Two arguments means that call, not a missing
   -- scale: G.scale(nil, nil) would either raise or draw unscaled at an
   -- offset, which is the silent wrong answer.
-  if scale == nil then return self:draw(-(ox or 0), -(oy or 0), 1) end
+  if scale == nil then return self:draw(-(ox or 0), -(oy or 0), 1, oamRow) end
   local G = love.graphics
   G.push()
   G.translate(ox, oy)
@@ -769,7 +798,7 @@ function NPC:draw(ox, oy, scale)
     local facing = (q == 1 or q == 3) and "up" or "down"
     self.sprite:draw(
       self.px, self.py + yOffset, 0, 0,
-      facing, 0, false, false, q == 3)
+      facing, 0, false, false, q == 3, oamRow)
   elseif self.rockSmash then
     -- engine/overworld/map_objects.asm:1462
     if (self.rockSmash.frame % 2) == 0 then
@@ -778,12 +807,12 @@ function NPC:draw(ox, oy, scale)
     end
     self.sprite:draw(
       self.px, self.py + yOffset, 0, 0,
-      self.facing, self:walkPhase(), self.stepFlip)
+      self.facing, self:walkPhase(), self.stepFlip, nil, nil, nil, oamRow)
   else
     self.sprite:draw(
       self.px, self.py + yOffset, 0, 0,
       self.facing, self:walkPhase(), self.stepFlip,
-      false, false, self:bounceFrame())
+      false, false, self:bounceFrame(), oamRow)
   end
   G.pop()
 end

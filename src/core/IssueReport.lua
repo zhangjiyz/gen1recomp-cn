@@ -234,6 +234,33 @@ local function metadata(options, context)
   add("App", version ~= "" and ("gen1recomp v" .. version) or "gen1recomp")
   add("LÖVE", loveVersion())
   if safeMode then add("Safe mode", "on") end
+  local guardOk, guardPresent = pcall(function()
+    return require("src.core.RequireGuard").present()
+  end)
+  if guardOk and guardPresent == false then
+    add("Loader chain", "love searcher missing")
+  end
+  local audioOk, audioLine = pcall(function()
+    return require("src.core.ChipAudio").stats().line
+  end)
+  if audioOk then add("Audio", audioLine) end
+  local function firstLine(s)
+    if type(s) ~= "string" then return nil end
+    for line in s:gmatch("[^\r\n]+") do
+      if line:find("ERROR", 1, true) then return line end
+    end
+    return s:match("[^\r\n]+")
+  end
+  local launcher = package.loaded["src.import.LauncherView"]
+  if type(launcher) == "table" and type(launcher.cartShaderError) == "function" then
+    local okCart, cartErr = pcall(launcher.cartShaderError)
+    if okCart and cartErr then add("Cart shader", firstLine(cartErr)) end
+  end
+  local shaderFx = package.loaded["src.render.ShaderFX"]
+  if type(shaderFx) == "table" and type(shaderFx.lastError) == "function" then
+    local okFx, fxErr = pcall(shaderFx.lastError)
+    if okFx and fxErr then add("Shader FX", firstLine(fxErr)) end
+  end
   return {
     rawOS = rawOS,
     os = formOS(rawOS),

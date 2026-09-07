@@ -361,6 +361,8 @@ end
 local function namedPalette(data, name)
   local PaletteFX = require("src.render.PaletteFX")
   local colors = PaletteFX.pal(data, name)
+    or (data and data.palettes and data.palettes.palettes
+        and data.palettes.palettes[name])
   if not colors then return nil end
   local key = name
   if PaletteFX.usesGbcPack() then key = "redpp:" .. name end
@@ -371,6 +373,10 @@ end
 -- as their overworld walker. Vanilla trainers preserve the hardware-faithful
 -- MEWMON fallback used during the battle introduction.
 function BattleState.trainerPalette(data, trainer)
+  if trainer and trainer.palette then
+    local named = namedPalette(data, trainer.palette)
+    if named then return named end
+  end
   local source = trainer and trainer.paletteSource
   if source then
     local PaletteFX = require("src.render.PaletteFX")
@@ -545,14 +551,16 @@ end
 local StatBox = {}
 StatBox.__index = StatBox
 
-function StatBox.new(game, mon, onDone)
-  return setmetatable({ game = game, mon = mon, onDone = onDone }, StatBox)
+-- ../pokered/engine/items/item_effects.asm:1403-1411
+function StatBox.new(game, mon, onDone, keepOpen)
+  return setmetatable({ game = game, mon = mon, onDone = onDone,
+                        keepOpen = keepOpen or nil }, StatBox)
 end
 
 function StatBox:update()
   local input = self.game.input
   if input:wasPressed("a") or input:wasPressed("b") then
-    self.game.stack:pop()
+    if not self.keepOpen then self.game.stack:pop() end
     if self.onDone then self.onDone() end
   end
 end
@@ -852,6 +860,13 @@ function BattleState.newTrainer(game, oppClass, partyIndex, opts)
     local rivalName = (game.save.player and game.save.player.rival) or "BLUE"
     self.trainer = setmetatable({ name = rivalName }, { __index = self.trainer })
   end
+  local personal = self.trainer.partyNames
+    and self.trainer.partyNames[partyIndex or 1]
+  if personal and personal ~= "" then
+    self.trainer = setmetatable({ name = self.trainer.name .. " " .. personal,
+      className = self.trainer.name, personalName = personal },
+      { __index = self.trainer })
+  end
   self.enemyAIMods = self.trainer.aiMods
   local partyDef = self.trainer.parties[partyIndex or 1]
   assert(partyDef, ("trainer %s has no party %s"):format(oppClass, tostring(partyIndex)))
@@ -1077,6 +1092,17 @@ function BattleState:animBeforeMove(name, isPlayer)
                  hit = { animType = isPlayer and 6 or 3 } })
 end
 
+-- ../pokered/engine/battle/move_effects/substitute.asm:2-3
+function BattleState:waitBeforeMoveAnim(frames)
+  if not frames or frames <= 0 then return end
+  local at
+  for i, item in ipairs(self.queue) do
+    if item == self.moveAnimRow then at = i break end
+  end
+  self.nextInsert = (self.nextInsert or 0) + 1
+  table.insert(self.queue, at or self.nextInsert, { wait = frames })
+end
+
 -- insert an act right after the current queue item
 function BattleState:actNext(fn)
   self.nextInsert = (self.nextInsert or 0) + 1
@@ -1111,6 +1137,15 @@ function BattleState:sayNextAuto(text, delay)
   self.nextInsert = (self.nextInsert or 0) + 1
   table.insert(self.queue, self.nextInsert,
                { text = text, auto = true, autoDelay = delay or 0 })
+end
+
+-- sound_level_up then text_end, no prompt -- home/text.asm:506-531 (the sfx
+-- wait) then home/text.asm:328-334 (TX_END returns out of PrintText)
+function BattleState:sayNextAutoWaitSfx(text, sfx)
+  self.nextInsert = (self.nextInsert or 0) + 1
+  table.insert(self.queue, self.nextInsert,
+               { text = text, auto = true, autoDelay = 0,
+                 waitForLearningSfx = sfx })
 end
 
 -- insert a UI push right after the current queue item (dex page, the
@@ -1270,7 +1305,8 @@ function BattleState:startMessage(item)
   self.current = item
   self.lines = {}
   self.total = 0
-  local text = item.text or ""
+  -- constants/charmap.asm:19-20
+  local text = require("src.render.TextBox").strip(item.text or "")
   local pos, cont = 1, false
   while true do
     local npos = text:find("[\n\v]", pos)
@@ -1340,7 +1376,10 @@ function BattleState:updateQueue()
       local Sound = require("src.core.Sound")
       self.waitSoundLeft = Sound.waitFrames and Sound.waitFrames(src) or 180
     end
-    self.waitSoundLeft = self.waitSoundLeft - 1
+    local game = self.game
+    local speed = game and game.logicSpeed and game:logicSpeed() or 1
+    if type(speed) ~= "number" or speed ~= speed or speed < 1 then speed = 1 end
+    self.waitSoundLeft = self.waitSoundLeft - 1 / speed
     local playing = src and src.isPlaying and src:isPlaying()
     if playing and self.waitSoundLeft > 0 then return true end
     if playing then pcall(src.stop, src) end
@@ -1364,6 +1403,8 @@ function BattleState:updateQueue()
       end
     end
     if self.animPlayer:isDone() then
+      -- engine/battle/animations.asm:2639 PlayApplyingAttackSound
+      if self:holdForMoveSfx() then return true end
       self.animPlaying = false
       -- the target's hit blink + damage sound follow the animation
       -- (pokered plays them after PlayMoveAnimation returns)
@@ -1558,6 +1599,12 @@ function BattleState:updateQueue()
     end
   else
     local item = self.current
+    -- TextCommand_SOUND precedes the page's tail command -- home/text.asm:
+    if item and item.waitForLearningSfx and not item.soundStarted then
+      item.soundStarted = true
+      self.waitingSound = item.waitForLearningSfx()
+      return true
+    end
     -- TrainerAboutToUseText ends in `done` then DisplayTextBoxID: YES/NO
     -- overlays the still-visible "Will … change POKéMON?" page.
     if item and item.choice and not item.choiceOpen then
@@ -1591,11 +1638,6 @@ function BattleState:updateQueue()
         self.current = nil
       end
     elseif not (item and item.choice) then
-      if item and item.waitForLearningSfx and not item.soundStarted then
-        item.soundStarted = true
-        self.waitingSound = item.waitForLearningSfx()
-        return true
-      end
       -- The page is typed out and waiting on the player: PromptText
       -- (home/text.asm:209-217) writes '▼' at (18,16) and ManualTextScroll
       -- blinks it until A/B, so the arrow belongs on a finished page and not
@@ -1719,11 +1761,15 @@ function BattleState:computeMusicKind()
   return "wild"
 end
 
--- a mod-set per-trainer battle theme (trainers.battleTheme, an audio.songs
--- id); nil for vanilla trainers, so the kind default is untouched (#782)
+-- a mod-set battle theme (trainers.battleTheme, else the wild species'
+-- pokemon.battleTheme); nil for vanilla content (#782)
 function BattleState:battleTheme()
   local trainer = self.trainer
   if trainer and trainer.battleTheme then return trainer.battleTheme end
+  if self.kind == "wild" then
+    local def = self.enemy and self.enemy.def
+    if def and def.battleTheme then return def.battleTheme end
+  end
   return nil
 end
 
@@ -1937,7 +1983,7 @@ function BattleState:enter()
       self.enemySendingOut = false
       self:startGrowIn(self.enemy)
     end)
-    queueEnemyCry()
+    self:queueEnemySendOutCry(true)
   end
   -- StartBattle .foundFirstAliveEnemyMon (core.asm:152-156): the `call nz`
   -- gates only EnemySendOutFirstMon -- the `ld c, 40 / call DelayFrames`
@@ -1980,6 +2026,7 @@ end
 -- any pop (finish, script teardown) must silence the alarm loop
 -- (end_of_battle.asm clears wLowHealthAlarm when a battle ends)
 function BattleState:exit()
+  self.enemyHudPending = nil
   require("src.core.Sound").stopLoop("Low_Health_Alarm")
   -- end_of_battle.asm clears wPartyAndBillsPCSavedMenuItem as well, so the
   -- field party menu comes back on slot 1 after a battle. #768
@@ -2567,11 +2614,11 @@ function BattleState:openOldManBag()
     -- inventory) differs by version: pokered's OldManItemList has 50
     -- POKé BALLs; pokeyellow's SimulatedInputBattleItemList, shared by
     -- the Viridian tutorial and Oak's catch, has one.
-    local qty = require("src.core.GameVersion").isYellow() and "x1" or "x50"
+    local qty = require("src.core.GameVersion").isYellow() and 1 or 50
     -- the tutorial bag rides DisplayBagMenu's LIST_MENU_BOX over the battle
     -- screen (engine/battle/core.asm:2210)
     list = ListMenu.new(game, "ITEMS", {
-      { value = "POKE_BALL", label = Strings("POKé BALL"), right = qty },
+      { value = "POKE_BALL", label = Strings("POKé BALL"), count = qty },
     }, {
       itemBox = true,
       script = function(l)
@@ -2622,7 +2669,7 @@ function BattleState:oldManThrow()
     self:ballChain("TOSS_ANIM", true, 3, "POKE_BALL")
     -- ItemUseBallText05: text_far, sound_caught_mon, text_promptbutton --
     -- the fanfare follows the caught text and holds the prompt
-    self:sayNextWaitSfx(Strings("All right!\n%s was\ncaught!", self.enemy.name),
+    self:sayNextWaitSfx(self:caughtText(),
       function() return require("src.core.Sound").play(self.data, "Caught_Mon") end)
   end)
 end
@@ -2709,13 +2756,21 @@ function BattleState:markParticipant()
   end
 end
 
--- the whole choke point is hooked (battle.enemy_action), so a mod can
 -- rewrite any trainer's choice without registering brains
+-- engine/battle/core.asm:339 (SelectEnemyMove)
 function BattleState:enemyAction()
+  self.enemyActionForced = nil
   if Runtime.wantsHook("battle.enemy_action") then
-    return Runtime.call("battle.enemy_action", function(battle)
-      return battle:vanillaEnemyAction()
+    local vanilla, sawVanilla = nil, false
+    local hooked = Runtime.call("battle.enemy_action", function(battle)
+      vanilla = battle:vanillaEnemyAction()
+      sawVanilla = true
+      return vanilla
     end, self)
+    if not sawVanilla or hooked ~= vanilla then
+      self.enemyActionForced = true
+    end
+    return hooked
   end
   return self:vanillaEnemyAction()
 end
@@ -2730,10 +2785,13 @@ function BattleState:vanillaEnemyAction()
     local brain = self.trainer.brain or (class and class.brain)
     if brain then return brain(self) end
   end
-  -- class AI may spend the turn on an item or a switch
-  local classAct = TrainerAI.classAction(self)
-  if classAct then return classAct end
   return TrainerAI.chooseMove(self.enemy, self.rng, self)
+end
+
+-- engine/battle/core.asm:416,454 (callfar TrainerAI)
+-- engine/battle/trainer_ai.asm:290-320, 453-456
+function BattleState:trainerAIAction()
+  return TrainerAI.classAction(self)
 end
 
 local function orderMove(action, data)
@@ -3370,7 +3428,6 @@ function BattleState:applyAnimEffect(ev)
     if pf then pf.kind, pf.hidden, pf.minimized = nil, nil, nil end
   elseif e == "SE_TRANSFORM_MON" then
     -- AnimationTransformMon redraws the user as the opposing species
-    -- (MoveEffects.TRANSFORM_EFFECT swaps the rest when it applies)
     local user = self:animFxBattler(false)
     local target = self:animFxBattler(true)
     if user and target and self.speciesSprite then
@@ -3379,9 +3436,45 @@ function BattleState:applyAnimEffect(ev)
       local pf = self:picFxFor(user)
       if pf then pf.minimized = nil end
     end
+  elseif e == "SE_SUBSTITUTE_MON" then
+    -- ../pokered/engine/battle/animations.asm:1936-1973
+    local b = self:animFxBattler(false)
+    if b then
+      b.substitutePending = nil
+      local pf = self:picFxFor(b)
+      if pf then pf.kind, pf.hidden, pf.ox, pf.oy = nil, nil, 0, 0 end
+    end
   end
-  -- SE_SUBSTITUTE_MON needs no visual here: the doll is drawn while
-  -- battler.substituteHP is set (MoveEffects raises it with the move)
+end
+
+-- engine/battle/animations.asm:2639 PlayApplyingAttackSound
+-- -> home/delay.asm:15 WaitForSoundToFinish
+function BattleState:holdForMoveSfx()
+  local hit = self.pendingHit
+  local t = hit and hit.animType
+  if hit and not t and hit.blink then t = hit.blink.isPlayer and 1 or 4 end
+  -- engine/battle/animations.asm:492-499
+  if not (t == 1 or t == 2 or t == 4 or t == 5)
+     or self:lowHealthAlarmActive() then
+    self.hitSfxWait = nil
+    return false
+  end
+  local Sound = require("src.core.Sound")
+  if not (Sound.moveSfxBusy and Sound.moveSfxBusy()) then
+    self.hitSfxWait = nil
+    return false
+  end
+  if not self.hitSfxWait then
+    local budget = Sound.moveSfxWaitFrames and Sound.moveSfxWaitFrames() or 0
+    local cap = 180 * (Sound.rate and Sound.rate() or 1)
+    self.hitSfxWait = math.max(0, math.min(budget, cap))
+  end
+  if self.hitSfxWait <= 0 then
+    self.hitSfxWait = nil
+    return false
+  end
+  self.hitSfxWait = self.hitSfxWait - 1
+  return true
 end
 
 -- The post-animation applying-attack feedback (PlayApplyingAttackAnimation
@@ -3476,6 +3569,17 @@ function BattleState:startGrowIn(battler)
   self.growIn = { battler = battler, frame = 0 }
   self.nextInsert = (self.nextInsert or 0) + 1
   table.insert(self.queue, self.nextInsert, { wait = 12 })
+end
+
+-- EnemySendOutFirstMon (core.asm:1432-1435)
+-- WaitForSoundToFinish (home/pokemon.asm:145-149)
+function BattleState:queueEnemySendOutCry(append)
+  self.enemyHudPending = true
+  local fn = function()
+    self:waitSfxNext(self:playEntranceCry(self.enemy))
+    self:actNext(function() self.enemyHudPending = nil end)
+  end
+  if append then self:act(fn) else self:actNext(fn) end
 end
 
 -- SendOutMon branches on IsThisPartyMonStarterPikachu before the animation:
@@ -3825,6 +3929,13 @@ function BattleState:executeAction(user, target, action)
   -- faint cases are already covered by the HP guard below (#441)
   if self.result then return end
   if user.mon.hp <= 0 or target.mon.hp <= 0 then return end
+  -- engine/battle/core.asm:416,454
+  -- engine/battle/trainer_ai.asm:453-456
+  if user == self.enemy and not user.isPlayer then
+    local forced = self.enemyActionForced
+    self.enemyActionForced = nil
+    if not forced then action = self:trainerAIAction() or action end
+  end
   if not action then return end
 
   local function run()
@@ -3893,9 +4004,7 @@ function BattleState:executeAction(user, target, action)
       self:actNext(function()
         self.enemySendingOut = false
         self:startGrowIn(self.enemy)
-        self:actNext(function()
-          self:waitSfxNext(self:playEntranceCry(self.enemy))
-        end)
+        self:queueEnemySendOutCry(false)
       end)
       return
     end
@@ -4090,13 +4199,14 @@ local function primaryEffectFailed(msgs)
   if not msgs or #msgs == 0 then return true end
   if msgs.failed then return true end
   -- the extracted lines keep the ROM's own trailing blank ("But, it
-  -- failed! "), so match with it trimmed or a refused status animates
-  local m = msgs[1]:gsub("%s+$", "")
+  -- failed! ") and its terminator, so strip both or a refused status animates
+  local m = require("src.render.TextBox").strip(msgs[1]):gsub("%s+$", "")
   if m == "But, it failed!" or m == "Nothing happened!" then return true end
   if m:find("didn't affect", 1, true) then return true end
   if m:find("is unaffected", 1, true) then return true end
   if m:find("protected by MIST", 1, true) then return true end
-  if m:find("Already", 1, true) then return true end
+  -- engine/battle/effects.asm:46-47
+  if m:lower():find("already asleep", 1, true) then return true end
   return false
 end
 
@@ -4333,6 +4443,7 @@ end
 -- amount that counts as dealt (for recoil/drain).
 function BattleState:applyDamage(target, dmg)
   if target.substituteHP then
+    target.substitutePending = nil
     target.substituteHP = target.substituteHP - dmg
     if target.substituteHP <= 0 then
       target.substituteHP = nil
@@ -4456,6 +4567,7 @@ function BattleState:awardExp()
   if participants == 0 and self.player.mon.hp > 0 then
     participants, alive = 1, { self.player.mon }
   end
+  local pendingStep = {}
   local function applyShare(mon, split, announce)
     local playerId = self.game.save.player and self.game.save.player.id
     -- GainExperience (engine/battle/experience.asm:69-88) compares the
@@ -4463,9 +4575,12 @@ function BattleState:awardExp()
     -- mon.traded covers otId-less mons (repairTradedOtIds, old link peers) #1488
     local traded = playerId ~= nil and ((mon.otId ~= nil and mon.otId ~= playerId)
       or (mon.otId == nil and mon.traded == true))
-    local levels, gained = Experience.apply(self.data, mon, self.enemy.def,
+    -- experience.asm:158-163: the level is recomputed only after GainedText
+    local levels, gained, steps = Experience.apply(self.data, mon, self.enemy.def,
                                             self.enemy.mon.level, self.kind == "trainer",
-                                            split, traded)
+                                            split, traded,
+                                            { defer = true, from = pendingStep[mon] })
+    if #steps > 0 then pendingStep[mon] = steps[#steps] end
     -- Track level-ups for EvolveAfterBattle (BattleState:finish ->
     -- Evolution.checkParty).  B-cancel leaves the mon at/above threshold;
     -- without this gate it re-triggers after every later fight (#213).
@@ -4497,32 +4612,31 @@ function BattleState:awardExp()
     -- per level: GrewLevelText -> the stats window (PrintStatsBox) ->
     -- the move-learn checks (experience.asm:245-256)
     local game = self.game
-    for _, lv in ipairs(levels) do
-      -- experience.asm:248 fires per grew-level text
-      require("src.world.PikachuFollower")
-        .modifyHappiness(game.save, "LEVELUP", mon)
+    for i, lv in ipairs(levels) do
+      -- experience.asm:168-239 -- the level write, CalcStats, the max-HP
+      self:actNext(function()
+        Experience.commit(self.data, mon, steps[i])
+        -- experience.asm:248 fires per grew-level text
+        require("src.world.PikachuFollower")
+          .modifyHappiness(game.save, "LEVELUP", mon)
+        -- engine/battle/experience.asm:209 (cp wPlayerMonNumber)
+        if mon == self.player.mon then
+          -- engine/battle/experience.asm:236-239
+          self.player.badgeExtraBoosts = nil
+          require("src.battle.Status").bakeOnInflict(self, self.player)
+          self.player.shownHP = mon.hp
+          self.player.shownPx = Timing.hpBarPixels(mon.hp,
+                                                   math.max(1, mon.stats.hp))
+          self.player.drainFloor = nil
+        end
+      end)
       -- GrewLevelText: text_far, sound_level_up, text_end (experience.asm:
-      -- 369-372); PrintStatsBox only runs once PrintText has returned
-      self:sayNextWaitSfx(Strings("%s grew\nto level %d!", name, lv),
+      -- WaitForSoundToFinish releases (experience.asm:243-249)
+      self:sayNextAutoWaitSfx(Strings("%s grew\nto level %d!", name, lv),
         function() return require("src.core.Sound").play(game.data, "Level_Up") end)
       self:uiNext(function()
         return StatBox.new(game, mon)
       end)
-      -- After PrintStatsBox, experience.asm reloads the active battler's
-      -- wBattleMon and runs DrawHUDsAndHPBars, so its HP bar reflects the
-      -- higher current HP.  Experience.lua:84 already raised mon.hp by
-      -- (newMaxHP - oldMaxHP); the party mon and the battler share one table
-      -- (makeBattler), so mon.stats.hp (the bar's denominator) jumps to the
-      -- new max instantly while the battler's shownHP numerator lags at the
-      -- old current HP -- the bar SHRINKS (#224).  Animate shownHP up to the
-      -- new current HP (house convention: potions drain the bar too, see
-      -- itemUsed) so the bar grows instead.  Only the active player battler
-      -- shares its table with the HUD; other party mons (EXP.ALL) have no bar.
-      if mon == self.player.mon then
-        -- engine/battle/experience.asm:236
-        self.player.badgeExtraBoosts = nil
-        self:drainNext()
-      end
       for _, moveId in ipairs(Experience.movesLearnedAt(
           self.data.pokemon[mon.species], lv)) do
         self:learnMove(mon, moveId)
@@ -4685,9 +4799,7 @@ function BattleState:enemyMonFainted()
         self:actNext(function()
           self.enemySendingOut = false
           self:startGrowIn(self.enemy)
-          self:actNext(function()
-            self:waitSfxNext(self:playEntranceCry(self.enemy))
-          end)
+          self:queueEnemySendOutCry(false)
         end)
       end)
       -- SwitchPlayerMon after the enemy is out (core.asm:1436-1443)
@@ -4996,7 +5108,7 @@ function BattleState:safariAction(choice)
       if caught then
         -- ItemUseBallText05: text_far, sound_caught_mon, text_promptbutton --
         -- the fanfare follows the caught text and holds the prompt
-        self:sayNextWaitSfx(Strings("All right!\n%s was\ncaught!", self.enemy.name),
+        self:sayNextWaitSfx(self:caughtText(),
           function() return require("src.core.Sound").play(self.data, "Caught_Mon") end)
         -- same ItemUseBall .captured flow as a regular ball
         self:act(function() self:storeCaughtMon() end)
@@ -5172,6 +5284,12 @@ function BattleState:itemUsed(messages, opts)
   self:act(function() self:endOfTurn() end)
 end
 
+-- data/text/text_6.asm:29-35
+function BattleState:caughtText()
+  return self:romText("_ItemUseBallText05", "All right!\n%s was\vcaught!",
+    self.enemy.name)
+end
+
 -- Wobble messages by shake count (ItemUseBallText01..04)
 function BattleState:ballMissMessage(shakes)
   local t = self.data.text
@@ -5314,6 +5432,8 @@ function BattleState:storeCaughtMon()
     self:uiNext(function()
       return self:buildScreen("DexEntryMenu", species)
     end)
+    -- engine/menus/pokedex.asm:581-582
+    self:actNext(function() self.fieldCleared = true end)
   end
   local function askCaughtNickname()
     self:offerNickname(self.enemy.mon, self.enemy.name)
@@ -5473,7 +5593,7 @@ function BattleState:throwBall(ball)
       -- ItemUseBallText05 carries sound_caught_mon (item_effects.asm:
       -- 608-614): text_far, sound_caught_mon, text_promptbutton -- the
       -- fanfare follows the caught message and holds the prompt
-      self:sayNextWaitSfx(Strings("All right!\n%s was\ncaught!", self.enemy.name),
+      self:sayNextWaitSfx(self:caughtText(),
         function() return require("src.core.Sound").play(self.data, "Caught_Mon") end)
       self:act(function() self:storeCaughtMon() end)
     else
@@ -5815,7 +5935,7 @@ end
 function BattleState:faintPicKind(battler)
   local pf = self.picFx and self.picFx[battler]
   if pf and pf.minimized then return "blob" end
-  if battler.substituteHP then return "doll" end
+  if battler.substituteHP and not battler.substitutePending then return "doll" end
   return "pic"
 end
 
@@ -5829,7 +5949,8 @@ end
 function BattleState:drawBattlerPic(battler, x, y, scale, shakeX, shakeY)
   local img = self:picImage(battler.sprite)
   shakeX, shakeY = shakeX or 0, shakeY or 0
-  if battler.substituteHP and not self:fxFaintActive(battler)
+  if battler.substituteHP and not battler.substitutePending
+     and not self:fxFaintActive(battler)
      and not battler.fainted then
     self:drawSubstituteDoll(battler, shakeX, shakeY)
     return
@@ -6193,6 +6314,8 @@ end
 
 -- the OAM anim layer (subanimation sprites / the resting caught ball)
 function BattleState:drawAnimLayer(colorized)
+  -- engine/items/item_effects.asm:543
+  if self.fieldCleared then return end
   local colorFn
   if colorized then
     colorFn = function(s, px, py) return self:animSpriteColors(s, px, py) end
@@ -6288,6 +6411,8 @@ end
 -- composites each side into its own region of a taller battlefield, where
 -- neither the other side's pixels nor the classic menu rows apply.
 function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
+  -- engine/menus/pokedex.asm:581-582
+  if self.fieldCleared then return end
   -- The move-select boxes are BG tiles on the GB, so they REPLACE the
   -- player pic's rows: the TYPE/PP box at (0,8) (PrintMenuItem) wipes
   -- pic rows 8+, and Mimic's copy menu at (0,7) (MoveSelectionMenu
@@ -6404,6 +6529,8 @@ end
 -- the BG-tile UI: HUDs, pokeball rows, safari ball count.  Grayscale;
 -- the zone pass colors it in colorized mode.
 function BattleState:drawHUDs(slide)
+  -- engine/menus/pokedex.asm:581-582
+  if self.fieldCleared then return end
   -- the HUD clears with the send-out text (ClearScreenArea,
   -- core.asm:1414-1417) and DrawEnemyHUDAndHPBar (1435) only redraws
   -- it after the grow-in + cry
@@ -6423,7 +6550,7 @@ function BattleState:drawHUDs(slide)
   -- AFTER PrintBeginningBattleText returns, so "Wild X appeared!" shows the
   -- player's ball row with no enemy HUD beside it (#317)
   if showStatus and self.enemy and not self.showEnemyTrainer
-     and not self.enemySendingOut
+     and not self.enemySendingOut and not self.enemyHudPending
      and not self:growInScale(self.enemy) and slide == 0
      and not self.introBalls and not self.enemy.fainted then
     -- enemy HUD (DrawEnemyHUDAndHPBar): name row 0, <LV>+level (4,1),
@@ -6684,8 +6811,12 @@ function BattleState:drawTextArea()
       elseif def then
         Font.draw(Strings("TYPE/"), 8, 72)
         -- the type record's display name (a mod type shows its name, and
-        -- PSYCHIC_TYPE prints PSYCHIC like the original)
-        Font.draw(def.type and TypeChart.displayName(def.type) or "", 16, 80)
+        -- PSYCHIC_TYPE prints PSYCHIC like the original). self.data is
+        -- game.data by reference (set above TypeChart.load(game.data)), so
+        -- this is a no-op against TypeChart's own cache today -- kept for
+        -- the same call convention as the pre-battle screens (SummaryMenu,
+        -- HallOfFame) that genuinely need the explicit data.
+        Font.draw(def.type and TypeChart.displayName(def.type, self.data) or "", 16, 80)
         local maxPP = def.pp + (sel.ppUps or 0) * math.floor(def.pp / 5)
         Font.draw(("%2d/%2d"):format(sel.pp, maxPP), 40, 88)
       end

@@ -24,6 +24,7 @@ local Mon = require("src.battle.gen2.Mon")
 local PackMenu = require("src.ui.gen2.PackMenu")
 local PartyMenu = require("src.ui.gen2.PartyMenu")
 local Sound = require("src.core.Sound")
+local Typer = require("src.ui.gen2.Typer")
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -336,7 +337,7 @@ do
   end
   eq(screen.phase, "menu", "the turn drains back to the menu")
   check(sawIntermediate,
-    "the bar walked down through the middle values, one tick a frame")
+    "the bar walked down through the middle values, one pixel per two frames")
   eq(screen.shownHp.enemy, wild.hp, "and settled on the real enemy HP")
   eq(screen.shownHp.player, player.hp,
     "the player's bar caught its own hit too")
@@ -357,15 +358,94 @@ do
   battle.enemy = replacement
   screen.shownHp.enemy = 240
   screen.hpAnim = { side = "enemy", to = 0 }
-  local ticks = 0
-  while screen.hpAnim and ticks < 400 do
-    screen:stepHpAnim()
-    ticks = ticks + 1
+  check(screen:stepHpAnim(), "the first tick steps")
+  eq(screen.hpAnim.bar.maxHp, 240,
+    "the chase is sized off the OUTGOING mon's 240 max HP, not the "
+    .. "replacement's 24")
+  eq(screen.shownHp.enemy, 239,
+    "LongAnim_UpdateVariables walks the number one hit point at a time")
+  local held = 1
+  while screen.hpAnim and held < 400 do
+    if not screen:stepHpAnim() then break end
+    held = held + 1
   end
   eq(screen.shownHp.enemy, 0, "the outgoing mon's bar drained to zero")
-  eq(ticks, 240 / math.ceil(240 / 48),
-    "one PIXEL a tick out of the OUTGOING mon's 240 max HP, not one hit "
-    .. "point a tick out of the replacement's 24")
+  eq(held, 48 * 2, "48 pixels, two frames apiece (HPBarAnim_BGMapUpdate)")
+end
+
+do
+  -- _AnimateHPBar (engine/battle/anim_hp_bar.asm:1-40): under 48 max HP
+  local function drain(maxHp, from, to)
+    local screen = newScreen()
+    check(runToMenu(screen), "reached the menu")
+    screen.shownMon.enemy = { maxHp = maxHp, hp = from }
+    screen.shownHp.enemy = from
+    screen.hpAnim = { side = "enemy", to = to }
+    local mon = screen.shownMon.enemy
+    local trace = { { hp = from, px = screen:hudHpPixels(mon, "enemy") } }
+    local held = 0
+    while held < 400 do
+      if not screen:stepHpAnim() then break end
+      held = held + 1
+      trace[#trace + 1] = { hp = screen.shownHp.enemy,
+        px = screen:hudHpPixels(mon, "enemy") }
+    end
+    local changes, everySecond, onePixel = 0, true, true
+    for i = 2, #trace do
+      local moved = trace[i].px ~= trace[i - 1].px
+      if moved then
+        changes = changes + 1
+        if math.abs(trace[i].px - trace[i - 1].px) ~= 1 then onePixel = false end
+      end
+      if moved ~= (i % 2 == 0) then everySecond = false end
+    end
+    return screen, held, changes, everySecond, onePixel, trace
+  end
+
+  local screen, held, changes, everySecond, onePixel, trace = drain(15, 15, 0)
+  eq(held, 96, "15 max HP, 15 -> 0: 48 pixels x 2 frames = 96 held ticks")
+  eq(changes, 48, "the short loop moves every pixel of the bar")
+  check(everySecond, "and the bar changes on every second tick only")
+  check(onePixel, "one pixel at a time")
+  eq(trace[2].px, 47, "first step: 48 -> 47 pixels")
+  eq(trace[2].hp, 15, "CalcPixelFrame at 47px of 15: floor(705/48)+1 = 15")
+  eq(trace[88].hp, 2, "at 4px: floor(60/48)+1 = 2")
+  eq(trace[90].hp, 1, "at 3px: floor(45/48)+1 = 1")
+  eq(trace[95].hp, 1, "the number holds at 1 until the bar is empty")
+  eq(trace[96].hp, 0, "and drops to 0 on the last pixel")
+  eq(screen.shownHp.enemy, 0, "and lands on 0 when it is")
+  eq(screen.hpAnim, nil, "the chase is over")
+
+  local long
+  long, held, changes, everySecond, onePixel, trace = drain(100, 100, 0)
+  eq(held, 96, "100 max HP, 100 -> 0: 48 pixels x 2 frames = 96 held ticks")
+  eq(changes, 48, "the long loop spends a step per pixel change")
+  check(everySecond, "every second tick")
+  check(onePixel, "one pixel at a time")
+  eq(trace[2].hp, 99, "the first pixel falls at 99 (floor(99*48/100) = 47)")
+  eq(trace[4].hp, 97, "the next at 97 (floor(97*48/100) = 46)")
+  eq(long.shownHp.enemy, 0, "and the number lands on 0")
+
+  local up
+  up, held, changes = drain(15, 3, 15)
+  eq(up.shownHp.enemy, 15, "a heal climbs the same way")
+  eq(held, (48 - 9) * 2, "9px -> 48px is 39 pixels, two frames apiece")
+  eq(changes, 39, "one change per pixel on the way up too")
+
+  local live = newScreen()
+  check(runToMenu(live), "reached the menu")
+  live.shownMon.enemy = { maxHp = 15, hp = 15 }
+  live.shownHp.enemy = 15
+  live.hpAnim = { side = "enemy", to = 0 }
+  local mon = live.shownMon.enemy
+  local seen = {}
+  for i = 1, 6 do
+    Input:step()
+    live:update(1 / 60)
+    seen[i] = live:hudHpPixels(mon, "enemy")
+  end
+  eq(table.concat(seen, ","), "47,47,46,46,45,45",
+    "update() moves the bar one pixel every second tick")
 end
 
 -- ---- the exp bar crawls, and the level waits for it -----------------------
@@ -416,6 +496,218 @@ do
   eq(screen.shownExp,
     screen:expPixels(player, player.level, player.experience),
     "and the bar landed on the mon's real place in level 6")
+end
+
+do
+  -- sparks have gone (../pokecrystal/engine/battle/core.asm:7529-7541).
+  local EXP_FULL = require("src.ui.gen2.BattleHud").EXP_LENGTH_PX
+  local player = Mon.new(DATA, "CYNDAQUIL", 5, { dvs = perfect })
+  player.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+  local growth = DATA.pokemon.growthRates.GROWTH_MEDIUM_SLOW
+  player.experience = Mon.experienceForLevel(growth, 6) - 1
+  local wild = Mon.new(DATA, "PIDGEY", 5, { dvs = perfect })
+  wild.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+  wild.hp = 1
+  local screen = newScreen({ player = player, wild = wild })
+  check(runToMenu(screen), "reached the menu")
+  screen:submit({ kind = "move", move = "TACKLE" })
+
+  -- ../pokecrystal/engine/battle/core.asm:7121-7128, :7516-7545
+  local trace = {}
+  local startExp
+  for _ = 1, 3000 do
+    drainStep(screen)
+    if screen.expAnim and not startExp then startExp = screen.shownExp end
+    trace[#trace + 1] = {
+      exp = screen.shownExp, level = screen.shownLevel,
+      burst = screen.expBurst and screen.expBurst.frame,
+      message = tostring(screen.message or ""),
+      typing = screen:syncTyper(),
+      timer = screen.messageTimer or 0, phase = screen.phase,
+    }
+    if screen.phase == "done" then break end
+  end
+  eq(screen.phase, "done", "the win drains out")
+  check(startExp ~= nil and startExp < EXP_FULL, "the crawl armed short of 64")
+
+  local promptAt, crawlAt, armAt, lineAt, zeroAt, boxAt
+  local drawn, full, quiet, prompted = {}, true, true, false
+  for i, t in ipairs(trace) do
+    if not promptAt and t.message:find("gained") and t.timer > 0 then
+      promptAt = i
+    end
+    if not crawlAt and startExp and t.exp > startExp then crawlAt = i end
+    if t.burst then
+      if t.burst == 0 and not armAt then armAt = i end
+      if t.burst >= 1 and t.burst <= 8 then drawn[#drawn + 1] = t.burst end
+      if t.exp ~= EXP_FULL then full = false end
+      if t.message:find("grew to level") then quiet = false end
+    end
+    if t.message:find("grew to level") then
+      if not lineAt then lineAt = i end
+      if t.timer > 0 then prompted = true end
+      if not zeroAt and t.exp == 0 then zeroAt = i end
+    end
+    if not boxAt and t.phase == "stats-box" then boxAt = i end
+  end
+  check(promptAt and crawlAt and promptAt < crawlAt,
+    "the A on \"gained N EXP. Points!\" comes before the bar moves")
+  check(armAt ~= nil, "the burst arms at frame 0 on the tick the bar tops out")
+  if armAt then
+    eq(trace[armAt].exp, EXP_FULL, "with the bar at 64 on that tick")
+    eq(trace[armAt].level, 6, "and the level already ticked over")
+    check(trace[armAt - 1].burst == nil and trace[armAt - 1].exp < EXP_FULL,
+      "one tick after the last pixel")
+  end
+  eq(#drawn, 8, "eight drawn spark frames")
+  for i = 1, 8 do eq(drawn[i], i, "spark frame " .. i .. " in order") end
+  check(full, "with the bar left full under them")
+  check(quiet, "and no grew-to-level line while any spark is up")
+  check(lineAt ~= nil, "the grew-to-level line prints inside the crawl")
+  if lineAt then
+    check(trace[lineAt - 1].burst ~= nil,
+      "on the tick after the last spark frame")
+    eq(trace[lineAt].exp, EXP_FULL, "with the bar still full")
+    local typedAt = lineAt
+    while trace[typedAt] and trace[typedAt].typing do
+      typedAt = typedAt + 1
+    end
+    for i = lineAt, typedAt + 9 do
+      if trace[i].exp ~= EXP_FULL then full = false end
+    end
+    check(full, "and full through .PlayExpBarSound's ten frames")
+    eq(zeroAt, typedAt + 10, "then zero at the first PlaceExpBar of segment 2")
+    eq(trace[typedAt + 13].exp, 1, "one pixel three frames later")
+  end
+  check(not prompted, "the level line takes no A")
+  check(boxAt and lineAt and boxAt > lineAt, "the stats box follows")
+  if boxAt then
+    eq(trace[boxAt - 1].message, trace[lineAt].message,
+      "with the level line still up when it opens")
+    eq(trace[boxAt].exp,
+      screen:expPixels(player, player.level, player.experience),
+      "after segment 2 has landed on the mon's real place")
+  end
+  local lines = 0
+  for i = 2, #trace do
+    if trace[i].message:find("grew to level")
+        and not trace[i - 1].message:find("grew to level") then
+      lines = lines + 1
+    end
+  end
+  eq(lines, 1, "and the level event prints no second copy of the line")
+end
+
+do
+  -- ../pokecrystal/engine/battle/core.asm:7568
+  local player = Mon.new(DATA, "CYNDAQUIL", 5, { dvs = perfect })
+  player.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+  local growth = DATA.pokemon.growthRates.GROWTH_MEDIUM_SLOW
+  player.experience = Mon.experienceForLevel(growth, 6) - 1
+  local wild = Mon.new(DATA, "PIDGEY", 5, { dvs = perfect })
+  wild.moves = { { id = "TACKLE", pp = 35, maxPp = 35 } }
+  wild.hp = 1
+  local screen = newScreen({ player = player, wild = wild })
+  check(runToMenu(screen), "reached the menu")
+  screen:submit({ kind = "move", move = "TACKLE" })
+  local requested = {}
+  screen.playSfx = function(_, name) requested[#requested + 1] = name end
+  local busy = false
+  local realBusy = Sound.sfxBusy
+  Sound.sfxBusy = function() return busy end
+  local armed = false
+  for _ = 1, 3000 do
+    drainStep(screen)
+    if screen.expAnim then armed = true break end
+  end
+  check(armed, "the crawl armed")
+  local startExp = screen.shownExp
+  busy = true
+  for _ = 1, 40 do drainStep(screen) end
+  local asked = false
+  for _, name in ipairs(requested) do
+    if name == "Sfx_ExpBar" then asked = true end
+  end
+  check(not asked, "SFX_EXP_BAR is not requested while the channels are busy")
+  eq(screen.shownExp, startExp, "and the bar has not moved")
+  busy = false
+  for _ = 1, 3 do drainStep(screen) end
+  asked = false
+  for _, name in ipairs(requested) do
+    if name == "Sfx_ExpBar" then asked = true end
+  end
+  check(asked, "and is requested once they are free")
+  Sound.sfxBusy = realBusy
+end
+
+do
+  -- ../pokecrystal/engine/sprite_anims/core.asm:572
+  local Chrome = require("src.ui.gen2.Chrome")
+  local screen = newScreen()
+  check(runToMenu(screen), "reached the menu")
+  screen.phase = "resolving"
+  screen.message = "CYNDAQUIL gained 54 EXP. Points!"
+  screen.expBurst = { frame = 8 }
+  local order = {}
+  local realBox = Chrome.box
+  Chrome.box = function(x, y, w, h)
+    order[#order + 1] = ("box %d,%d,%d,%d"):format(x, y, w, h)
+  end
+  local realEnd = screen.hud.drawExpBarEnd
+  screen.hud.drawExpBarEnd = function(_, x, y)
+    order[#order + 1] = ("spark %d,%d"):format(x, y)
+    return true
+  end
+  local ok, err = pcall(function() screen:drawSceneBody() end)
+  Chrome.box = realBox
+  screen.hud.drawExpBarEnd = realEnd
+  check(ok, "the scene draws with the burst up: " .. tostring(err))
+  local lastBox, firstSpark, sparks = 0, nil, 0
+  for i, entry in ipairs(order) do
+    if entry:find("^box") then lastBox = i end
+    if entry:find("^spark") then
+      sparks = sparks + 1
+      firstSpark = firstSpark or i
+    end
+  end
+  eq(sparks, 8, "eight sparks drawn")
+  check(lastBox > 0, "the message box was drawn")
+  check(firstSpark and firstSpark > lastBox,
+    "every spark comes after the last box of the frame")
+end
+
+do
+  -- OAM bias (../pokecrystal/engine/sprite_anims/core.asm:558-608).
+  local screen = newScreen()
+  local drawn = {}
+  screen.hud = { drawExpBarEnd = function(_, x, y)
+    drawn[#drawn + 1] = ("%d,%d"):format(x, y)
+  end }
+
+  screen.expBurst = { frame = 1 }
+  screen:drawExpBurst()
+  eq(#drawn, 8, "eight objects a frame")
+  local collapsed = true
+  for _, at in ipairs(drawn) do
+    if at ~= "76,88" then collapsed = false end
+  end
+  check(collapsed, "all on the bar's left end while the radius is still 0")
+
+  drawn = {}
+  screen.expBurst = { frame = 8 }
+  screen:drawExpBurst()
+  local seen = {}
+  for _, at in ipairs(drawn) do seen[at] = (seen[at] or 0) + 1 end
+  local ring = { "90,88", "85,97", "76,102", "67,97",
+    "62,88", "67,79", "76,74", "85,79" }
+  for _, at in ipairs(ring) do
+    eq(seen[at], 1, "a spark at " .. at .. " on the last frame")
+  end
+
+  drawn = {}
+  screen.expBurst = { frame = 9 }
+  screen:drawExpBurst()
+  eq(#drawn, 0, "and ClearSprites past the loop leaves nothing behind")
 end
 
 -- ---- a level-up REDRAWS the HP bar, it does not animate it ----------------
@@ -594,10 +886,20 @@ do
   list3.index = 2
   list3:openSubmenu()
   list3:updateSubmenu({ wasPressed = function(_, b) return b == "a" end })
-  eq(screen.phase, "refuse-switch", "the mon already out is refused")
-  check((screen.message or ""):find("is already out"),
-    "with BattleText_MonIsAlreadyOut")
+  eq(screen.phase, "submenu", "the mon already out is refused in the list")
+  eq(pushed[#pushed], list3, "with the party list still up")
+  eq(list3.submenu, nil, "and the SWITCH/STATS/CANCEL box gone")
+  local refused = (list3.itemResult or {}).text or ""
+  check(refused:find("already"), "with BattleText_MonIsAlreadyOut")
+  -- SpeechTextbox's 18-tile interior (home/text.asm:124)
+  for line in refused:gmatch("[^\n]+") do
+    check(#line <= 18, "the refusal wraps inside the textbox")
+  end
   eq(battle.turn, turn0, "and no turn is spent on it")
+  list3:updateItemResult({ wasPressed = function(_, b) return b == "a" end })
+  eq(list3.itemResult, nil, "A dismisses it back to a live list")
+  eq(pushed[#pushed], list3, "which is still the top of the stack")
+  list3.onCancel()
 
   -- The forced list is PickPartyMonInBattle: WhichPKMNString, no submenu.
   check(screen:openParty(true), "the forced list opens")
@@ -648,6 +950,15 @@ do
     return false
   end
 
+  local function settleText(screen, cap)
+    for _ = 1, (cap or 400) do
+      if not screen:syncTyper() then return true end
+      Input:step()
+      screen:update(1 / 60)
+    end
+    return false
+  end
+
   -- SET never asks (`bit BATTLE_SHIFT, a / jr nz, .return_nc`, :3280-3282).
   local setScreen, setBattle = shiftScreen("SET")
   check(runToMenu(setScreen), "the SET battle reaches its menu")
@@ -673,6 +984,7 @@ do
     "whose last page is the one YesNoBox opens over")
 
   -- NO falls through to the send-out with nothing switched and nothing spent.
+  check(settleText(noScreen), "the question finishes printing")
   noScreen.messageTimer = 0
   noScreen.shiftIndex = 2
   Input:overlayPressed("a")
@@ -689,6 +1001,7 @@ do
   yesBattle.enemy.hp = 1
   yesScreen:submit({ kind = "move", move = "TACKLE" })
   check(runToPhase(yesScreen, "ask-shift"), "it stops on OfferSwitch too")
+  check(settleText(yesScreen), "and its question finishes printing")
   yesScreen.messageTimer = 0
   yesScreen.shiftIndex = 1
   Input:overlayPressed("a")
@@ -1219,6 +1532,11 @@ end
 -- (engine/battle/core.asm:5213-5246), so neither spends the turn.
 local function tapper(screen)
   return function(button)
+    for _ = 1, 400 do
+      if not screen:syncTyper() then break end
+      Input:step()
+      screen:update(1 / 60)
+    end
     Input:overlayPressed(button)
     Input:step()
     screen:update(1 / 60)
@@ -1454,7 +1772,7 @@ end
 do
   local screen, lead = learnScreen()
   screen:push({ kind = "send", side = "enemy", mon = { hp = 1 }, hp = 1,
-    text = "JOE sent out PIDGEY!" })
+    text = Battle.sentOutText("JOE", "PIDGEY") })
   check(runToPhase(screen, "ask-forget"), "the pages reach the question")
   local tap = tapper(screen)
   tap("a")                      -- read the question
@@ -1462,8 +1780,87 @@ do
   eq(screen.phase, "choose-forget", "YES opens the picker")
   tap("a")                      -- slot 1
   eq(lead.moves[1].id, "EMBER", "the move is learned")
+  eq(screen.message, "1, 2 and…", "the count line prints first")
+  -- ../pokecrystal/home/text.asm:887-896
+  eq(screen.messageTimer, 0, "and text_pause holds it for no button")
+  local poofed = false
+  for _ = 1, 400 do
+    Input:step()
+    screen:update(1 / 60)
+    if screen.message and screen.message:find("forgot", 1, true) then
+      poofed = true
+      break
+    end
+  end
+  check(poofed, "the forgot line follows the pause with no press between")
   check(screen.message and screen.message:find("forgot", 1, true) ~= nil,
     "and its line prints ahead of the send-out that was already queued")
+end
+
+-- ../pokecrystal/data/text/battle.asm:240-246
+-- ../pokecrystal/engine/battle/core.asm:3146-3147
+-- ../pokecrystal/home/text.asm:502-526
+do
+  local function typed(screen)
+    for _ = 1, 400 do
+      if not screen:syncTyper() then break end
+      Input:step()
+      screen:update(1 / 60)
+    end
+    return table.concat(screen:messageLines(), "|")
+  end
+  local function sendOutScreen(trainer, monName)
+    local screen, battle = newScreen()
+    check(runToMenu(screen), "reached the menu")
+    battle:takeEvents()
+    local mon = Mon.new(DATA, "PIDGEY", 5, { dvs = perfect })
+    mon.nickname = monName
+    screen.phase = "resolving"
+    screen.showEnemyHud = false
+    screen:push({ kind = "send", side = "enemy", mon = mon, hp = mon.hp,
+      text = Battle.sentOutText(trainer, monName) })
+    screen:advanceQueue()
+    return screen
+  end
+  local function sendStarted(screen)
+    return screen.afterSendOut ~= nil or screen.showEnemyHud == true
+  end
+
+  local screen = sendOutScreen("CHAMPION LANCE", "DRAGONITE")
+  eq(typed(screen), "CHAMPION LANCE|sent out",
+    "the trainer and 'sent out' are the first page, no name on it")
+  check(not sendStarted(screen) and screen.pendingSendOut ~= nil,
+    "the ball stays shut while the first page waits for A")
+  local tap = tapper(screen)
+  tap("a")
+  Input:step()
+  screen:update(1 / 60)
+  local lines = screen:messageLines()
+  eq(lines[1], "sent out", "cont scrolls 'sent out' up already printed")
+  check(lines[2] ~= "DRAGONITE!", "and only the name types")
+  eq(typed(screen), "sent out|DRAGONITE!",
+    "a nine-letter name lands whole on the scrolled row")
+  check(sendStarted(screen) and screen.pendingSendOut == nil,
+    "and ANIM_SEND_OUT_MON starts with the name page")
+
+  local short = sendOutScreen("CHAMPION LANCE", "PIDGEY")
+  eq(typed(short), "CHAMPION LANCE|sent out",
+    "a short name still gets the cart's unconditional third row")
+  tapper(short)("a")
+  eq(typed(short), "sent out|PIDGEY!", "and lands on the scrolled page")
+
+  local long = newScreen()
+  check(runToMenu(long), "reached the menu")
+  long.battle:takeEvents()
+  long.phase = "resolving"
+  long:push({ kind = "message",
+    text = "SOMELONGNAME gained 12345 EXP. Points!" })
+  long:advanceQueue()
+  eq(typed(long), "SOMELONGNAME|gained 12345 EXP.",
+    "an overlong line shows its first two rows")
+  tapper(long)("a")
+  eq(typed(long), "gained 12345 EXP.|Points!",
+    "and the third row scrolls in instead of being cut")
 end
 
 -- ---- MoveSelectionScreen's two boxes (#1478) ------------------------------
@@ -1518,6 +1915,219 @@ do
   check(text:find("30/35@5,11", 1, true) ~= nil,
     "and only the highlighted move's PP, at (5,11)")
   check(text:match("R:%d+/%d+@19,1%d") == nil, "no PP is printed per row")
+end
+
+-- data/text/battle.asm:484 InLoveWithText, :490 InfatuationText: three rows
+do
+  local Chrome = require("src.ui.gen2.Chrome")
+  local screen, battle = newScreen()
+  check(runToMenu(screen), "reached the menu")
+  battle:volatile(battle.player).attract = true
+  battle.random = function(n) return (n or 1) - 1 end
+  screen:submit({ kind = "move", move = "TACKLE" })
+  local seen, printed, widest, tallest = {}, {}, 0, 0
+  for _ = 1, 3000 do
+    local msg = screen.message
+    if msg and not seen[msg] then
+      seen[msg] = true
+      local rows = Chrome.wrap(msg, 18)
+      tallest = math.max(tallest, #rows)
+      for i = 1, math.min(#rows, 2) do
+        widest = math.max(widest, #rows[i])
+        printed[#printed + 1] = rows[i]
+      end
+      printed[#printed + 1] = "|"
+    end
+    drainStep(screen)
+    if screen.phase == "menu" then break end
+  end
+  local shown = table.concat(printed, "\n")
+  check(shown:find(battle:monName(battle.player) .. "\nis in love with",
+    1, true) ~= nil, "the in-love line opens on the user")
+  check(shown:find("is in love with\n" .. battle:monName(battle.enemy) .. "!",
+    1, true) ~= nil, "and scrolls onto the target it never used to reach")
+  check(shown:find("infatuation kept", 1, true) ~= nil,
+    "InfatuationText prints")
+  check(shown:find("it from attacking!", 1, true) ~= nil,
+    "and so does the row the two-row box used to cut")
+  eq(tallest, 2, "no drawn message runs past the box's two rows")
+  check(widest <= 18, "and no row past its 18 tiles")
+end
+
+-- ---- SendOutPlayerMon (../pokecrystal/engine/battle/core.asm:82-93, :4027) --
+do
+  -- ../pokecrystal/data/moves/animations.asm:414-427
+  local SEND_OUT = {
+    ids = { ANIM_SEND_OUT_MON = "sendout" },
+    scripts = {
+      sendout = {
+        { "wait", 7 },
+        { "bgeffect", "BATTLE_BG_EFFECT_ENTER_MON", 0, 1, 0 },
+        { "wait", 12 },
+        { "bgeffect", "BATTLE_BG_EFFECT_SHOW_MON", 0, 1, 0 },
+        { "wait", 6 },
+        { "ret" },
+      },
+    },
+  }
+  local function animScreen()
+    local screen, battle, player, wild = newScreen()
+    screen.anims = SEND_OUT
+    screen.animConstants = {}
+    return screen, battle, player, wild
+  end
+
+  local screen, _, _, wild = animScreen()
+  local sawSlide, trainerDuringSlide, hudDuringSlide = false, true, false
+  local sentOut = false
+  for _ = 1, 3000 do
+    drainStep(screen)
+    if screen.backpicSlide then
+      sawSlide = true
+      trainerDuringSlide = trainerDuringSlide and screen.showPlayerTrainer
+      hudDuringSlide = hudDuringSlide or screen.showPlayerHud
+    end
+    if screen.afterSendOut then sentOut = true break end
+  end
+  check(sentOut, "the intro reaches the player's send-out")
+  check(sawSlide, "the trainer's back pic slides out first (core.asm:82-84)")
+  check(trainerDuringSlide, "and it is the TRAINER that slides, not the mon")
+  check(not hudDuringSlide, "with no player HUD yet")
+  check(not screen.showPlayerTrainer, "the back pic is gone once the slide ends")
+  eq(screen.message, "Go! CYNDAQUIL!", "the Go! line is up")
+  check(screen:picBoxCleared("player"),
+    "and the box is EMPTY while it types: the mon is not drawn before "
+      .. "ANIM_SEND_OUT_MON reveals it")
+  check(not screen.showPlayerHud, "and the player HUD is not up yet")
+
+  local revealFrame, sizeAtReveal, typedAtReveal
+  local hudBeforeReveal = false
+  for frame = 1, 400 do
+    run(screen, 1)
+    hudBeforeReveal = hudBeforeReveal or screen.showPlayerHud
+    if not screen:picBoxCleared("player") then
+      revealFrame = frame
+      local anim = screen:animPicState("player")
+      sizeAtReveal = anim and anim.size
+      typedAtReveal = screen.typer == nil or screen.typer:done()
+      break
+    end
+  end
+  check(revealFrame ~= nil, "the mon does appear")
+  check(typedAtReveal, "only after the Go! line has finished typing")
+  check(not hudBeforeReveal, "and before the HUD, never after it")
+  check(screen.afterSendOut ~= nil and screen.anim ~= nil,
+    "while ANIM_SEND_OUT_MON is still running")
+  eq(sizeAtReveal, 2,
+    "on BattleBGEffect_EnterMon's first row, the 2x2 square "
+      .. "(bg_effects.asm:664-666)")
+
+  -- ../pokecrystal/data/text/common_2.asm:137-140
+  local menuFrames
+  for frame = 1, 400 do
+    run(screen, 1)
+    if screen.phase == "menu" then menuFrames = frame break end
+  end
+  check(menuFrames ~= nil, "the menu comes up with no A press after Go!")
+  check(screen.showPlayerHud, "with the player HUD up")
+  check(not screen:picBoxCleared("player"), "and the mon on the field")
+  check(screen.afterSendOut == nil, "and the send-out retired")
+
+  -- ../pokecrystal/engine/battle/core.asm:3549-3600
+  screen:startSendOut("enemy", wild)
+  check(screen:picBoxCleared("enemy"),
+    "an enemy send-out starts with its box empty")
+  local enemySize
+  for _ = 1, 400 do
+    run(screen, 1)
+    if not screen:picBoxCleared("enemy") then
+      local anim = screen:animPicState("enemy")
+      enemySize = anim and anim.size
+      break
+    end
+  end
+  eq(enemySize, 5, "and the enemy's first square is the 5x5 (bg_effects.asm:669)")
+  for _ = 1, 400 do
+    if not screen.afterSendOut then break end
+    run(screen, 1)
+  end
+  check(screen.afterSendOut == nil and not screen:picBoxCleared("enemy"),
+    "and it ends with the enemy on the field")
+
+  local bare = newScreen()
+  bare.anims = nil
+  bare.showPlayerTrainer = false
+  bare:startSendOut("player", bare.battle.player)
+  check(not bare:picBoxCleared("player") and bare.showPlayerHud,
+    "without scripts the mon and the HUD come up together")
+end
+
+-- SlideBattlePicOut + EmptyBattleTextbox (core.asm:3221)
+do
+  local screen, battle = newScreen()
+  check(runToMenu(screen), "the intro drains")
+  screen.showEnemyTrainer = true
+  screen.picHidden.enemy = false
+  screen.trainerSlide = 0
+  for _ = 1, 400 do
+    run(screen, 1)
+    if not screen.trainerSlide then break end
+  end
+  eq(screen.showEnemyTrainer, false, "the trainer pic slides off")
+  eq(screen.picHidden.enemy, true, "and the box it emptied stays empty")
+  check(screen:picBoxCleared("enemy"), "so drawPic paints nothing there")
+
+  screen:startSendOut("enemy", battle.enemy)
+  for _ = 1, 400 do
+    if not screen.afterSendOut then break end
+    run(screen, 1)
+  end
+  check(not screen:picBoxCleared("enemy"),
+    "the send-out animation is the only thing that brings the mon back")
+end
+
+-- home/text.asm:630
+-- (home/joypad.asm:428)
+do
+  local screen = newScreen()
+  local held = false
+  for _ = 1, 600 do
+    run(screen, 1)
+    if (screen.messageTimer or 0) > 0 and not Typer.typing(screen) then
+      held = true
+      break
+    end
+  end
+  check(held, "WildPokemonAppearedText holds for PromptButton")
+
+  screen.arrowBlink = 0
+  check(screen:messageArrowVisible(), "the cursor is on at phase 0")
+  screen.arrowBlink = 15
+  check(screen:messageArrowVisible(), "and through phase 15")
+  screen.arrowBlink = 16
+  check(not screen:messageArrowVisible(), "UnloadBlinkingCursor at phase 16")
+  screen.arrowBlink = 31
+  check(not screen:messageArrowVisible(), "and through phase 31")
+
+  -- byte (home/text.asm:887-902)
+  screen.arrowBlink = 0
+  screen.waitSfx = "SFX_TACKLE"
+  check(not screen:messageArrowVisible(), "no cursor under a held SFX")
+  screen.waitSfx = nil
+  screen.messageDelay = 10
+  check(not screen:messageArrowVisible(), "none through a text_pause")
+  screen.messageDelay = 0
+  check(screen:messageArrowVisible(), "back on once the pause is done")
+
+  -- DoneText / text_end lines never load it (home/text.asm:566)
+  screen.messageTimer = 0
+  check(not screen:messageArrowVisible(), "and never on a `done` line")
+
+  local sliding = newScreen()
+  local before = sliding.arrowBlink
+  run(sliding, 1)
+  check(sliding.slideFrame > 0 and sliding.arrowBlink ~= before,
+    "the blink phase advances through update's early returns")
 end
 
 S.finish()

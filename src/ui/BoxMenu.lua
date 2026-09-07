@@ -13,6 +13,23 @@ local Strings = require("src.core.Strings")
 
 local BoxMenu = {}
 
+-- engine/pokemon/bills_pc.asm:118
+-- vChars2 $78; engine/menus/save.asm:497
+local ballTile
+local function drawBallTile(tx, ty)
+  if ballTile == nil then
+    local ok, img = pcall(love.graphics.newImage,
+      "assets/generated/battle/balls.png")
+    ballTile = ok and { img = img,
+      quad = love.graphics.newQuad(0, 0, 8, 8, img:getDimensions()) } or false
+  end
+  if not ballTile then return end
+  local r, g, b, a = love.graphics.getColor()
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(ballTile.img, ballTile.quad, tx * 8, ty * 8)
+  love.graphics.setColor(r, g, b, a)
+end
+
 -- PrintListMenuEntries prints the nickname at hlcoord 6,4 and PrintLevel
 -- one row down, 8 columns right (home/list_menu.asm:364-365, 459-461)
 local function monRow(game, mon, value)
@@ -84,9 +101,9 @@ local function withdraw(game)
       if item.cancel then list:close() return end
       local mon = box[item.value]
       if not mon then return end
-      monSubmenu(game, "WITHDRAW", mon, function()
+      monSubmenu(game, Strings("WITHDRAW"), mon, function()
         if #game.save.party >= Party.MAX then
-          list.footer = "The party is full!"
+          list.footer = Strings("The party is full!")
           return
         end
         -- add_mon.asm _MoveMon's tail ("returning mon to party, compute
@@ -141,7 +158,7 @@ local function deposit(game)
           or Strings("There isn't any\nresponse...")))
         return
       end
-      monSubmenu(game, "DEPOSIT", mon, function()
+      monSubmenu(game, Strings("DEPOSIT"), mon, function()
         if #game.save.party <= 1 then
           list.footer = Strings("You need at least\none POKéMON!")
           return
@@ -243,8 +260,10 @@ local function changeBoxMenu(game)
     Font.drawBox(0, 12, 20, 6)
     love.graphics.setColor(0, 0, 0, 1)
     local y = 112
-    for line in ((t._ChooseABoxText or Strings("Choose a\nPOKéMON BOX."))
-                 .. "\n"):gmatch("([^\n]*)\n") do
+    -- data/text/text_3.asm:30
+    local prompt = require("src.render.TextBox")
+      .strip(t._ChooseABoxText or Strings("Choose a\n<PK><MN> BOX."))
+    for line in (prompt .. "\n"):gmatch("([^\n]*)\n") do
       Font.draw(line, 8, y)
       y = y + 16
     end
@@ -256,7 +275,7 @@ local function changeBoxMenu(game)
     baseDraw(self)
     love.graphics.setColor(0, 0, 0, 1)
     for i = 1, Boxes.COUNT do
-      if #boxes[i] > 0 then ListMenu.drawBall(148, i * 8 + 4) end
+      if #boxes[i] > 0 then drawBallTile(18, i) end
     end
     love.graphics.setColor(1, 1, 1, 1)
   end
@@ -321,8 +340,8 @@ local function printBox(game)
       love.graphics.setColor(1, 1, 1, 1)
     end)
   game.stack:push(TextBox.new(game, saved
-    and Strings("Printed BOX %d!\fSaved as\n%s\vin the save\nfolder.",
-                game.save.currentBox or 1, saved)
+    and (Strings("Printed BOX %d!\f", game.save.currentBox or 1)
+         .. Printer.savedWhereText(saved))
     or Strings("Printer error!\n%s", tostring(err))))
 end
 
@@ -354,6 +373,21 @@ function BoxMenu.new(game)
     -- Bill's PC runs silent end to end (BIT_NO_MENU_BUTTON_SOUND,
     -- engine/menus/pokemon_pc.asm)
     { tx = 0, ty = 0, tw = 14, th = #items * 2 + 2, noSound = true })
+  -- bills_pc.asm:176
+  for _, item in ipairs(items) do
+    local onSelect = item.onSelect
+    if item.keepOpen and onSelect then
+      item.onSelect = function()
+        menu.hollowIndex = menu.index
+        onSelect()
+      end
+    end
+  end
+  local baseUpdate = menu.update
+  function menu:update(dt)
+    if self.game.stack:top() == self then self.hollowIndex = nil end
+    return baseUpdate(self, dt)
+  end
   local baseDraw = menu.draw
   function menu:draw()
     baseDraw(self)

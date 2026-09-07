@@ -16,8 +16,8 @@
 -- the submenu is opt-in through `opts.submenu` and not the default.
 
 local Assets = require("src.render.Assets")
-local Battle = require("src.battle.gen2.Battle")
 local Chrome = require("src.ui.gen2.Chrome")
+local FieldMoves = require("src.world.gen2.FieldMoves")
 local Font = require("src.render.Font")
 local GbcPalette = require("src.render.GbcPalette")
 local HpBar = require("src.battle.gen2.HpBar")
@@ -28,6 +28,9 @@ local Mon = require("src.battle.gen2.Mon")
 local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local Sound = require("src.core.Sound")
+local Status = require("src.battle.Status")
+local Strings = require("src.core.Strings")
+local WaitPlaySFX = require("src.ui.gen2.WaitPlaySFX")
 
 local PartyMenu = {}
 PartyMenu.__index = PartyMenu
@@ -38,14 +41,19 @@ PartyMenu.isOpaque = true
 -- is both faithful and two tiles narrower than spelling POKéMON out -- which
 -- is what keeps "Use on which <PK><MN>?" inside its 18-column text box.
 PartyMenu.PROMPTS = {
-  choose = "Choose a POKéMON.",
-  useItem = "Use on which <PK><MN>?",
-  which = "Which <PK><MN>?",
-  teach = "Teach which <PK><MN>?",
-  moveTo = "Move to where?",
-  toWhich = "To which <PK><MN>?",
-  none = "You have no <PK><MN>!",
+  choose = Strings.source("Choose a POKéMON."),
+  useItem = Strings.source("Use on which <PK><MN>?"),
+  which = Strings.source("Which <PK><MN>?"),
+  teach = Strings.source("Teach which <PK><MN>?"),
+  moveTo = Strings.source("Move to where?"),
+  toWhich = Strings.source("To which <PK><MN>?"),
+  none = Strings.source("You have no <PK><MN>!"),
 }
+
+local FAINTED_LABEL = Strings.source("FNT")
+local EGG_LABEL = Strings.source("EGG")
+local ABLE_LABEL = Strings.source("ABLE")
+local NOT_ABLE_LABEL = Strings.source("NOT ABLE")
 
 -- The icon's two frames swap every 16 logic steps, close to the cart's
 -- SPRITE_ANIM cadence.
@@ -67,6 +75,22 @@ PartyMenu.FIELD_MOVES = {
 -- STATS, SWITCH, MOVE and then ITEM (or MAIL, when the held item is mail),
 -- and only appends CANCEL while the list is still under NUM_MONMENU_ITEMS.
 local NUM_MONMENU_ITEMS = 8
+
+-- MonMenuOptionStrings are engine-owned labels.  Translate them while the
+-- built-in rows are assembled so hook-injected rows keep their authored text;
+-- the stable id remains the value every action branch consumes.
+local ACTION_LABELS = {
+  STATS = Strings.source("STATS"),
+  SWITCH = Strings.source("SWITCH"),
+  MOVE = Strings.source("MOVE"),
+  ITEM = Strings.source("ITEM"),
+  MAIL = Strings.source("MAIL"),
+  CANCEL = Strings.source("CANCEL"),
+}
+
+local function actionLabel(id)
+  return Strings(ACTION_LABELS[id] or id)
+end
 
 -- MonSubmenu's .MenuHeader is `menu_coords 6, 0, SCREEN_WIDTH - 1,
 -- SCREEN_HEIGHT - 1`, and .GetTopCoord then pulls the top edge up to
@@ -114,7 +138,6 @@ function PartyMenu.new(game, opts)
   self.save = save
   self.party = opts.party or (save and save.party) or {}
   local data = game and game.data or {}
-  self.data = data
   -- engine/pokemon/move_mon.asm:1402
   for i = 1, #self.party do
     Mon.refreshStats(self.party[i], data)
@@ -122,12 +145,15 @@ function PartyMenu.new(game, opts)
   self.icons = opts.icons or data.gen2Icons
   self.palettes = opts.palettes or data.gen2Palettes
   self.pokemon = opts.pokemon or data.pokemon
-  self.prompt = PartyMenu.PROMPTS[opts.prompt or "choose"] or opts.prompt
+  local promptKey = opts.prompt or "choose"
+  self.promptIsBuiltin = PartyMenu.PROMPTS[promptKey] ~= nil
+  self.prompt = PartyMenu.PROMPTS[promptKey] or opts.prompt
     or PartyMenu.PROMPTS.choose
   -- engine/pokemon/party_menu.asm:297
   self.tmhm = opts.tmhm
   if self.tmhm and (opts.prompt == nil or opts.prompt == "teach") then
     self.prompt = PartyMenu.PROMPTS.teach
+    self.promptIsBuiltin = true
   end
   self.onChoose = opts.onChoose
   self.onCancel = opts.onCancel
@@ -141,6 +167,10 @@ function PartyMenu.new(game, opts)
   self.submenu = nil
   -- The held slot while SwitchPartyMons' second pick is open; nil otherwise.
   self.switchFrom = nil
+  self.repeatSfx = nil
+  -- ../pokecrystal/engine/items/item_effects.asm:2016
+  self.softboiledFrom = nil
+  self.softboiledCost = nil
   -- wPartyMenuCursor lives ACROSS openings: InitPartyMenuWithCancel /
   -- InitPartyMenuNoCancel seed wMenuCursorY from it and fall back to row 1 only
   -- when it is zero or no longer inside the party (`and a / jr z, .skip / inc b
@@ -162,7 +192,7 @@ end
 function PartyMenu:count()
   -- CANCEL is one past the last mon.  SwitchPartyMons reopens the list
   -- through InitPartyMenuNoCancel, which caps the cursor at the last mon.
-  if self.switchFrom then return #self.party end
+  if self.switchFrom or self.softboiledFrom then return #self.party end
   return #self.party + 1
 end
 
@@ -200,9 +230,9 @@ local function buildSubmenuItems(self, mon)
   -- test is `cp EGG`).
   if mon and mon.isEgg then
     return {
-      { id = "STATS", label = "STATS" },
-      { id = "SWITCH", label = "SWITCH" },
-      { id = "CANCEL", label = "CANCEL" },
+      { id = "STATS", label = actionLabel("STATS") },
+      { id = "SWITCH", label = actionLabel("SWITCH") },
+      { id = "CANCEL", label = actionLabel("CANCEL") },
     }
   end
   local items = {}
@@ -218,17 +248,18 @@ local function buildSubmenuItems(self, mon)
       }
     end
   end
-  items[#items + 1] = { id = "STATS", label = "STATS" }
-  items[#items + 1] = { id = "SWITCH", label = "SWITCH" }
-  items[#items + 1] = { id = "MOVE", label = "MOVE" }
+  items[#items + 1] = { id = "STATS", label = actionLabel("STATS") }
+  items[#items + 1] = { id = "SWITCH", label = actionLabel("SWITCH") }
+  items[#items + 1] = { id = "MOVE", label = actionLabel("MOVE") }
   -- ItemIsMail, not a pocket test: mail lives in the ordinary ITEM pocket
   -- (ItemAttributes gives FLOWER_MAIL pocketId 1), so the only thing that
   -- says "this is mail" is data/items/mail_items.asm's own list.
   local isMail = Mail.monHoldsMail(mon)
-  items[#items + 1] = isMail and { id = "MAIL", label = "MAIL" }
-    or { id = "ITEM", label = "ITEM" }
+  items[#items + 1] = isMail
+    and { id = "MAIL", label = actionLabel("MAIL") }
+    or { id = "ITEM", label = actionLabel("ITEM") }
   if #items < NUM_MONMENU_ITEMS then
-    items[#items + 1] = { id = "CANCEL", label = "CANCEL" }
+    items[#items + 1] = { id = "CANCEL", label = actionLabel("CANCEL") }
   end
   return items
 end
@@ -237,9 +268,9 @@ end
 -- (engine/pokemon/mon_submenu.asm:286-292).
 local function buildBattleSubmenuItems()
   return {
-    { id = "SWITCH", label = "SWITCH" },
-    { id = "STATS", label = "STATS" },
-    { id = "CANCEL", label = "CANCEL" },
+    { id = "SWITCH", label = actionLabel("SWITCH") },
+    { id = "STATS", label = actionLabel("STATS") },
+    { id = "CANCEL", label = actionLabel("CANCEL") },
   }
 end
 
@@ -315,14 +346,8 @@ function PartyMenu:finishSwitch()
   if self.save and self.save.party == party then
     Mail.swapSlots(self.save, from, to)
   end
-  -- engine/pokemon/switchpartymons.asm:38
-  local data = self.game and self.game.data
-  local ok, Sound = pcall(require, "src.core.Sound")
-  if not (ok and data and Sound and Sound.play) then return end
-  local sfx = data.audio and data.audio.sfx
-  if sfx and sfx[Sound.resolve(data, "Sfx_SwitchPokemon")] then
-    pcall(Sound.play, data, "Sfx_SwitchPokemon")
-  end
+  -- engine/pokemon/switchpartymons.asm:13
+  self:playSfxTwice("Sfx_SwitchPokemon")
 end
 
 -- The reopened list: InitPartyMenuNoCancel caps the cursor at the last mon,
@@ -339,6 +364,55 @@ function PartyMenu:updateSwitch(input)
   elseif input:wasPressed("a") then
     self:finishSwitch()
   end
+end
+
+-- ../pokecrystal/engine/items/item_effects.asm:2016 .SelectMilkDrinkRecipient
+function PartyMenu:beginSoftboiled(slot, cost)
+  self.softboiledFrom = slot
+  self.softboiledCost = cost
+end
+
+-- ../pokecrystal/engine/items/item_effects.asm:2020 .SelectMilkDrinkRecipient
+function PartyMenu:updateSoftboiled(input)
+  local total = #self.party
+  if input:wasPressed("up") then
+    self.index = self.index > 1 and self.index - 1 or total
+  elseif input:wasPressed("down") then
+    self.index = self.index < total and self.index + 1 or 1
+  elseif input:wasPressed("b") then
+    self.softboiledFrom, self.softboiledCost = nil, nil
+  elseif input:wasPressed("a") then
+    self:finishSoftboiled()
+  end
+end
+
+-- ../pokecrystal/engine/items/item_effects.asm:1986 Softboiled_MilkDrinkFunction
+function PartyMenu:finishSoftboiled()
+  local slot = self.index
+  local userSlot = self.softboiledFrom
+  local user = self.party[userSlot]
+  local target = self.party[slot]
+  local userBefore = user and user.hp or 0
+  local before, after =
+    FieldMoves.softboiledTransfer(user, target, self.softboiledCost or 0)
+  if not before then
+    self:showItemResult(slot, { text = Strings(ItemEffects.TEXT_CANT_USE_ON_MON) })
+    return
+  end
+  self.softboiledFrom, self.softboiledCost = nil, nil
+  -- data/text/common_1.asm:40 _RecoveredSomeHPText
+  local climb = {
+    fromHp = before, toHp = after, sfx = "Sfx_Potion",
+    text = Strings("%s\nrecovered %dHP!",
+      target.nickname or target.name or target.species or "?",
+      after - before),
+  }
+  -- ../pokecrystal/engine/items/item_effects.asm:1999 HealHP_SFX_GFX
+  self:showItemResult(userSlot, {
+    fromHp = userBefore, toHp = user.hp, sfx = "Sfx_Potion", auto = true,
+    holdSlot = slot, holdHp = before,
+    onDone = function() self:showItemResult(slot, climb) end,
+  })
 end
 
 -- OpenPartyStats (engine/pokemon/mon_menu.asm): wMonType is cleared to
@@ -367,11 +441,51 @@ end
 -- (src/world/gen2/FieldMoves.lua and World:useFieldMove), because a field move
 -- is a question about the map, not about the menu.  All that is left here is
 -- the $2 / $3 branch.
+-- once a spawn is picked -- engine/pokemon/mon_menu.asm:609-626 over
+-- engine/events/overworld.asm:556-568.  B answers -1 and takes .Error's $0,
+-- which is StartMenu_Pokemon's .choosemenu (engine/menus/start_menu.asm:503).
 function PartyMenu:useFieldMove(moveId, mon)
   local world = self.game and self.game.world
   if not (world and world.useFieldMove) then return end
   local result = world:useFieldMove(moveId, mon)
-  if result and result.ok then self:exitToField() end
+  if not (result and result.ok) then return end
+  if result.inMenu then
+    self:beginSoftboiled(self.index, result.cost)
+    return
+  end
+  -- ../pokecrystal/engine/events/overworld.asm:1357 RockSmashFromMenuScript
+  if result.action == "rocksmash" then
+    world.queuedFieldMove = nil
+    local script = FieldMoves.rockSmashFromMenuScript(
+      world.stdScripts, world.vm and world.vm.scripts,
+      function(name) return world:specialIdNamed(name) end)
+    if not script then return end
+    -- ../pokecrystal/engine/events/overworld.asm:1341 GetFacingObject
+    if world.vm then world.vm.lastTalked = result.lastTalked end
+    world.queuedScript = script
+    self:exitToField()
+    return
+  end
+  if result.action == "fly" and world.openFlyMap then
+    world.queuedFieldMove = nil
+    local opened = world:openFlyMap(mon, {
+      onChosen = function(spawnId)
+        result.flySpawn = spawnId
+        world.queuedFieldMove = result
+        -- engine/pokegear/pokegear.asm:2078, home/map.asm:1927
+        if world.exitMenusFadeForFly then
+          world:exitMenusFadeForFly()
+        elseif world.exitMenusFade then
+          world:exitMenusFade()
+        end
+        self:exitToField()
+      end,
+      onCancel = function() end,
+    })
+    if opened then return end
+    world.queuedFieldMove = result
+  end
+  self:exitToField()
 end
 
 -- ManagePokemonMoves (engine/pokemon/mon_menu.asm:858-873), the MOVE row: an
@@ -436,6 +550,11 @@ function PartyMenu:exitToField()
   local stack = self.game and self.game.stack
   if stack and stack.clear then
     stack:clear()
+    -- ../pokecrystal/home/map.asm:1927-1940
+    local world = self.game.world
+    if world and world.exitMenusFade and not world.mapSetup then
+      world:exitMenusFade()
+    end
   elseif self.onCancel then
     self.onCancel()
   end
@@ -501,6 +620,26 @@ function PartyMenu:playSfx(name)
   if sfx and sfx[Sound.resolve(data, name)] then Sound.play(data, name) end
 end
 
+-- engine/pokemon/switchpartymons.asm:13
+function PartyMenu:playSfxTwice(name)
+  local data = self.game and self.game.data
+  local sfx = data and data.audio and data.audio.sfx
+  if not (sfx and Sound.resolve and Sound.play) then return end
+  if not sfx[Sound.resolve(data, name)] then return end
+  self:playSfx(name)
+  self.repeatSfx = WaitPlaySFX.arm(name)
+end
+
+-- home/audio.asm:225
+function PartyMenu:tickRepeatSfx()
+  local pending = self.repeatSfx
+  if not pending then return false end
+  if WaitPlaySFX.waiting(pending) then return true end
+  self.repeatSfx = nil
+  self:playSfx(pending.name)
+  return false
+end
+
 -- engine/items/item_effects.asm:1671
 function PartyMenu:showItemResult(slot, opts)
   opts = opts or {}
@@ -509,10 +648,22 @@ function PartyMenu:showItemResult(slot, opts)
     shown = opts.fromHp,
     target = opts.toHp,
     text = opts.text,
-    delay = PartyMenu.ACTION_TEXT_DELAY,
+    delay = opts.delay or PartyMenu.ACTION_TEXT_DELAY,
     onDone = opts.onDone,
+    auto = opts.auto,
+    holdSlot = opts.holdSlot,
+    holdHp = opts.holdHp,
   }
   if opts.sfx then self:playSfx(opts.sfx) end
+end
+
+-- ../pokecrystal/engine/battle/core.asm:5156
+-- ../pokecrystal/home/text.asm:124
+function PartyMenu:refuse(text)
+  self:closeSubmenu()
+  local lines = Chrome.wrap(text, 18)
+  for i = #lines, 3, -1 do lines[i] = nil end
+  self:showItemResult(nil, { text = table.concat(lines, "\n"), delay = 0 })
 end
 
 function PartyMenu:itemResultClimbing()
@@ -523,7 +674,10 @@ end
 -- engine/battle/anim_hp_bar.asm:246
 function PartyMenu:shownHpFor(slot, mon)
   local r = self.itemResult
-  if r and r.slot == slot and r.shown then return r.shown end
+  if r then
+    if r.slot == slot and r.shown then return r.shown end
+    if r.holdSlot == slot and r.holdHp then return r.holdHp end
+  end
   return mon and mon.hp
 end
 
@@ -533,6 +687,11 @@ function PartyMenu:updateItemResult(input)
     local mon = self.party[r.slot]
     local maxHp = mon and (mon.maxHp or (mon.stats and mon.stats.hp)) or 0
     r.shown = HpBar.stepToward(r.shown, r.target, maxHp)
+    return
+  end
+  if r.auto then
+    self.itemResult = nil
+    if r.onDone then r.onDone() end
     return
   end
   if r.delay > 0 then
@@ -549,6 +708,8 @@ function PartyMenu:update(_dt)
   self.clock = self.clock + 1
   local input = self.game and self.game.input
   if not input then return end
+  -- home/audio.asm:225
+  if self:tickRepeatSfx() then return end
   if self.itemResult then
     self:updateItemResult(input)
     return
@@ -559,6 +720,10 @@ function PartyMenu:update(_dt)
   end
   if self.switchFrom then
     self:updateSwitch(input)
+    return
+  end
+  if self.softboiledFrom then
+    self:updateSoftboiled(input)
     return
   end
   local total = self:count()
@@ -766,15 +931,22 @@ end
 
 -- PlaceStatusString (engine/pokemon/mon_stats.asm): three letters, and a mon
 -- with no HP reads FNT whatever its status byte says.
-local function statusString(mon, hp, data)
+local function statusString(mon, hp, statuses)
   if hp == nil then hp = mon.hp end
-  if (hp or 0) <= 0 then return "FNT" end
+  if (hp or 0) <= 0 then return Strings(FAINTED_LABEL) end
   local status = mon.status
   if not status then return nil end
-  local record = Battle.statusRecordFor(data, status)
-  if record then return record.hudLabel or record.label end
-  local class = ItemEffects.STATUS_CLASS[tostring(status):lower()]
-  return class and class:upper()
+  local key = tostring(status):lower()
+  if statuses and statuses[key] then
+    return Strings(Status.hudLabelFor(statuses, key))
+  end
+  local class = ItemEffects.STATUS_CLASS[key]
+  if not class then return nil end
+  if not statuses then return class:upper() end
+  -- Gen 2's registry is keyed by effect ids (poison/burn/freeze/...), while
+  -- save and field code may still carry their three-letter spellings.
+  local id = Status.GEN2_ID_ALIASES[key] or key
+  return Strings(Status.hudLabelFor(statuses, id))
 end
 
 -- One list row's strings, exactly what WritePartyMenuTilemap's quality
@@ -783,14 +955,14 @@ end
 -- name and an icon alone: no HP digits, no bar, no level, no FNT.  The name
 -- itself is String_Egg -- GiveEgg writes "EGG" over the nickname slot -- so
 -- it never reads as the species hiding inside.
-function PartyMenu.rowFor(mon, hp, data)
-  if mon.isEgg then return { name = "EGG" } end
+function PartyMenu.rowFor(mon, hp, statuses)
+  if mon.isEgg then return { name = Strings(EGG_LABEL) } end
   local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 0
   if hp == nil then hp = mon.hp end
   return {
     name = mon.nickname or mon.name or mon.species or "?",
     hp = num3(hp) .. "/" .. num3(maxHp),
-    status = statusString(mon, hp, data),
+    status = statusString(mon, hp, statuses),
     -- <LV> is one font glyph ($6e), not the two characters ":L".
     level = "<LV>" .. tostring(mon.level or 1),
   }
@@ -803,9 +975,9 @@ function PartyMenu:tmhmAble(mon)
   if not move then return nil end
   local species = self.pokemon and self.pokemon[mon.species]
   for _, id in ipairs((species and species.tmhm) or {}) do
-    if id == move then return "ABLE" end
+    if id == move then return Strings(ABLE_LABEL) end
   end
-  return "NOT ABLE"
+  return Strings(NOT_ABLE_LABEL)
 end
 
 -- WritePartyMenuTilemap, jumptable entry by jumptable entry.  Every coordinate
@@ -845,7 +1017,8 @@ function PartyMenu:drawPanel()
     end
     self:drawIcon(mon, self:iconX(i), 4 + (i - 1) * 16 + self:iconBob(i))
     local hp = self:shownHpFor(i, mon)
-    local row = PartyMenu.rowFor(mon, hp, self.data)
+    local row = PartyMenu.rowFor(mon, hp,
+      self.game and self.game.data and self.game.data.gen2Statuses)
     Chrome.print(row.name, 3, nameY)
     if self.tmhm then
       local able = self:tmhmAble(mon)
@@ -862,7 +1035,7 @@ function PartyMenu:drawPanel()
   -- starts two columns left of where the nicknames do.
   local cancelY = 1 + #self.party * 2
   if self:isCancel() then Chrome.cursor(0, cancelY) end
-  Chrome.print("CANCEL", 1, cancelY)
+  Chrome.print(actionLabel("CANCEL"), 1, cancelY)
 
   -- PlacePartyMenuText: Textbox at (0,14) with a 2x18 interior, string at (1,16).
   -- ReturnToMapWithSpeechTextbox restores the normal font afterwards, and so
@@ -878,8 +1051,12 @@ function PartyMenu:drawPanel()
     end
   else
     Chrome.box(0, 14, 20, 4)
-    local prompt = self.switchFrom and PartyMenu.PROMPTS.moveTo or self.prompt
-    Chrome.print(#self.party == 0 and PartyMenu.PROMPTS.none or prompt, 1, 16)
+    -- ../pokecrystal/engine/items/item_effects.asm:2016
+    local prompt = self.switchFrom and Strings(PartyMenu.PROMPTS.moveTo)
+      or (self.softboiledFrom and Strings(PartyMenu.PROMPTS.useItem))
+      or (self.promptIsBuiltin and Strings(self.prompt) or self.prompt)
+    Chrome.print(#self.party == 0 and Strings(PartyMenu.PROMPTS.none) or prompt,
+      1, 16)
   end
   -- PokemonActionSubmenu clears (1,15) 2x18 before MonSubmenu draws, so the
   -- prompt is gone behind the box rather than showing through it.

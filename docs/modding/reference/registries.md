@@ -343,7 +343,8 @@ accepted and merged as-is.
 | `swarmGrass` | map of string -> {map?, rates, slots} |
 | `swarmWater` | map of string -> {map?, rate, slots} |
 | `timeFishGroups` | map of string | integer 0..255 -> {day, nite} |
-| `treeSets` | map of string -> {common, rare} |
+| `treeMonsAsleep` | {DAY, MORN, NITE} |
+| `treeSets` | map of string -> {common, rare?} |
 | `trees` | map of string -> string |
 | `water` | map of string -> {map?, rate, slots} |
 
@@ -386,7 +387,7 @@ accepted and merged as-is.
 | `hiddenItems` | map of string -> list of {item, x, y} |
 | `ledges` | list of {facing, input, ledgeTile, standingTile, tileset?} |
 | `playerPics` | {back?, demoBack?, front?, oakBack?} |
-| `townMap` | {background?, cursorOrder?, gridPixelSize?, locations?, nest?} |
+| `townMap` | {background?, cursorOrder?, gridPixelSize?, locations?, nest?, upArrow?} |
 
 ```lua
 mod.content.field:patch("boot", { startMap = "SABLE_COVE" })
@@ -796,6 +797,7 @@ and reported. See the Gold subsection below for where it does land.
 | `index` | integer >= 0 | yes |
 | `map` | maps id | no |
 | `member` | string | no |
+| `name` | string | no |
 | `number` | integer 0..255 | no |
 
 ```lua
@@ -818,6 +820,7 @@ mod.content.phone_contacts:patch("PHONE_YOUNGSTER_JOEY", { map = "ROUTE_31" })
 | `baseStats` | {attack, defense, hp, special, speed} | yes |
 | `battleScaleBack` | number 0.25..4 | no |
 | `battleScaleFront` | number 0.25..4 | no |
+| `battleTheme` | music id | no |
 | `catchRate` | integer 0..255 | yes |
 | `cry` | cries id | no |
 | `dex` | integer >= 1 | yes |
@@ -856,6 +859,7 @@ do not.
 | `baseStats` | {attack, defense, hp, specialAttack, specialDefense, speed} | yes |
 | `battleScaleBack` | number 0.25..4 | no |
 | `battleScaleFront` | number 0.25..4 | no |
+| `battleTheme` | music id | no |
 | `catchRate` | integer 0..255 | yes |
 | `cry` | cries id | no |
 | `dex` | integer >= 1 | yes |
@@ -896,7 +900,7 @@ and reported. See the Gold subsection below for where it does land.
 
 | field | type | required |
 |---|---|---|
-| `channel` | integer 0..255 | yes |
+| `channel` | integer 0..255 | no |
 | `name` | string | no |
 
 ```lua
@@ -930,6 +934,25 @@ mod.content.radio_channels:register("PIRATE_RADIO", { channel = 9, name = "PIRAT
 ```lua
 mod.content.render_pipelines:register("voxel", { label = "VOXEL", levels = { "OFF", "15", "35", "50" }, drawWorld = fn })
 ```
+
+## rom_text
+
+- semantics: `record`
+- target: none
+
+Gen 2 only: Red, Blue and Yellow have no such system, so there is no
+Gen 1 table to merge into and a write here on a Gen 1 boot is dropped
+and reported. See the Gold subsection below for where it does land.
+- value: string
+
+```lua
+mod.content.rom_text:override("_WokeUpText", "%s se réveille !")
+```
+
+### On Gold (Gen 2)
+
+- semantics: `record`
+- target: `Data.text`
 
 ## rulesets
 
@@ -1150,8 +1173,10 @@ mod.content.tokens:register("CLOCK", function(game) return "12" end)
 | `id` | string | yes |
 | `index` | integer 0..255 | no |
 | `name` | string | yes |
+| `palette` | palettes id | no |
 | `paletteSource` | string | no |
-| `parties` | list of list of {level, species} | yes |
+| `parties` | list of list of {level, moves?, species} | yes |
+| `partyNames` | map of integer >= 1 -> string | no |
 | `pic` | file path | no |
 | `trueColor` | boolean | no |
 
@@ -1171,6 +1196,7 @@ do not.
 |---|---|---|
 | `attributes` | list of integer 0..255 | no |
 | `baseMoney` | integer >= 0 | no |
+| `battleTheme` | music id | no |
 | `encounterMusic` | music id | no |
 | `id` | string | no |
 | `index` | integer 0..255 | no |

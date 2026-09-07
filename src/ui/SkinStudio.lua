@@ -470,6 +470,7 @@ end
 
 function Studio.load(opts)
   opts = opts or {}
+  Studio._activeSkinId = nil
   Studio.onClose = opts.onClose
   Studio.onPlay = opts.onPlay
   Studio.version = opts.version
@@ -607,7 +608,21 @@ function Studio.skinSummary(entry)
   return table.concat(bits, "  \194\183  ")
 end
 
+function Studio.forgetActiveSkin()
+  Studio._activeSkinId = nil
+end
+
+function Studio.activeSkinId()
+  if Studio._activeSkinId == nil then
+    local saved = SaveData.loadOptions()
+    local tc = type(saved.touchControls) == "table" and saved.touchControls or {}
+    Studio._activeSkinId = (tc.enabled ~= false and tc.skin) or false
+  end
+  return Studio._activeSkinId or nil
+end
+
 function Studio.refreshAvailable()
+  Studio.forgetActiveSkin()
   Studio.available = TouchSkin.list()
   Studio.availableMeta = {}
   Studio.libraryThumbs = {}
@@ -673,6 +688,7 @@ function Studio.selectEntry(id)
   tc.enabled, tc.skin = true, id
   opts.touchControls = tc
   SaveData.saveOptions(opts)
+  Studio.forgetActiveSkin()
   TouchControls:applyOptions(opts)
   setStatus(Strings("Using %s", id))
   return true
@@ -699,6 +715,7 @@ function Studio.deleteEntry(id)
         tc.enabled, tc.skin = true, nil
         opts.touchControls = tc
         SaveData.saveOptions(opts)
+        Studio.forgetActiveSkin()
         TouchControls:applyOptions(opts)
       end
       Studio.refreshAvailable()
@@ -759,6 +776,7 @@ function Studio.loadEntry(id)
 end
 
 function Studio.unload()
+  Studio._activeSkinId = nil
   Studio.pendingPlay = false
   TouchSkin.setSurface(nil)
   TouchSkin.setActive(nil)
@@ -791,6 +809,7 @@ function Studio.disableTouchControls()
   tc.enabled, tc.skin = false, nil
   opts.touchControls = tc
   SaveData.saveOptions(opts)
+  Studio.forgetActiveSkin()
   TouchControls:applyOptions(opts)
   TouchSkin.setActive(nil)
   Studio.closeModal()
@@ -1354,6 +1373,7 @@ function Studio.play()
   block.skin = skin.id
   opts.touchControls = block
   SaveData.saveOptions(opts)
+  Studio.forgetActiveSkin()
   -- Handing off here would unload the studio inside its own draw pass and
   -- leave the rest of this frame drawing against a dead skin; Studio.update
   -- runs it on the next tick instead.
@@ -2554,9 +2574,7 @@ local function drawLibrary()
   local textH = Kit.textHeight("mono") + Kit.textHeight("small")
   local artH = math.min(cardW * 0.52, math.max(52 * Kit.scale, listH * 0.34))
   local cardH = artH + textH + btnH * 2 + 34 * Kit.scale
-  local saved = SaveData.loadOptions()
-  local tc = type(saved.touchControls) == "table" and saved.touchControls or {}
-  local activeId = tc.enabled == false and nil or tc.skin
+  local activeId = Studio.activeSkinId()
 
   local rows = math.ceil(#entries / cols)
   local contentH = rows * cardH + math.max(0, rows - 1) * cardGap

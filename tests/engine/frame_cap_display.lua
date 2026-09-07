@@ -1,6 +1,7 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local T = require("tests.modkit")
+_G.POKEPORT_LOOP_PANEL_SYNC = true
 local FrameCap = require("src.core.FrameCap")
 local RefreshRate = require("src.core.RefreshRate")
 
@@ -52,6 +53,24 @@ FrameCap.current = FrameCap.DEFAULT
 FrameCap.bootHandheld()
 T.eq(FrameCap.current, FrameCap.DISPLAY, "bootHandheld picks DISPLAY before a save loads")
 os.getenv = savedGetenv
+FrameCap.apply(before)
+
+-- Android/iOS/UWP also prefer DISPLAY so composed GLES can lock during probe.
+local savedGetOS = love and love.system and love.system.getOS
+love = love or {}
+love.system = love.system or {}
+for _, osName in ipairs({ "Android", "UWP" }) do
+  love.system.getOS = function() return osName end
+  FrameCap.current = FrameCap.DEFAULT
+  FrameCap.applyOptions({ fpsCap = 60 })
+  T.eq(FrameCap.current, FrameCap.DISPLAY,
+    osName .. " default 60 maps to DISPLAY")
+  FrameCap.current = FrameCap.DEFAULT
+  FrameCap.bootPanelSync()
+  T.eq(FrameCap.current, FrameCap.DISPLAY,
+    "bootPanelSync picks DISPLAY on " .. osName)
+end
+love.system.getOS = savedGetOS or function() return "Linux" end
 FrameCap.apply(before)
 
 -- Performance LOW must not force DISPLAY → 60 on a 60 Hz panel.

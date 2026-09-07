@@ -13,6 +13,9 @@ local BagMenu = {}
 local Bag = require("src.inventory.Bag")
 local Strings = require("src.core.Strings")
 
+-- (engine/menus/start_sub_menus.asm:414-416, home/list_menu.asm:56-82)
+local BAG_RETURN_WHITE = 19
+
 -- acquisition order like wBagItems (Bag.order), not alphabetical
 local function buildItems(game)
   local items = {}
@@ -24,7 +27,7 @@ local function buildItems(game)
     table.insert(items, {
       value = id,
       label = def and def.name or id,
-      right = (not unsellable) and ("x" .. game.save.inventory[id]) or nil,
+      count = (not unsellable) and game.save.inventory[id] or nil,
     })
   end
   -- the $ff terminator's row: CANCEL is selectable and exits like B
@@ -86,8 +89,14 @@ end
 local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
   local result, payload, extra = ItemEffects.use(game.data, game.save, id, target,
                                                  battle, moveIndex, game.overworld)
+  -- engine/menus/start_sub_menus.asm:410-416, home/list_menu.asm:56-82
+  -- engine/items/item_effects.asm:1244
   local function closePicker()
-    if picker then picker:close() end
+    if not picker then return end
+    picker:close()
+    if battle then return end
+    local Transition = require("src.render.Transition")
+    game.stack:push(Transition.whiteFlash(game, BAG_RETURN_WHITE))
   end
 
   -- .useItem_closeMenu ends at CloseStartMenu, so the START menu kept open
@@ -346,7 +355,7 @@ local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
     for i, it in ipairs(list.items) do
       if it.value == id then
         local left = game.save.inventory[id]
-        if left then it.right = "x" .. left else table.remove(list.items, i) end
+        if left then it.count = left else table.remove(list.items, i) end
         break
       end
     end
@@ -360,7 +369,9 @@ local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
       -- is what makes that non-cancelable here, same as the RARE_CANDY
       -- call below; without it the stone (already consumed above) could
       -- be cancelled out from under the player (#883)
-      Evolution.evolve(game, target, extra.evolveTo, nil, "ITEM")
+      -- returns to StartMenu_Item (engine/items/item_effects.asm:772-793,
+      -- engine/menus/start_sub_menus.asm:419) #2070
+      Evolution.evolve(game, target, extra.evolveTo, closePicker, "ITEM")
       return
     end
     -- RARE CANDY: after the level text, the stat window, any level-up
@@ -374,9 +385,18 @@ local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
       -- mashing A burns through a stack of them (#796)
       -- RareCandyText carries sound_get_item_1
       -- (engine/menus/party_menu.asm:289-293)
+      -- pokered engine/items/item_effects.asm:1392-1394
+      if picker and picker.eraseCursors then picker:eraseCursors() end
+      if picker and picker.setMessage then picker:setMessage(payload[1]) end
       showMessages(game, payload, function()
         local StatBox = require("src.battle.BattleState").StatBox
-        game.stack:push(StatBox.new(game, target, function()
+        local statBox
+        -- ../pokered/engine/pokemon/evos_moves.asm:126-128
+        local function dropStatBox()
+          if statBox and game.stack:top() == statBox then game.stack:pop() end
+          statBox = nil
+        end
+        statBox = StatBox.new(game, target, function()
           local Experience = require("src.battle.Experience")
           local def = game.data.pokemon[target.species]
           local moves = Experience.movesLearnedAt(def, extra.leveledTo)
@@ -391,9 +411,12 @@ local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
               -- the party menu stays up through TryEvolvingMon and only
               -- comes down at RemoveUsedItem (item_effects.asm:1392-1418)
               if evoTo then
-                Evolution.evolve(game, target, evoTo, closePicker,
-                                 evo and evo.method)
+                Evolution.evolve(game, target, evoTo, function()
+                  dropStatBox()
+                  closePicker()
+                end, evo and evo.method)
               else
+                dropStatBox()
                 closePicker()
               end
               return
@@ -413,13 +436,16 @@ local function vanillaUseOn(game, battle, id, target, list, moveIndex, picker)
             end
           end
           nextStep()
-        end))
+        end, true)
+        game.stack:push(statBox)
       end, TextBox.soundOpts(game, "Get_Item1"))
       return
     end
     -- engine/items/item_effects.asm:1189
     if picker and picker.keepOpen and extra and extra.healedFrom and target then
       picker:animateTo(target, extra.healedFrom, function()
+        -- engine/items/item_effects.asm:1232
+        picker:eraseCursors()
         showMessages(game, payload, function()
           closePicker()
           if battle then
@@ -473,7 +499,8 @@ local function pickTargetAndUse(game, battle, id, list)
     -- the party menu (item_effects.asm:1392-1418); TM/HM stays up through
     -- `predef LearnMove` (item_effects.asm:2238) (#1686)
     -- engine/items/item_effects.asm:805 ItemUseMedicine, :1244 .done (#1946)
-    keepOpen = ItemEffects.healsHP(id)
+    -- engine/items/item_effects.asm:1959
+    keepOpen = ItemEffects.healsHP(id) or wantsMove
       or ((not battle)
           and (ItemEffects.keepsPartyMenuOpen(id) or (def and def.machine ~= nil))),
     onSwitch = function(mon, picker)
@@ -481,21 +508,16 @@ local function pickTargetAndUse(game, battle, id, list)
         useOn(game, battle, id, mon, list, nil, picker)
         return
       end
-      local rows = {}
-      for mi, mv in ipairs(mon.moves) do
-        local mdef = game.data.moves[mv.id]
-        table.insert(rows, {
-          value = mi,
-          label = mdef and mdef.name or mv.id,
-          right = ("%d"):format(mv.pp),
-        })
-      end
-      game.stack:push(ListMenu.new(game, "Which move?", rows, {
-        onChoose = function(row, l)
-          l:close()
-          useOn(game, battle, id, mon, list, row.value)
-        end,
-      }))
+      -- engine/items/item_effects.asm:1973
+      local prompt = (id == "PP_UP")
+        and romText(game.data, "_RaisePPWhichTechniqueText",
+                    "Raise PP of which\ntechnique?")
+        or romText(game.data, "_RestorePPWhichTechniqueText",
+                   "Restore PP of\nwhich technique?")
+      require("src.ui.Screens").push(game, "MoveSelectMenu", mon, prompt,
+        function(moveIndex)
+          useOn(game, battle, id, mon, list, moveIndex, picker)
+        end)
     end,
   }
   -- TM/HM: open the party menu in Gen 1's TM/HM display mode so each mon
@@ -547,7 +569,7 @@ function BagMenu.new(game, opts)
   opts = opts or {}
   local battle = opts.battle
   local list
-  list = ListMenu.new(game, "ITEMS", buildItems(game), {
+  list = ListMenu.new(game, Strings.source("ITEMS"), buildItems(game), {
     kind = "bag",
     -- StartMenu_Item zeroes wPrintItemPrices and draws no money box: the
     -- LIST_MENU_BOX floats over the map (engine/menus/start_sub_menus.asm)
@@ -602,6 +624,8 @@ function BagMenu.new(game, opts)
       -- from the box alone, so this needs opts rather than a change to the
       -- shared Menu.  The old 12/10/8/6 box was a column too wide and a row
       -- too tall, which left the labels stranded near its top edge (#284).
+      -- (engine/menus/start_sub_menus.asm:330-337; home/window.asm:193-206)
+      list.hollowIndex = list.index
       local Menu = require("src.ui.Menu")
       game.stack:push(Menu.new(game, {
         { label = Strings("USE"), onSelect = function()

@@ -144,6 +144,30 @@ return function(game)
   U.log("closed:", tostring(imp._syncModal == nil))
   shot("sync_closed.png")
 
+  love.window.setMode(1024, 768, { resizable = true, highdpi = true })
+  U.wait(3)
+  imp:_switchTab("red")
+  eng.changed = true
+  eng.lastDownloads = { { version = "red", slot = "slot2", created = true,
+                          device = "Android" } }
+  imp:update(1 / 60)
+  U.log("download notice:", tostring(imp.saveNotice.red and imp.saveNotice.red.text))
+  U.wait(2)
+  shot("sync_downloaded.png")
+
+  eng.changed = true
+  eng.lastDownloads = { { version = "red", cart = "nuzlocke", slot = "slot1",
+                          created = true, device = "Android" } }
+  imp:update(1 / 60)
+  local cartNotice = imp.saveNotice["cart_nuzlocke"]
+  U.log("cart download notice:", tostring(cartNotice and cartNotice.text))
+  U.log("cart slots refreshed:",
+    tostring(imp.slots["cart_nuzlocke"] ~= nil))
+  U.log("vanilla notice intact:",
+    tostring(imp.saveNotice.red and imp.saveNotice.red.text))
+  U.wait(2)
+  shot("sync_downloaded_cart.png")
+
   U.log("done")
   love.event.quit()
   while true do coroutine.yield() end

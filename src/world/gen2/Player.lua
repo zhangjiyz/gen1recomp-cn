@@ -2,6 +2,7 @@
 -- Draws via shared SpriteRenderer (same 16x96 facing layout as Gen 1).
 
 local Map = require("src.world.gen2.Map")
+local Movement = require("src.script.gen2.Movement")
 local Runtime = require("src.mods.Runtime")
 local SpriteRenderer = require("src.render.SpriteRenderer")
 
@@ -16,12 +17,6 @@ local TURN_FRAMES = 4
 -- cadence below deliberately does NOT scale with it: animClock keeps counting
 -- at the walking rate, which is what stops a bike step flickering the legs.
 Player.STEP_FRAMES = STEP_FRAMES
-
--- engine/overworld/map_objects.asm:1815
-local JUMP_Y = {
-  -4, -6, -8, -10, -11, -12, -12, -12,
-  -11, -10, -9, -8, -6, -4, 0, 0,
-}
 
 -- FacingFish*'s loose rod OAM, offset from the sprite's top-left, and which
 -- 8x8 of the sheet's rod row it draws (data/sprites/facings.asm:122-152).
@@ -139,6 +134,11 @@ function Player:tryMove(dir, map, entities)
   return "moved"
 end
 
+-- engine/overworld/player_movement.asm:807
+function Player:stopForEvent()
+  self.bumpFrames = nil
+end
+
 -- Cutscene step: ignores collision so Elm walk-up / after-pick paths play.
 function Player:scriptFace(dir)
   if dir then self.facing = dir end
@@ -149,8 +149,9 @@ function Player:scriptStep(dir)
   -- A scripted step names its own STEP_* on the cart (SurfStartStep is a slow
   -- step), so it never inherits the bike's shorter one.
   self.stepFrames = STEP_FRAMES
-  self.facing = dir or self.facing
-  local d = Map.DELTA[self.facing]
+  -- engine/overworld/map_objects.asm:284-294
+  if not self.fixedFacing then self.facing = dir or self.facing end
+  local d = Map.DELTA[dir or self.facing]
   if not d then return false end
   self.targetX, self.targetY = self.cellX + d[1], self.cellY + d[2]
   self.moving = true
@@ -159,14 +160,31 @@ function Player:scriptStep(dir)
   return true
 end
 
+-- engine/overworld/movement.asm:741
+function Player:scriptJump(dir)
+  if self.moving then return false end
+  if not self.fixedFacing then self.facing = dir or self.facing end
+  local d = Map.DELTA[dir or self.facing]
+  if not d then return false end
+  self.targetX, self.targetY = self.cellX + d[1] * 2, self.cellY + d[2] * 2
+  self.moving, self.jumping = true, true
+  self.bumpFrames = nil
+  self.inGrass, self.grassShake = false, nil
+  self.progress = 0
+  self.stepFrames = STEP_FRAMES * 2
+  return true
+end
+
 -- CounterclockwiseSpinAction's .facings, seeded from the current direction by
 -- Movement_step_dig -- map_object_action.asm:96-152, movement.asm:113-116
 local SPIN_FACINGS = { "down", "right", "up", "left" }
 local SPIN_START = { down = 0, right = 1, up = 2, left = 3 }
 
-function Player:scriptSpin(frames)
+-- map_objects.asm:1481-1493, map_object_action.asm:133
+function Player:scriptSpin(frames, flicker)
   if not frames or frames <= 0 then return end
   self.spinFrames = frames
+  self.spinFlicker = flicker or nil
   self.spinTimer = (SPIN_START[self.facing] or 0) * 4
 end
 
@@ -184,7 +202,8 @@ function Player:walkPhase()
   if not self.moving then
     -- map_object_action.asm:45-69
     if (self.bumpFrames or 0) <= 0 then return 0 end
-    return (math.floor(self.animClock / 8) % 2 == 1) and 1 or 0
+    -- map_object_action.asm:98-119
+    return (math.floor(self.animClock / STEP_FRAMES) % 2 == 1) and 1 or 0
   end
   local p = self.animClock % STEP_FRAMES
   return (p >= 4 and p < 12) and 1 or 0
@@ -193,7 +212,7 @@ end
 -- map_object_action.asm:71-94
 function Player:drawFlip()
   if self.moving or (self.bumpFrames or 0) <= 0 then return self.stepFlip end
-  local mirrored = math.floor(self.animClock / 16) % 2 == 1
+  local mirrored = math.floor(self.animClock / (STEP_FRAMES * 2)) % 2 == 1
   return self.stepFlip ~= mirrored
 end
 
@@ -204,7 +223,10 @@ function Player:update()
   if self.spinFrames then
     self.spinTimer = (self.spinTimer or 0) + 1
     self.spinFrames = self.spinFrames - 1
-    if self.spinFrames <= 0 then self.spinFrames = nil end
+    if self.spinFrames <= 0 then
+      self.spinFrames = nil
+      self.spinFlicker = nil
+    end
   end
   if not self.moving then
     -- map_objects.asm:1517-1525
@@ -234,16 +256,7 @@ function Player:update()
   if self.jumping then
     -- engine/overworld/map_objects.asm:1796 -- one table entry per cart frame,
     -- tweened across our doubled step (#1713)
-    local t = (self.progress - 1) * (#JUMP_Y - 1)
-      / math.max(frames - 1, 1) + 1
-    local idx = math.floor(t)
-    if idx < 1 then idx = 1 end
-    if idx >= #JUMP_Y then
-      self.spriteYOffset = JUMP_Y[#JUMP_Y]
-    else
-      self.spriteYOffset = math.floor(
-        JUMP_Y[idx] + (JUMP_Y[idx + 1] - JUMP_Y[idx]) * (t - idx) + 0.5)
-    end
+    self.spriteYOffset = Movement.jumpYOffset(self.progress, frames)
   end
   if self.progress >= frames then
     self.cellX, self.cellY = self.targetX, self.targetY
@@ -283,7 +296,7 @@ function Player:drawFishing(yOffset)
     self.fishQuads.rod[oam.tile])
 end
 
-function Player:draw(ox, oy, scale)
+function Player:draw(ox, oy, scale, oamRow)
   local G = love.graphics
   -- OBJECT_SPRITE_Y_OFFSET: added to the OBJ's y as it is written to OAM, so
   -- it moves the sprite without moving the player off the tile they are
@@ -302,11 +315,17 @@ function Player:draw(ox, oy, scale)
       local flip = self:drawFlip()
       -- OBJECT_ACTION_SPIN (map_object_action.asm:96-152), for step_dig.
       if self.spinFrames then
+        -- map_objects.asm:1481-1493
+        if self.spinFlicker and self.spinFrames % 2 == 1 then
+          G.pop()
+          return
+        end
         facing = SPIN_FACINGS[math.floor(self.spinTimer / 4) % 4 + 1]
         phase = 0
       end
       self.sprite:draw(
-        self.px, self.py + yOffset, 0, 0, facing, phase, flip)
+        self.px, self.py + yOffset, 0, 0, facing, phase, flip,
+        nil, nil, nil, oamRow)
     end
     G.pop()
     return

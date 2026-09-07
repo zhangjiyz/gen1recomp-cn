@@ -56,6 +56,9 @@ local ITEM_QTY_X, ITEM_QTY_END = 112, 136
 local ITEM_MORE_X, ITEM_MORE_Y = 144, 88
 -- Delay3 (home/list_menu.asm:61-64, 338-342, 47; home/window.asm:14-18)
 local SCROLL_BLANK = 3
+-- menu idles (home/window.asm:26-35, 217-263)
+local ARROW_BLINK_PERIOD = 60
+local ARROW_BLINK_ON = 30
 -- frames to wait before key-repeat kicks in, then between repeats
 local REPEAT_DELAY = MenuRepeat.GEN1_DELAY
 local REPEAT_RATE = MenuRepeat.GEN1_RATE
@@ -99,6 +102,7 @@ function ListMenu.new(game, title, items, opts)
   self.index = 1
   self.scroll = 0
   self.cursorBlank = 0
+  self.arrowBlink = 0
   self.onChoose = opts.onChoose
   self.onCancel = opts.onCancel
   self.footer = opts.footer
@@ -194,6 +198,8 @@ local function navPressed(self, dir)
   if self.itemBox and self.scroll ~= before then
     self.cursorBlank = SCROLL_BLANK
   end
+  -- (home/window.asm:29-35; home/list_menu.asm:518-524)
+  self.arrowBlink = 0
   return true
 end
 
@@ -202,7 +208,11 @@ function ListMenu:update(dt)
     self.script(self)
     return
   end
+  -- home/window.asm:119-192; engine/menus/start_sub_menus.asm:330-337
+  self.hollowIndex = nil
   if (self.cursorBlank or 0) > 0 then self.cursorBlank = self.cursorBlank - 1 end
+  -- home/window.asm:32-33, 217-263
+  self.arrowBlink = ((self.arrowBlink or 0) + 1) % ARROW_BLINK_PERIOD
   local input = self.game.input
   if #self.items == 0 then
     if input:wasPressed("a") or input:wasPressed("b") then
@@ -300,12 +310,14 @@ function ListMenu:drawItemBox()
     elseif item.price then
       -- home/list_menu.asm:410-424
       Font.draw(item.price, ITEM_QTY_END - Font.width(item.price), y + 8)
-    elseif item.right then
+    elseif item.count then
       -- '×' at column 14, PrintNumber's two right-aligned digits after it
       -- (home/list_menu.asm:479-490)
-      local count = item.right:sub(2)
-      Font.draw(item.right:sub(1, 1), ITEM_QTY_X, y + 8)
+      local count = tostring(item.count)
+      Font.draw("\xc3\x97", ITEM_QTY_X, y + 8)
       Font.draw(count, ITEM_QTY_END - Font.width(count), y + 8)
+    elseif item.right then
+      Font.draw(item.right, ITEM_QTY_END - Font.width(item.right), y + 8)
     end
     if i == self.index and (self.cursorBlank or 0) == 0 then
       Font.drawCode(self.hollowIndex == i
@@ -317,7 +329,8 @@ function ListMenu:drawItemBox()
   end
   -- the terminator prints CANCEL and returns before the '▼'
   -- (home/list_menu.asm:372, 518-524)
-  if shown == self.rows and not sawCancel then
+  if shown == self.rows and not sawCancel
+     and (self.arrowBlink or 0) < ARROW_BLINK_ON then
     Font.drawCode(Theme.moreArrow, ITEM_MORE_X, ITEM_MORE_Y)
   end
   -- players_pc.asm:97/151/205 PrintText the prompt before DisplayListMenuID,

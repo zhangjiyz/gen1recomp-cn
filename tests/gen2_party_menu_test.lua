@@ -61,6 +61,10 @@ local Mail = require("src.core.gen2.Mail")
 local Mon = require("src.battle.gen2.Mon")
 local PartyMenu = require("src.ui.gen2.PartyMenu")
 local SummaryMenu = require("src.ui.gen2.SummaryMenu")
+local Gen2Battle = require("src.battle.gen2.Battle")
+local Registry = require("src.mods.Registry")
+local Schemas = require("src.mods.Schemas")
+local Strings = require("src.core.Strings")
 
 local failures, checks = 0, 0
 local function check(name, got, want)
@@ -149,6 +153,15 @@ local DATA = {
   },
 }
 
+local function mergedGen2Statuses()
+  local registry = Registry.new("statuses", Schemas.REGISTRIES.statuses)
+  registry.base = function() return Gen2Battle.STATUSES end
+  registry:patch("poison", { hudLabel = "TOX" }, "translation")
+  local merged = {}
+  for id in pairs(Gen2Battle.STATUSES) do merged[id] = registry:get(id) end
+  return merged, registry
+end
+
 local function newGame(save)
   return {
     input = newInput(),
@@ -217,6 +230,12 @@ check("a party row reads the merged status registry",
     { gen2Statuses = { poison = { label = "毒", hudLabel = "中毒" } } }).status,
   "中毒")
 
+local poisoned = mon("TOTODILE", 10, { fields = { status = "poison" } })
+DATA.gen2Statuses = mergedGen2Statuses()
+check("a status registry translation reaches a Gen 2 party row",
+  PartyMenu.rowFor(poisoned, nil, DATA.gen2Statuses).status, "TOX")
+DATA.gen2Statuses = nil
+
 -- PartyMenuCheckEgg: every quality routine skips an EGG's row, and the name
 -- is String_Egg -- never the species hiding inside.
 local eggRow = PartyMenu.rowFor(egg())
@@ -240,6 +259,27 @@ check("an egg's submenu has three rows", #eggItems, 3)
 check("STATS first", eggItems[1].id, "STATS")
 check("SWITCH second", eggItems[2].id, "SWITCH")
 check("CANCEL third", eggItems[3].id, "CANCEL")
+
+Strings.load({ strings = {
+  STATS = "STATS FR", SWITCH = "ÉCHANGER", MOVE = "DÉPLACER",
+  ITEM = "OBJET", MAIL = "COURRIER", CANCEL = "ANNULER",
+  FNT = "K.O.", EGG = "ŒUF", ABLE = "APTE", ["NOT ABLE"] = "INAPTE",
+} })
+local translatedItems = party:submenuItems(save.party[1])
+check("the submenu keeps a stable STATS id", translatedItems[1].id, "STATS")
+check("and translates the STATS label", translatedItems[1].label, "STATS FR")
+check("SWITCH is localizable", translatedItems[2].label, "ÉCHANGER")
+check("MOVE is localizable", translatedItems[3].label, "DÉPLACER")
+check("ITEM is localizable", translatedItems[4].label, "OBJET")
+check("CANCEL is localizable", translatedItems[5].label, "ANNULER")
+check("FNT is localizable", PartyMenu.rowFor(fnt).status, "K.O.")
+check("EGG is localizable", PartyMenu.rowFor(egg()).name, "ŒUF")
+party.tmhm = { move = "SURF" }
+DATA.pokemon.CYNDAQUIL.tmhm = { "SURF" }
+check("ABLE is localizable", party:tmhmAble(save.party[1]), "APTE")
+check("NOT ABLE is localizable", party:tmhmAble(save.party[2]), "INAPTE")
+DATA.pokemon.CYNDAQUIL.tmhm = nil
+Strings.load(nil)
 
 -- GiveTakePartyMonItem's first test is `cp EGG`: the held-item menu refuses.
 game = newGame(save)
@@ -323,6 +363,86 @@ party:update(0)
 check("the copy reordered", copy[1].nickname, "TOTODILE")
 check("but the save's own party did not", save.party[1].nickname, "CYNDAQUIL")
 check("and the mail stayed put", Mail.get(save, 2) ~= nil, true)
+
+-- engine/pokemon/switchpartymons.asm:13
+do
+  local Sound = require("src.core.Sound")
+  local realPlay, realResolve, realBusy, realFrames =
+    Sound.play, Sound.resolve, Sound.sfxBusy, Sound.waitFramesFor
+  local rang = {}
+  Sound.play = function(_, name) rang[#rang + 1] = name end
+  Sound.resolve = function(_, name) return name end
+  Sound.sfxBusy = function() return false end
+  Sound.waitFramesFor = function() return 0 end
+
+  local function switchGame(withCue)
+    local s = newSave()
+    local g = newGame(s)
+    g.data = setmetatable({
+      audio = withCue and { sfx = { Sfx_SwitchPokemon = {} } } or { sfx = {} },
+    }, { __index = DATA })
+    return g, s
+  end
+
+  local g, s = switchGame(true)
+  local p = PartyMenu.new(g, { party = s.party, submenu = true, save = s })
+  p:beginSwitch(1)
+  p.index = 2
+  g.input:press("a")
+  p:update(0)
+  check("the switch swapped the slots", s.party[1].nickname, "TOTODILE")
+  check("and beeps once in that frame", #rang, 1)
+  p:update(0)
+  check("the second beep follows on the next tick", #rang, 2)
+  check("both are the switch cue",
+    rang[1] == "Sfx_SwitchPokemon" and rang[2] == "Sfx_SwitchPokemon", true)
+  p:update(0)
+  check("and there is no third", #rang, 2)
+
+  -- engine/pokemon/switchpartymons.asm:10
+  rang = {}
+  p:beginSwitch(1)
+  p.index = 1
+  g.input:press("a")
+  p:update(0)
+  p:update(0)
+  check("the same slot rings nothing", #rang, 0)
+
+  rang = {}
+  g, s = switchGame(false)
+  p = PartyMenu.new(g, { party = s.party, submenu = true, save = s })
+  p:beginSwitch(1)
+  p.index = 2
+  g.input:press("a")
+  p:update(0)
+  p:update(0)
+  check("no cue in the cache rings nothing", #rang, 0)
+  check("and nothing is pending", p.repeatSfx, nil)
+
+  -- home/audio.asm:225 WaitSFX
+  Sound.sfxBusy = function() return true end
+  Sound.waitFramesFor = function() return 3 end
+  rang = {}
+  g, s = switchGame(true)
+  p = PartyMenu.new(g, { party = s.party, submenu = true, save = s })
+  p:beginSwitch(1)
+  p.index = 2
+  g.input:press("a")
+  p:update(0)
+  check("the place beeps", #rang, 1)
+  local held = p.index
+  g.input:press("down")
+  p:update(0)
+  check("the pending beep holds the list", p.index, held)
+  check("with no second beep yet", #rang, 1)
+  p:update(0)
+  check("still waiting", #rang, 1)
+  p:update(0)
+  check("the budget releases the second beep", #rang, 2)
+
+  Sound.play, Sound.resolve, Sound.sfxBusy, Sound.waitFramesFor =
+    realPlay, realResolve, realBusy, realFrames
+end
 
 -- ------------------------------------------------------------- egg summary
 

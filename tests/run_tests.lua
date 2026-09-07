@@ -1100,6 +1100,11 @@ do
     end
     return false
   end
+  -- constants/charmap.asm:19-20
+  local function plain(s)
+    if type(s) ~= "string" then return s end
+    return (s:gsub("{DONE}%s*$", ""):gsub("{PROMPT}%s*$", ""))
+  end
   local function hasDrain(b)
     for _, it in ipairs(b.queue) do
       if it.drain then return true end
@@ -1131,9 +1136,14 @@ do
     { rng = mkseq({}) }, pb.player, pb.enemy, Data.moves.THUNDER_WAVE)
   eq(parMsgs[1], "Enemy RATTATA's\nparalyzed! It may\nnot attack!",
      "_ParalyzedMayNotAttackText wording + prefix")
+  -- move_effects/paralyze.asm:12
   local failMsgs = MoveFx.primary.PARALYZE_EFFECT(
     { rng = mkseq({}) }, pb.player, pb.enemy, Data.moves.THUNDER_WAVE)
-  eq(failMsgs[1], "But, it failed!", "_ButItFailedText has the comma")
+  eq(failMsgs[1], "It didn't affect\nEnemy RATTATA!",
+     "an already-statused target is DidntAffect, not ButItFailed")
+  local TextBox = require("src.render.TextBox")
+  eq(TextBox.strip(Data.text._ButItFailedText):gsub("%s+$", ""),
+     "But, it failed!", "_ButItFailedText has the comma")
 
   -- send-out shout buckets (PrintSendOutMonMessage thresholds)
   pb.enemy.mon.stats = { hp = 20 }
@@ -1211,7 +1221,7 @@ do
     for _, r in ipairs(mhk.queue) do
       if r.anim == "DOUBLE_KICK" then seq[#seq + 1] = "anim"
       elseif r.drain then seq[#seq + 1] = "drain"
-      elseif r.text == "It's super\neffective!" then seq[#seq + 1] = "se"
+      elseif plain(r.text) == "It's super\neffective!" then seq[#seq + 1] = "se"
       elseif r.text and r.text:find("times!", 1, true) then seq[#seq + 1] = "count"
       end
     end
@@ -1234,8 +1244,8 @@ do
     for _, r in ipairs(mhc.queue) do
       if r.anim == "DOUBLE_KICK" then cseq[#cseq + 1] = "anim"
       elseif r.drain then cseq[#cseq + 1] = "drain"
-      elseif r.text == "Critical hit!" then cseq[#cseq + 1] = "crit"
-      elseif r.text == "It's super\neffective!" then cseq[#cseq + 1] = "se"
+      elseif plain(r.text) == "Critical hit!" then cseq[#cseq + 1] = "crit"
+      elseif plain(r.text) == "It's super\neffective!" then cseq[#cseq + 1] = "se"
       end
     end
     eq(table.concat(cseq, ","), "anim,drain,crit,se,anim,drain,se",
@@ -1243,7 +1253,7 @@ do
     -- data/text/text_2.asm:1144
     local function rowFor(b, s)
       for _, r in ipairs(b.queue) do
-        if r.text == s then return r end
+        if plain(r.text) == s then return r end
       end
       return nil
     end
@@ -1297,7 +1307,7 @@ do
   do
     local countRow
     for _, r in ipairs(mh2.queue) do
-      if r.text == "Hit 5 times!" then countRow = r end
+      if plain(r.text) == "Hit 5 times!" then countRow = r end
     end
     check(countRow ~= nil and countRow.auto ~= true,
           "the hit-count line stays readable until the command menu redraws")
@@ -1473,6 +1483,46 @@ do
     StateStack:update(1 / 60)
     Input.pressed = {}
     check(cancelled, "PartyMenu onCancel fires on B")
+  end
+
+  -- (engine/menus/start_sub_menus.asm:660-693) #2059
+  do
+    local PartyMenu = require("src.ui.PartyMenu")
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 5),
+                        Pokemon.new(Data, "CHARMANDER", 6),
+                        Pokemon.new(Data, "SQUIRTLE", 7) }
+    local pm = PartyMenu.new(Game, {})
+    StateStack:push(pm)
+    pm.swapFrom, pm.index = 1, 3
+    Input.pressed = { a = true }
+    StateStack:update(1 / 60)
+    Input.pressed = {}
+    eq(Game.save.party[1].species, "SQUIRTLE", "SWITCH swaps slot 1 with slot 3")
+    eq(Game.save.party[3].species, "BULBASAUR", "SWITCH swaps slot 3 with slot 1")
+    check(pm.swapFrom == nil, "the swap arrow clears on the confirming A")
+    check(pm.swapAnim ~= nil and pm.swapAnim.blank[1] == true,
+          "wSwappedMenuItem's row blanks while SFX_SWAP plays")
+    check(pm.swapAnim.blank[3] ~= true,
+          "wCurrentMenuItem's row is still up on the first ClearGfx")
+    StateStack:update(1 / 60)
+    check(pm.swapAnim ~= nil, "the blank outlives the frame it started on")
+    check(pm.swapAnim.blank[3] == true,
+          "the second ClearGfx blanks wCurrentMenuItem's row too (#2126)")
+    for _ = 1, 12 do StateStack:update(1 / 60) end
+    check(pm.swapAnim == nil, "RedrawPartyMenu_ restores both rows")
+    -- .pickedMonsToSwap (start_sub_menus.asm:711)
+    pm.swapFrom, pm.index = 2, 2
+    Input.pressed = { a = true }
+    StateStack:update(1 / 60)
+    Input.pressed = {}
+    eq(Game.save.party[2].species, "CHARMANDER", "self-swap leaves the party alone")
+    check(pm.swapAnim ~= nil and pm.swapAnim.blank[2] == true,
+          "self-swap still blanks its own row")
+    StateStack:update(1 / 60)
+    check(pm.swapAnim.blank[2] == true and pm.swapAnim.to == 2,
+          "self-swap's second ClearGfx hits the same row (#2126)")
+    for _ = 1, 12 do StateStack:update(1 / 60) end
+    StateStack:pop()
   end
 
   Game.save.party = savedParty
@@ -2412,10 +2462,11 @@ end
     if it.value == "HYPER_POTION" then
       foundHyper = it
       local nameEnd = 16 + Font.width(it.label)
-      local rightX = 160 - 8 - Font.width(it.right)
+      local rightX = 112
       check(nameEnd <= rightX,
             "sell HYPER POTION name does not overlap quantity")
-      check(not tostring(it.right):find("¥", 1, true),
+      eq(it.count, 99, "sell list carries the quantity as a count")
+      check(it.right == nil and it.price == nil,
             "sell list keeps prices out of the right column")
       check(tostring(it.label):find("x", 1, true) == nil,
             "sell list does not glue quantity into the name")
@@ -2594,11 +2645,15 @@ do
   cb4.onFinish = function() end
   cb4.rng = function(a, b) return a end -- rng low: guaranteed capture
   local origStart = cb4.startMessage
-  local ballAtCaughtText
+  local ballAtCaughtText, ballObpAtCaughtText
   cb4.startMessage = function(s, item)
     log[#log + 1] = "text:" .. item.text:gsub("\n.*", "")
     if item.text:find("All right!", 1, true) then
       ballAtCaughtText = cb4.lockedBall and #cb4.lockedBall > 0
+      ballObpAtCaughtText = ballAtCaughtText
+      for _, sp in ipairs(cb4.lockedBall or {}) do
+        if sp.obp ~= "e4" then ballObpAtCaughtText = false end
+      end
     end
     return origStart(s, item)
   end
@@ -2636,6 +2691,9 @@ do
   -- assertion is sampled while the caught text is up
   check(ballAtCaughtText,
         "the resting closed ball stays compiled for the caught text")
+  -- engine/battle/animations.asm:258-260
+  check(ballObpAtCaughtText,
+        "the resting ball wears the popped rOBP0 ($e4), not wAnimPalette")
   Game.save.party = savedParty
 end
 
@@ -3672,6 +3730,7 @@ runSuites(orderedGlob(
   "tests/gen2_phone_call_test.lua",
   "tests/gen2_battle_items_test.lua",
   "tests/gen2_battle_ui_test.lua",
+  "tests/gen2_dig_pic_2139_test.lua",
   "tests/gen2_dig_warp_test.lua",
   "tests/gen2_repel_test.lua",
   "tests/gen2_swarm_test.lua",
@@ -3701,6 +3760,7 @@ runSuites(orderedGlob(
   -- a battle (and what a battle may not leave on the party), and BattlePack --
   -- which shares its screen with the field PACK but none of its jumptable.
   "tests/gen2_battle_end_test.lua",
+  "tests/gen2_battle_exit_fade_test.lua",
   "tests/gen2_battle_pack_test.lua",
   -- Battle core internals: where DoWeatherModifiers sits in the damage chain,
   -- which failures suppress the attack animation, and the Rollout /
@@ -3712,6 +3772,7 @@ runSuites(orderedGlob(
   "tests/gen2_crystal_anim_test.lua",
   "tests/gen2_crystal_caught_data_test.lua",
   "tests/gen2_crystal_gender_test.lua",
+  "tests/gen2_crystal_tile_attrs_test.lua",
   -- Pinned in the order the glob already ran them in, alphabetically last.
   "tests/gen2_battle_cursor_test.lua",
   "tests/gen2_battle_options_test.lua",

@@ -75,6 +75,7 @@ local SEPARATORS = "([^" .. LINE .. PAGE .. SCROLL .. "]*)([" ..
 
 -- Split a decoded text stream into pages of up to two lines.
 function TradeMenu.paginate(body)
+  body = require("src.core.gen2.CommonText").plain(body)
   local pages, current = {}, {}
   local function flush(scroll)
     if #current > 0 then pages[#pages + 1] = current end
@@ -330,8 +331,8 @@ end
 
 function TradeMenu:drawYesNo(choice)
   Chrome.box(YESNO_X, YESNO_Y, YESNO_W, YESNO_H)
-  Chrome.print("YES", YESNO_X + 2, YESNO_Y + 1)
-  Chrome.print("NO", YESNO_X + 2, YESNO_Y + 3)
+  Chrome.print(Strings("YES"), YESNO_X + 2, YESNO_Y + 1)
+  Chrome.print(Strings("NO"), YESNO_X + 2, YESNO_Y + 3)
   Chrome.cursor(YESNO_X + 1, YESNO_Y + (choice == 1 and 1 or 3))
 end
 
