@@ -108,9 +108,6 @@ EOF
 }
 
 fail_ota_launcher_toolchain() {
-  if ! devkitpro_ready; then
-    fail_missing_devkitpro
-  fi
   if ota_launcher_deps_ready; then
     fail "$(cat <<'EOF'
 OTA launcher native build failed after host-test passed.
@@ -120,6 +117,20 @@ Re-run with a clean tree:
 
 If packages look wrong, reinstall:
   bash scripts/switch/install_devkitpro_deps.sh
+
+See ports/switch/ota-launcher/README.md.
+EOF
+)"
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    fail "$(cat <<'EOF'
+OTA launcher Docker build failed after host-test passed.
+
+Re-run with:
+  scripts/switch/build_ota_launcher.sh
+
+If the Docker image is stale or unavailable, check scripts/switch/dkp-docker.image
+or set GEN1_DKP_IMAGE to a known-good devkitPro image.
 
 See ports/switch/ota-launcher/README.md.
 EOF
