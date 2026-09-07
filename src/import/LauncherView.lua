@@ -46,6 +46,8 @@ local COMMUNITY_URL = "https://bois.icu"
 -- synthesizes for the same tap.
 local ACT_DEDUP = 0.35
 local LONG_PRESS_SECONDS = 0.60
+local SHOW_SELF_UPDATE_CONTROL = false
+local SHOW_MOD_UPDATE_CONTROLS = false
 -- Finger travel past this (px) is a drag, not a tap.
 local TAP_SLOP2 = 16 * 16
 local MIN_SKIN_ROWS = 4
@@ -1730,6 +1732,7 @@ LauncherView.textField = textField
 -- The state of the self-updater, shown in the launcher footer.
 -- Returns status, label, action, glow.
 function LauncherView._updateControl(imp)
+  if not SHOW_SELF_UPDATE_CONTROL then return nil end
   if not imp.Check then return nil end
   local ok, st = pcall(imp.Check.state)
   st = (ok and type(st) == "table") and st or nil
@@ -2623,7 +2626,8 @@ local function buildModsPanel(imp, x, y, w, availH, m)
   if imp.modCartPlan then cartId, cartReport = imp:modCartPlan() end
   -- a cart owns its mod set: only the pins it already ships may be switched
   local bulkOk = not safeMode and cartId == nil
-  local updateOk = (imp.updateAllAvailable and imp:updateAllAvailable()) == true
+  local updateOk = SHOW_MOD_UPDATE_CONTROLS
+    and (imp.updateAllAvailable and imp:updateAllAvailable()) == true
 
   -- header: progressive action cluster. Surfaces primary/frequent actions
   -- (Import, Updates, Sort) directly on the bar across screen sizes, placing
@@ -2635,15 +2639,21 @@ local function buildModsPanel(imp, x, y, w, availH, m)
   if #mods > 0 then
     local disableW = Kit.textWidth("small", Strings("Disable all")) + math.floor(20 * m.s)
     local enableW = Kit.textWidth("small", Strings("Enable all")) + math.floor(20 * m.s)
-    local checkFullW = Kit.textWidth("small", Strings("Check for updates")) + math.floor(20 * m.s)
-    local checkShortW = Kit.textWidth("small", Strings("Updates")) + math.floor(20 * m.s)
-    local updateAllW = Kit.textWidth("small", Strings("Update all")) + math.floor(20 * m.s)
+    local checkFullW = SHOW_MOD_UPDATE_CONTROLS
+      and Kit.textWidth("small", Strings("Check for updates")) + math.floor(20 * m.s) or 0
+    local checkShortW = SHOW_MOD_UPDATE_CONTROLS
+      and Kit.textWidth("small", Strings("Updates")) + math.floor(20 * m.s) or 0
+    local updateAllW = SHOW_MOD_UPDATE_CONTROLS
+      and Kit.textWidth("small", Strings("Update all")) + math.floor(20 * m.s) or 0
     local sortW = Kit.textWidth("small", Strings("Sort")) + math.floor(24 * m.s)
     local moreW = Kit.textWidth("small", Strings("More...")) + math.floor(20 * m.s)
 
-    local fullReq = importW + disableW + enableW + checkFullW + updateAllW
-      + sortW + math.floor(36 * m.s)
-    local medReq = importW + checkShortW + sortW + moreW + math.floor(24 * m.s)
+    local fullReq = importW + disableW + enableW + sortW
+      + (SHOW_MOD_UPDATE_CONTROLS and (checkFullW + updateAllW + math.floor(36 * m.s))
+        or math.floor(24 * m.s))
+    local medReq = importW + sortW + moreW
+      + (SHOW_MOD_UPDATE_CONTROLS and (checkShortW + math.floor(24 * m.s))
+        or math.floor(18 * m.s))
 
     local place = Layout.rightCluster(x, w, math.floor(6 * m.s))
 
@@ -2660,14 +2670,16 @@ local function buildModsPanel(imp, x, y, w, availH, m)
         kind = "good", font = "small",
         enabled = bulkOk,
         action = function() imp:_setAllMods(true) end })
-      btn(imp, place(checkFullW), cy, checkFullW, bh, "mods-check-updates", Strings("Check for updates"), {
-        font = "small",
-        action = function() imp:_syncModUpdateInfo(true) end })
-      btn(imp, place(updateAllW), cy, updateAllW, bh, "mods-update-all",
-        Strings("Update all"), {
-          kind = (modsWithUpdatesCount(imp) > 0) and "warn" or "ghost",
-          font = "small", enabled = updateOk,
-          action = function() askUpdateAllMods(imp) end })
+      if SHOW_MOD_UPDATE_CONTROLS then
+        btn(imp, place(checkFullW), cy, checkFullW, bh, "mods-check-updates", Strings("Check for updates"), {
+          font = "small",
+          action = function() imp:_syncModUpdateInfo(true) end })
+        btn(imp, place(updateAllW), cy, updateAllW, bh, "mods-update-all",
+          Strings("Update all"), {
+            kind = (modsWithUpdatesCount(imp) > 0) and "warn" or "ghost",
+            font = "small", enabled = updateOk,
+            action = function() askUpdateAllMods(imp) end })
+      end
       btn(imp, place(sortW), cy, sortW, bh, "mods-sort", Strings("Sort"), {
         font = "small",
         action = function() imp._sortPopup = "mods" end })
@@ -2676,9 +2688,11 @@ local function buildModsPanel(imp, x, y, w, availH, m)
       btn(imp, place(importW), cy, importW, bh, "mods-import", importLabel, {
         kind = "accent", font = "small",
         action = function() imp:chooseMod() end })
-      btn(imp, place(checkShortW), cy, checkShortW, bh, "mods-check-updates", Strings("Updates"), {
-        font = "small",
-        action = function() imp:_syncModUpdateInfo(true) end })
+      if SHOW_MOD_UPDATE_CONTROLS then
+        btn(imp, place(checkShortW), cy, checkShortW, bh, "mods-check-updates", Strings("Updates"), {
+          font = "small",
+          action = function() imp:_syncModUpdateInfo(true) end })
+      end
       btn(imp, place(sortW), cy, sortW, bh, "mods-sort", Strings("Sort"), {
         font = "small",
         action = function() imp._sortPopup = "mods" end })
@@ -2707,7 +2721,7 @@ local function buildModsPanel(imp, x, y, w, availH, m)
     btn(imp, place(importW), cy, importW, bh, "mods-import", importLabel, {
       kind = "accent", font = "small",
       action = function() imp:chooseMod() end })
-    if #cartsWithUpdates(imp) > 0 then
+    if SHOW_MOD_UPDATE_CONTROLS and #cartsWithUpdates(imp) > 0 then
       local updateAllW = Kit.textWidth("small", Strings("Update all"))
         + math.floor(20 * m.s)
       btn(imp, place(updateAllW), cy, updateAllW, bh, "mods-update-all",
@@ -2753,7 +2767,7 @@ local function buildModsPanel(imp, x, y, w, availH, m)
   -- per frame (with lowercased-string allocations in the comparator) fed the
   -- GC for nothing.  Cache the sorted array, keyed on the list identity, the
   -- sort mode, and the update-info revision the fetch pump bumps.
-  local statsSort = sortKey ~= "name"
+  local statsSort = SHOW_MOD_UPDATE_CONTROLS and sortKey ~= "name"
   local rev = statsSort and (imp._modUpdateRev or 0) or 0
   local cache = imp._modSortCache
   if cache and cache.n == #mods
@@ -2765,7 +2779,8 @@ local function buildModsPanel(imp, x, y, w, availH, m)
     local n = decorate(scratch, mods,
       function(mod, tie)
         if sortKey == "name" then return tie end
-        local info = mod.github and mod.github ~= "" and imp:_modUpdateInfo(mod.id)
+        local info = SHOW_MOD_UPDATE_CONTROLS
+          and mod.github and mod.github ~= "" and imp:_modUpdateInfo(mod.id)
         if sortKey == "popularity" then
           return info and info.downloads and info.downloads.total or -1
         end
@@ -2829,7 +2844,8 @@ local function buildModsPanel(imp, x, y, w, availH, m)
     local ly = ry + math.floor(10 * m.s)
 
     local togGap = math.floor(5 * m.s) + 1
-    local info = mod.github and mod.github ~= "" and imp:_modUpdateInfo(mod.id)
+    local info = SHOW_MOD_UPDATE_CONTROLS
+      and mod.github and mod.github ~= "" and imp:_modUpdateInfo(mod.id)
 
     -- These answer separate games, not a single shared install flag.  The
     -- importer receives the game id so an experimental confirmation also
@@ -2911,7 +2927,7 @@ local function buildModsPanel(imp, x, y, w, availH, m)
     local line = "v" .. tostring(mod.version or "?") .. "   " .. statusText
     Kit.text("small", line, px, ly, statusCol)
     local lx = px + Kit.textWidth("small", line) + math.floor(12 * m.s)
-    if imp:_modInfoPending(mod.id) then
+    if SHOW_MOD_UPDATE_CONTROLS and imp:_modInfoPending(mod.id) then
       -- An inline spinner, because this row's release check is genuinely in
       -- flight -- the list stays usable while it resolves.
       Loader.dot(lx, ly, Kit.textHeight("small"))
@@ -4232,20 +4248,25 @@ local function buildModHeaderActionsModal(imp, m)
   local cartId, cartReport
   if imp.modCartPlan then cartId, cartReport = imp:modCartPlan() end
   local bulkOk = not imp.safeMode and cartId == nil
-  local updateOk = (imp.updateAllAvailable and imp:updateAllAvailable()) == true
+  local updateOk = SHOW_MOD_UPDATE_CONTROLS
+    and (imp.updateAllAvailable and imp:updateAllAvailable()) == true
   local note = (cartId and imp.cartPinsNote) and imp:cartPinsNote(cartId, cartReport) or nil
   local btns = {
     { label = Strings("Mod profiles..."), action = function() imp._profilesPopup = true end },
-    { label = Strings("Check for updates"), action = function() imp:_syncModUpdateInfo(true) end },
-    { label = Strings("Update all"), kind = "warn",
-      enabled = updateOk,
-      action = function() askUpdateAllMods(imp) end },
     { label = Strings("Enable all mods"), kind = "good", enabled = bulkOk,
       action = function() imp:_setAllMods(true) end },
     { label = Strings("Disable all mods"), kind = "warn", enabled = bulkOk,
       action = function() imp:_setAllMods(false) end },
     { label = Strings("Sort mods..."), action = function() imp._sortPopup = "mods" end },
   }
+  if SHOW_MOD_UPDATE_CONTROLS then
+    table.insert(btns, 2,
+      { label = Strings("Check for updates"), action = function() imp:_syncModUpdateInfo(true) end })
+    table.insert(btns, 3,
+      { label = Strings("Update all"), kind = "warn",
+        enabled = updateOk,
+        action = function() askUpdateAllMods(imp) end })
+  end
   local noteW = math.floor(math.min(w, m.W - 2 * m.pad)) - 2 * pad
   local noteH = note
     and (Kit.wrapHeight("small", note, noteW, 3) + gap) or 0
@@ -4821,7 +4842,8 @@ local function buildModActionsModal(imp, m)
     if mm.id == imp._modActions then mod = mm break end
   end
   if not mod then imp._modActions = nil return end
-  local hasGit = mod.github and mod.github ~= ""
+  local hasGit = SHOW_MOD_UPDATE_CONTROLS
+    and mod.github and mod.github ~= ""
   local depSpecs = mod.dependencySpecs or (mod.manifest and mod.manifest.dependencySpecs)
   local hasDeps = depSpecs and #depSpecs > 0
   local imports = mod.imports or mod.requiredImports

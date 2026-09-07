@@ -393,19 +393,17 @@ do
 
   window(1400, 900)
   local wide = draw(imp)
-  check(wide:find("Update all", 1, true) ~= nil,
-    "a wide header carries Update all beside Check for updates")
-
-  local cache = imp._modUpdateCountCache
-  eq(cache and cache.count, 1, "the header counts the one outdated mod")
-  draw(imp)
-  check(rawequal(imp._modUpdateCountCache, cache),
-    "and a second frame reuses that count instead of rebuilding a list")
+  check(wide:find("Update all", 1, true) == nil,
+    "a wide header hides the mod update sweep")
+  check(wide:find("Check for updates", 1, true) == nil,
+    "a wide header hides mod update checks")
+  eq(imp._modUpdateCountCache, nil,
+    "hidden update controls do not build the outdated-mod count")
   imp.modUpdateInfo.two = info("available", RELEASES[1])
   imp._modUpdateRev = (imp._modUpdateRev or 0) + 1
   draw(imp)
-  eq(imp._modUpdateCountCache.count, 2,
-    "a bumped update revision rebuilds it")
+  eq(imp._modUpdateCountCache, nil,
+    "a bumped update revision still leaves the hidden count unbuilt")
 
   window(430, 860)
   local narrow = draw(imp)
@@ -414,8 +412,10 @@ do
   imp._modHeaderActionsPopup = true
   local popup = draw(imp)
   imp._modHeaderActionsPopup = nil
-  check(popup:find("Update all", 1, true) ~= nil,
-    "and More... is where a phone reaches Update all")
+  check(popup:find("Update all", 1, true) == nil,
+    "and More... also hides the update sweep")
+  check(popup:find("Check for updates", 1, true) == nil,
+    "and More... also hides update checks")
 
   window(1400, 900)
   cartRows = installedCart("0.2.0", "ren/wild-green")
@@ -425,8 +425,8 @@ do
   imp._findCartMap = nil
   imp.findIndex = { mods = {}, carts = { FEED_CART } }
   local cartsOnly = draw(imp)
-  check(cartsOnly:find("Update all", 1, true) ~= nil,
-    "a launcher with carts but no mods still reaches the sweep")
+  check(cartsOnly:find("Update all", 1, true) == nil,
+    "a launcher with carts but no mods still hides the sweep")
 
   imp.mods = launcher("available").mods
   imp.modUpdateInfo = { one = info("available", RELEASES[1]) }
@@ -438,29 +438,29 @@ do
                            title = "Wild Green" }, "red"
   end
   local underCart = draw(imp)
-  check(underCart:find("Update all", 1, true) ~= nil,
-    "a selected cart still shows the sweep in the header")
-  eq(buttons["Update all"], true,
-    "and it is live there: replacing a cart with a newer release is legal")
+  check(underCart:find("Update all", 1, true) == nil,
+    "a selected cart still hides the sweep in the header")
+  eq(buttons["Update all"], nil,
+    "and no hidden Update all button is registered")
   eq(buttons["Enable all"], false,
     "while the bulk pair stays refused, since the cart owns its pins")
   eq(buttons["Disable all"], false, "on both halves of that pair")
   local underRows = imp:_updateAllRows()
   eq(#underRows, 1, "the sweep queues the cart alone")
   eq(underRows[1].kind, "cart", "and never a pinned mod")
-  eq(imp._modUpdateCountCache.count, 1,
-    "the header count is the sweep's own rows, not the pinned mods' badges")
-  eq(kinds["Update all"], "warn", "and the cart behind tints the button")
+  eq(imp._modUpdateCountCache, nil,
+    "the hidden header does not expose the sweep count")
+  eq(kinds["Update all"], nil, "and no update tint is registered")
 
   cartRows = installedCart("0.29.1", "ren/wild-green")
   imp._modUpdateCountCache = nil
   imp._cartUpdateCache = nil
   imp._findCartMap = nil
   draw(imp)
-  eq(buttons["Update all"], true,
-    "with nothing behind it the button stays live and says so when pressed")
-  eq(kinds["Update all"], "ghost",
-    "untinted: a pinned mod's own badge is not the sweep's business")
+  eq(buttons["Update all"], nil,
+    "with nothing behind it the hidden button stays absent")
+  eq(kinds["Update all"], nil,
+    "and no hidden button tint is registered")
   eq(#imp:_updateAllRows(), 0, "and the sweep has nothing to run")
   cartRows = installedCart("0.2.0", "ren/wild-green")
   imp._modUpdateCountCache = nil
@@ -471,7 +471,7 @@ do
   imp._modHeaderActionsPopup = true
   local cartPopup = draw(imp)
   imp._modHeaderActionsPopup = nil
-  eq(buttons["Update all"], true, "More... reaches the same live button")
+  eq(buttons["Update all"], nil, "More... also hides Update all")
   eq(buttons["Enable all mods"], false, "with the bulk pair still refused")
   eq(buttons["Disable all mods"], false, "on both rows")
   check(cartPopup:find("decides which mods run", 1, true) ~= nil,
@@ -480,11 +480,11 @@ do
   window(1400, 900)
   imp._updateAll = { stage = "check" }
   draw(imp)
-  eq(buttons["Update all"], false, "a sweep already in flight disables it")
+  eq(buttons["Update all"], nil, "a hidden sweep button stays absent in flight")
   imp._updateAll = nil
   imp.safeMode = true
   draw(imp)
-  eq(buttons["Update all"], false, "and safe mode disables it too")
+  eq(buttons["Update all"], nil, "and safe mode still leaves it hidden")
   imp.safeMode = false
   imp.modCartPlan = nil
   cartRows = {}
