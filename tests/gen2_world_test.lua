@@ -201,27 +201,79 @@ do
   eq(sfx[1], "Sfx_Kinesis", "the fall opens on SFX_KINESIS")
   check(w.playerMasked, "OBJECT_ACTION_00 is SetFacingStanding: nothing drawn")
   check(w:busy(), "and the applymovement holds the overworld")
-  for _ = 1, 16 do w:updateSkyfall() end
+  local onTile = false
+  local function step()
+    w:updateSkyfall()
+    if w.skyfall and not w.playerMasked
+      and (w.player.spriteYOffset or 0) >= 0 then onTile = true end
+  end
+  for _ = 1, 15 do step() end
+  check(w.playerMasked, "still nothing drawn on the fifteenth hidden frame")
+  step()
   check(not w.playerMasked, "the sprite comes back for the descent")
-  eq(w.player.spriteYOffset, nil, "and has not moved yet")
-
-  w:updateSkyfall()
   eq(w.player.spriteYOffset, Movement.teleportYOffset(1),
-    "the first falling frame is off the top of the screen")
+    ".Step falls through to .Fall: the first visible frame is off the top")
   local last = w.player.spriteYOffset
   for _ = 1, 14 do
-    w:updateSkyfall()
+    step()
     check(w.player.spriteYOffset > last, "the drop eases down every frame")
     last = w.player.spriteYOffset
   end
-  w:updateSkyfall()
+  step()
   eq(w.player.spriteYOffset, 0, "landing flush on the tile")
   check(w.skyfall == nil, "and the state is done")
+  check(not onTile, "no live frame is both unmasked and on the tile")
   check(not w:busy(), "so the world is walkable again")
   eq(sfx[2], "Sfx_Strength", "SFX_STRENGTH on the landing")
   eq(#sfx, 2, "and no warpsound anywhere in the fall")
   eq(w.shake and w.shake.amplitude, 1, "earthquake 16 is a one-pixel shake")
   eq(w.shake and w.shake.left, 16, "for sixteen frames")
+end
+
+-- pokecrystal/data/maps/setup_scripts.asm:100-102
+-- pokecrystal/engine/overworld/map_objects.asm:2474-2494
+do
+  local MAPSETUP_FALL, MAPSETUP_DOOR = 0xf6, 0xf5
+
+  local function setupWorld()
+    local w = World.new({ data = { audio = { sfxOrder = {} } },
+      save = { player = {} } })
+    w.player = { cellX = 0, cellY = 0, facing = "down" }
+    w.playSfxNamed = function() end
+    return w
+  end
+
+  local function runSetup(method, fallIn)
+    local w = setupWorld()
+    local loaded = false
+    w:runMapSetup(method, function()
+      loaded = true
+      w.playerMasked = nil
+      return true
+    end)
+    if fallIn then w.mapSetup.fallIn = true end
+    local maskedEveryFrameAfterLoad = true
+    for _ = 1, 200 do
+      if not w.mapSetup then break end
+      w:updateMapSetup()
+      if loaded and w.mapSetup and not w.playerMasked then
+        maskedEveryFrameAfterLoad = false
+      end
+    end
+    return w, loaded, maskedEveryFrameAfterLoad
+  end
+
+  local w, loaded, masked = runSetup(MAPSETUP_FALL, true)
+  check(loaded, "the FALL setup ran its load")
+  check(masked,
+    "ResetPlayerObjectAction keeps the player off-screen through the fade-in")
+  check(w.skyfall ~= nil, "and the skyfall arms at the end of the chain")
+  check(w.playerMasked, "with the mask still up for the hidden beat")
+
+  local w2, loaded2, _ = runSetup(MAPSETUP_DOOR, false)
+  check(loaded2, "the DOOR setup ran its load")
+  check(not w2.playerMasked, "an ordinary door warp still shows the player")
+  check(w2.skyfall == nil, "and never falls")
 end
 
 -- engine/events/overworld.asm:864-872

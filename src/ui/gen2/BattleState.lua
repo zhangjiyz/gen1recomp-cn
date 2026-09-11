@@ -319,12 +319,36 @@ function BattleState:drawsWidescreen() return true end
 -- engine/battle/core.asm:8754
 function BattleState:bgMode()
   local options = self.game and self.game.options
+  if options and isWide(self) and options.battleFit == "fill"
+     and options.battleHud == "extended" then
+    return "white"
+  end
   local mode = options and options.battleBg
   if mode == "black" or mode == "world" then return mode end
   return "white"
 end
 
 BattleState.BG_WORLD_DIM = 0.55
+
+function BattleState:extendedHUD()
+  local options = self.game and self.game.options
+  if not (options and isWide(self) and options.battleHud == "extended") then
+    return false
+  end
+  local bg = BattleState.bgMode(self)
+  if options.battleFit == "fill" then return bg == "white" end
+  return bg == "white" or bg == "black" or bg == "world"
+end
+
+function BattleState:extendedWorldHUD()
+  local options = self.game and self.game.options
+  return BattleState.extendedHUD(self) and options.battleFit ~= "fill"
+     and BattleState.bgMode(self) == "world"
+end
+
+function BattleState:extendedBlackHUD()
+  return BattleState.extendedHUD(self) and BattleState.bgMode(self) == "black"
+end
 
 function BattleState:bottomUIVisible()
   if not Runtime.wantsHook("battle.bottom_ui_visible") then return true end
@@ -677,6 +701,15 @@ function BattleState:push(event)
     self.shownMon[event.side] =
       setmetatable({ species = event.from }, { __index = event.mon })
   end
+  -- pokecrystal/engine/battle/core.asm:8294
+  if event.kind == "identity" and event.side and event.species
+      and self.shownMon then
+    self.identityPin = self.identityPin or {}
+    self.identityPin[event.side] = true
+    self.shownMon[event.side] = setmetatable(
+      { species = event.species, partySpecies = event.partySpecies },
+      { __index = event.mon })
+  end
   self.queue[#self.queue + 1] = event
 end
 
@@ -716,21 +749,17 @@ function BattleState:pic(mon, back)
   -- picked -- resolving the species row again would throw the form away.  The
   -- two extra keys are what Gen 2 genuinely carries more of: the Unown letter
   -- and the shiny flag that decides the palette.
-  if path and Runtime.wantsHook("pokemon.sprite") then
-    local ctx = {
+  if path then
+    path, trueColor = Sprites.pic(path, {
       species = mon.species,
       side = back and "back" or "front",
       kind = "battle",
       mon = mon,
-      trueColor = (def and def.trueColor) and true or false,
+      trueColor = trueColor,
       data = (self.game and self.game.data) or nil,
       letter = letter,
       shiny = mon.shiny and true or false,
-    }
-    local hooked = Runtime.call("pokemon.sprite",
-      function(value) return value end, path, ctx)
-    if type(hooked) == "string" and hooked ~= "" then path = hooked end
-    trueColor = ctx.trueColor and true or false
+    })
   end
   if not path then return nil, false end
   local cached = self.picCache[path]
@@ -773,24 +802,18 @@ end
 function BattleState:animSheetPath(mon, data)
   local path = data and data.sheet
   if type(path) ~= "string" then return nil, false end
-  if not Runtime.wantsHook("pokemon.sprite") then
-    return path, Assets.resolve(path) ~= path
-  end
   local letter
   if mon and mon.species == Unown.SPECIES then letter = Unown.monLetter(mon) end
-  local hooked = Runtime.call("pokemon.sprite",
-    function(value) return value end, path, {
-      species = mon and mon.species,
-      side = "front",
-      kind = "battle_anim",
-      mon = mon,
-      data = (self.game and self.game.data) or nil,
-      letter = letter,
-      shiny = mon and mon.shiny and true or false,
-    })
-  if type(hooked) == "string" and hooked ~= "" and hooked ~= path then
-    return hooked, true
-  end
+  local hooked = Sprites.pic(path, {
+    species = mon and mon.species,
+    side = "front",
+    kind = "battle_anim",
+    mon = mon,
+    data = (self.game and self.game.data) or nil,
+    letter = letter,
+    shiny = mon and mon.shiny and true or false,
+  })
+  if hooked ~= path then return hooked, true end
   return path, Assets.resolve(path) ~= path
 end
 
@@ -1077,23 +1100,19 @@ function BattleState:drawPic(mon, back)
   local bandY = (back and BattleState.PLAYER_PIC_TILE_Y
     or BattleState.ENEMY_PIC_TILE_Y) * 8 + lifted[1] * 8
   local bandH = lifted[2] * 8
-  local psx, psy, psw, psh
-  if G.getScissor then psx, psy, psw, psh = G.getScissor() end
-  if self.liftedPass then
-    G.setScissor(0, bandY, 160, bandH)
+  local function band(y, h)
+    G.push("all")
+    Chrome.clipTo(0, y, 160, h)
     paint()
-  else
-    if bandY > 0 then
-      G.setScissor(0, 0, 160, bandY)
-      paint()
-    end
-    local below = 144 - bandY - bandH
-    if below > 0 then
-      G.setScissor(0, bandY + bandH, 160, below)
-      paint()
-    end
+    G.pop()
   end
-  if psx then G.setScissor(psx, psy, psw, psh) else G.setScissor() end
+  if self.liftedPass then
+    band(bandY, bandH)
+  else
+    if bandY > 0 then band(0, bandY) end
+    local below = 144 - bandY - bandH
+    if below > 0 then band(bandY + bandH, below) end
+  end
 end
 
 -- MonsterSpriteGFX (gfx/sprites.asm:82): the facing-DOWN 16x16 frame for the
@@ -1915,7 +1934,8 @@ function BattleState:advanceQueue()
   end
   -- ../pokecrystal/engine/battle/move_effects/transform.asm:118-136
   if event.kind == "transform" and event.side and event.mon
-      and self.shownMon then
+      and self.shownMon
+      and not (self.identityPin and self.identityPin[event.side]) then
     self.shownMon[event.side] = event.mon
   end
   if event.kind == "send" and event.side and event.mon then
@@ -4338,7 +4358,8 @@ end
 -- The growth record for a mon's species, for the exp bar's "how far to the next
 -- level" fraction.
 function BattleState:growthOf(mon)
-  local def = self.pokemon and mon and self.pokemon[mon.species]
+  -- pokecrystal/engine/battle/core.asm:7151
+  local def = self.pokemon and mon and self.pokemon[Mon.partySpecies(mon)]
   if not def then return nil end
   -- Mon.growthFor off the LIVE game.data, so the exp bar's fraction is drawn
   -- against the very curve Mon.gainExperience just used; a mod-registered
@@ -4503,7 +4524,7 @@ function BattleState:drawBottom(ox)
     self:printMessage(ox)
     local learn = self.pendingLearn
     local mon = learn and self.battle.party[learn.index]
-    local moves = (mon and mon.moves) or self:playerMoves()
+    local moves = (mon and self.battle:partyMoves(mon)) or self:playerMoves()
     ForgetMoveList.draw(moves, self.forgetIndex,
       self.game and self.game.data and self.game.data.moves,
       Chrome.DEFAULT_BOX_PALETTE)
@@ -4578,7 +4599,8 @@ function BattleState:drawStatsBox(mon, ox)
   if not mon then return end
   local stats = mon.stats
   local data = self.game and self.game.data
-  local def = data and data.pokemon and data.pokemon[mon.species]
+  -- pokecrystal/engine/battle/core.asm:7208-7213
+  local def = data and data.pokemon and data.pokemon[Mon.partySpecies(mon)]
   if def and def.baseStats then
     stats = Mon.stats(def.baseStats, mon.dvs, mon.level, mon.statExp)
   end

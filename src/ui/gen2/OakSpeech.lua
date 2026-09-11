@@ -49,6 +49,7 @@ local Palettes = require("src.world.gen2.Palettes")
 local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local Sound = require("src.core.Sound")
+local Sprites = require("src.pokemon.Sprites")
 local Strings = require("src.core.Strings")
 local TextBox = require("src.render.TextBox")
 
@@ -57,7 +58,24 @@ OakSpeech.__index = OakSpeech
 OakSpeech.isOpaque = true
 
 local FADE_FRAMES = 24
-local WIPE_FRAMES = 32
+-- pokecrystal/engine/menus/intro_menu.asm:875-888
+local WIPE_FRAMES = 16
+
+-- pokecrystal/engine/menus/intro_menu.asm:854-872
+local FRONTPIC_BGP = { 0x54, 0xa8, 0xfc, 0xf8, 0xf4, 0xe4 }
+local FRONTPIC_STEP = 10
+local ROTATE_FRAMES = #FRONTPIC_BGP * FRONTPIC_STEP
+OakSpeech.FRONTPIC_BGP = FRONTPIC_BGP
+OakSpeech.FRONTPIC_STEP = FRONTPIC_STEP
+OakSpeech.ROTATE_FRAMES = ROTATE_FRAMES
+OakSpeech.WIPE_FRAMES = WIPE_FRAMES
+
+function OakSpeech.frontpicBgp(t)
+  local k = math.floor((t or 0) / FRONTPIC_STEP) + 1
+  if k < 1 then k = 1 end
+  if k > #FRONTPIC_BGP then k = #FRONTPIC_BGP end
+  return FRONTPIC_BGP[k]
+end
 
 -- ../pokecrystal/engine/menus/intro_menu.asm:802-851 ShrinkPlayer
 OakSpeech.SHRINK_MUSIC_FADE = 32
@@ -122,12 +140,19 @@ function OakSpeech.new(game, opts)
   self.playerPicFemale = tryImage(require("src.pokemon.Sprites").playerPic(
     data.playerPicFemale or "assets/generated/intro/kris.png",
     { side = "front", kind = "intro", data = game and game.data }))
-  self.marillPic = tryImage(data.marillPic
-    or "assets/generated/battle/front/marill.png")
+  self.demoSpecies = data.demoSpecies or "MARILL"
+  local marillPath, marillTrueColor = Sprites.pic(data.marillPic
+    or "assets/generated/battle/front/marill.png", {
+      species = self.demoSpecies,
+      side = "front",
+      kind = "oak",
+      data = game and game.data,
+    })
+  self.marillPic = tryImage(marillPath)
+  self.marillTrueColor = marillTrueColor
   self.shrinkPic1 = tryImage(data.shrink1 or "assets/generated/intro/shrink1.png")
   self.shrinkPic2 = tryImage(data.shrink2 or "assets/generated/intro/shrink2.png")
   self.music = data.music or "Music_Route30"
-  self.demoSpecies = data.demoSpecies or "MARILL"
   -- Every pic on this screen is loaded under SCGB_TRAINER_OR_MON_FRONTPIC_PALS,
   -- which is _CGB_PlayerOrMonFrontpicPals -- the pic's own two shipped colours
   -- bracketed by white and black, exactly as a battle pic gets them.  The
@@ -142,6 +167,9 @@ function OakSpeech.new(game, opts)
   -- (../pokecrystal/data/trainers/palettes.asm:11-12).
   self.playerColorsFemale = Palettes.trainerColors(palettes, "FALKNER")
   self.marillColors = Palettes.monColors(palettes, self.demoSpecies)
+  if marillTrueColor and GbcPalette.mode == "gbc" then
+    self.marillColors = nil
+  end
   self.picColors = nil
   self.fontOk = false
   local font = opts.font
@@ -194,20 +222,21 @@ function OakSpeech.defaultSteps(speech)
     { id = "init_clock", kind = "initclock" },
     -- Intro_PrepTrainerPic POKEMON_PROF, FadeInIntroPic, OakText1.
     { id = "oak_welcome", kind = "say", textKey = "_OakText1",
-      pic = "oak", reveal = "fade" },
+      pic = "oak", reveal = "rotate", fadeOut = true },
     -- The Marill show-off: MovePicRight wipes it in, then its cry, then
     -- OakText2.  Gen 1's demo_mon beat with a different mon.
     { id = "demo_mon", kind = "demo" },
     -- OakText4 over the same pic, exactly as Gen 1's world_spiel prints
     -- OakSpeechText2B over the NIDORINO already on screen.
-    { id = "world_spiel", kind = "say", textKey = "_OakText4" },
+    { id = "world_spiel", kind = "say", textKey = "_OakText4",
+      fadeOut = true },
     -- Back to Oak for OakText5.  Red's speech never returns to him, so this
     -- id is Gold's own.
     { id = "oak_study", kind = "say", textKey = "_OakText5",
-      pic = "oak", reveal = "fade" },
+      pic = "oak", reveal = "rotate", fadeOut = true },
     -- The CAL frontpic comes up under the question NamePlayer answers.
     { id = "ask_player_name", kind = "say", textKey = "_OakText6",
-      pic = "player", reveal = "fade" },
+      pic = "player", reveal = "rotate" },
     { id = "name_player", kind = "name", who = "player", saveKey = "name" },
     -- OakText7 with the pic already up: NamePlayer walked it back itself
     -- (MovePlayerPicLeft), so there is nothing to reveal here.
@@ -279,8 +308,15 @@ function OakSpeech:resolvePic(desc)
   if desc.type == "pokemon" then
     local mon = self.game and self.game.data and self.game.data.pokemon
     local def = mon and mon[desc.id]
-    return tryImage(def and def.spriteFront),
-      desc.colors or Palettes.monColors(self.palettes, desc.id)
+    local path, trueColor = Sprites.pic(def and def.spriteFront, {
+      species = desc.id,
+      side = "front",
+      kind = "oak",
+      data = self.game and self.game.data,
+    })
+    local colors = desc.colors or Palettes.monColors(self.palettes, desc.id)
+    if trueColor and GbcPalette.mode == "gbc" then colors = nil end
+    return tryImage(path), colors
   end
   if desc.type == "trainer" then
     return tryImage(desc.path),
@@ -303,10 +339,16 @@ function OakSpeech:applyPic(step)
 end
 
 function OakSpeech:reveal(kind, next)
+  local dur = FADE_FRAMES
+  if kind == "wipe" then
+    dur = WIPE_FRAMES
+  elseif kind == "rotate" then
+    dur = ROTATE_FRAMES
+  end
   self.picReveal = {
     kind = kind,
     t = 0,
-    dur = kind == "wipe" and WIPE_FRAMES or FADE_FRAMES,
+    dur = dur,
     next = next,
   }
 end
@@ -577,6 +619,15 @@ function OakSpeech:openChoice(step)
   end
 end
 
+-- pokecrystal/engine/menus/intro_menu.asm:649-650,672-673,687-688
+function OakSpeech:leaveBeat(step)
+  if not step.fadeOut or self.autoConfirm then return self:advance() end
+  IntroFade.run(self, { "outWhite" }, function()
+    self.pic, self.picColors = nil, nil
+    self:advance()
+  end)
+end
+
 function OakSpeech:runStep(step)
   local kind = step.kind or "say"
   if kind == "gender" then
@@ -587,7 +638,7 @@ function OakSpeech:runStep(step)
     self:applyPic(step)
     self:afterReveal(step, function()
       self:runCry(step)
-      self:sayText(self:stepText(step), function() self:advance() end)
+      self:sayText(self:stepText(step), function() self:leaveBeat(step) end)
     end)
   elseif kind == "demo" then
     -- Intro_PrepMonFrontpic + MovePicRight + the cry, then OakText2.
@@ -725,10 +776,16 @@ function OakSpeech:drawPic()
   local y = 32 + (7 - h / 8) * 8
   local reveal = self.picReveal
   local off = 0
+  local rotating = false
   if reveal and reveal.kind == "fade" then
     G.setColor(1, 1, 1, math.min(1, reveal.t / reveal.dur))
   elseif reveal and reveal.kind == "wipe" then
     off = math.floor((160 - x) * (1 - math.min(1, reveal.t / reveal.dur)))
+  elseif reveal and reveal.kind == "rotate" then
+    rotating = GbcPalette.available() and self.picColors ~= nil
+    if not rotating then
+      G.setColor(1, 1, 1, math.min(1, reveal.t / reveal.dur))
+    end
   else
     G.setColor(1, 1, 1, 1)
   end
@@ -743,7 +800,14 @@ function OakSpeech:drawPic()
   -- its own output, so the two compose: the shader picks the colour and
   -- setColor's alpha still fades it in.
   if self.picColors and GbcPalette.available() then
-    GbcPalette.with(self.picColors, body)
+    -- pokecrystal/engine/menus/intro_menu.asm:858-860
+    local previous
+    if rotating then
+      previous = GbcPalette.setBgp(OakSpeech.frontpicBgp(reveal.t))
+    end
+    local ok, err = pcall(GbcPalette.with, self.picColors, body)
+    if rotating then GbcPalette.setBgp(previous) end
+    if not ok then error(err, 0) end
   else
     body()
   end
@@ -767,18 +831,24 @@ function OakSpeech:drawPlayerIcon()
   end
 end
 
+-- pokecrystal/engine/gfx/cgb_layouts.asm:895-904
+function OakSpeech:screenPalette()
+  return self.picColors or Chrome.DEFAULT_BOX_PALETTE
+end
+
 function OakSpeech:drawPanel()
   local G = love.graphics
+  local palette = self:screenPalette()
+  Chrome.paletteFill(0, 0, 160, 144, palette)
   G.setColor(1, 1, 1, 1)
-  G.rectangle("fill", 0, 0, 160, 144)
   self:drawPic()
   self:drawPlayerIcon()
   if self.shrinkText and self.fontOk then
     -- home/text.asm:142 PrintText -> SetUpTextbox -> SpeechTextbox
-    Chrome.textbox(0, 12, 18, 4)
+    Chrome.paletteBox(0, 12, 20, 6, palette)
     local row = 14
     for _, line in ipairs(self.shrinkText) do
-      if row <= 16 then Chrome.print(line, 1, row) end
+      if row <= 16 then Chrome.printThrough(line, 1, row, palette) end
       row = row + 2
     end
     G.setColor(1, 1, 1, 1)
@@ -786,8 +856,7 @@ function OakSpeech:drawPanel()
 end
 
 function OakSpeech:drawBody()
-  self:drawPanel()
-  IntroFade.paint(self, 160, 144)
+  IntroFade.paint(self, 160, 144, function() self:drawPanel() end)
 end
 
 -- ../pokecrystal/engine/menus/intro_menu.asm:875
@@ -796,7 +865,7 @@ function OakSpeech:draw()
 end
 
 function OakSpeech:drawWidescreen(winW, winH)
-  local r, g, b = IntroFade.surround(self, 1, 1, 1)
+  local r, g, b = IntroFade.surround(self, self:screenPalette(), 1, 1, 1)
   Chrome.withPanel(winW, winH, r, g, b, function() self:drawBody() end)
 end
 

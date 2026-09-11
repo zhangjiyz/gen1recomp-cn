@@ -281,11 +281,7 @@ local function buildGame()
   function translate.zoomStep()
     return function(delta)
       local g = live()
-      if not (g and g.world and g.world.map) then return end
-      g.world:zoomStep(delta)
-      g.options = g.options or {}
-      g.options.zoom = rawRequire("src.render.Zoom").offset
-      if g.persistOptions then g:persistOptions() end
+      if g and g.zoomStep then g:zoomStep(delta) end
     end
   end
 
@@ -1941,7 +1937,8 @@ COVERAGE["src.battle.BattleState"] = {
     .. "lowHealthAlarmActive playVictoryMusic say sayAuto openItems "
     .. "openReplacementMenu finish askNicknameUI playEntranceCry stampOT "
     .. "tryRun wantsFillScale bgMode BG_WORLD_DIM "
-    .. "isWideBattleLayout wideLayout",
+    .. "isWideBattleLayout wideLayout "
+    .. "extendedHUD extendedWorldHUD extendedBlackHUD",
   warned = "tryRun askNicknameUI",
   absent = "newWild newTrainer makeSafari makeGhost makeBattler resolveTurn "
     .. "computeDamage catchAttempt runRoll enter exit sgbPalettes "

@@ -84,6 +84,8 @@ local function playfieldRect(winW, winH)
   return 0, 0, winW or 0, winH or 0
 end
 
+Chrome.playfieldRect = playfieldRect
+
 function Chrome.fitScaleFor(winW, winH, tilesW, tilesH)
   local _, _, w, h = playfieldRect(winW, winH)
   return math.max(1, math.floor(math.min(w / (tilesW * 8), h / (tilesH * 8))))
@@ -119,6 +121,12 @@ end
 -- pokegold engine/battle/core.asm:8646, engine/events/halloffame.asm:270
 local function clipTo(x, y, w, h)
   local G = love.graphics
+  if G.transformPoint then
+    local x1, y1 = G.transformPoint(x, y)
+    local x2, y2 = G.transformPoint(x + w, y + h)
+    x, y = math.floor(math.min(x1, x2)), math.floor(math.min(y1, y2))
+    w, h = math.ceil(math.abs(x2 - x1)), math.ceil(math.abs(y2 - y1))
+  end
   if G.intersectScissor then G.intersectScissor(x, y, w, h)
   else G.setScissor(x, y, w, h) end
 end
@@ -411,11 +419,15 @@ end
 
 -- Print wrapped text from (tx, ty) downward, at most `rows` lines.
 -- ../pokecrystal/home/text.asm:473
-function Chrome.printWrapped(text, tx, ty, width, rows, step)
+function Chrome.printWrapped(text, tx, ty, width, rows, step, palette)
   step = step or 1
   local lines = Chrome.wrap(text, width)
   for i = 1, math.min(#lines, rows or #lines) do
-    Chrome.print(lines[i], tx, ty + (i - 1) * step)
+    if palette then
+      Chrome.printThrough(lines[i], tx, ty + (i - 1) * step, palette)
+    else
+      Chrome.print(lines[i], tx, ty + (i - 1) * step)
+    end
   end
   return #lines
 end

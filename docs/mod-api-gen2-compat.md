@@ -599,13 +599,21 @@ gains a field instead of the name gaining a prefix.
   each row's decision in `evolution.check`. The hook passes `data` where Gen 1
   passes `game`; positions 2-4 (mon, row, trigger) match.
 - *The frame (`src/core/Game2.lua`):* hooks `input.step`, `input.pointer`,
-  `render.zones`, `render.compose`, `render.output_enabled`, `render.output`,
+  `input.key`, `input.gamepad`, `input.wheel` (RFC 0020), `render.zones`,
+  `render.compose`, `render.output_enabled`, `render.output`,
   `render.letterbox`, `render.hud`, `render.viewport`, `render.window`. Each sits
   at the same moment `src/core/Game.lua` and `src/render/Renderer.lua` raise it
   -- the logic tick before the pad is read, a pointer the touch overlay gets
-  first refusal on, the palette zone list handed to the present pass, the
-  composed frame before ShaderFX, the letterbox, and the finished playfield rect
-  -- and carries the same payload.
+  first refusal on, a key/gamepad/wheel event before any of this method's own
+  hotkey or capture logic runs, the palette zone list handed to the present
+  pass, the composed frame before ShaderFX, the letterbox, and the finished
+  playfield rect -- and carries the same payload. `input.key`/`input.gamepad`
+  differ from the others in one way worth flagging: their `vanilla` argument
+  is this method's *entire* pre-existing body, not a stub, so a wrapper that
+  never calls `next` prevents that body from running for this event
+  (top-of-stack capture, hotkeys, `Input:*`, all of it) -- see RFC 0020 for
+  why that's a deliberate departure from `input.pointer`'s (inert) consume
+  contract, with real precedent from before the sandbox changes.
   `render.hud`'s `gameX` / `gameY` really is where Gold's dialogue boxes and
   menus land, because `Chrome.fitScale` / `fitOrigin` and `World:fitScale`
   compute the same number. `render.zones` is handed `nil` in GBC mode (Gold
@@ -623,9 +631,19 @@ gains a field instead of the name gaining a prefix.
   unchanged. The Gen 2 trainer card is the one player-art read still outside
   it: its portrait is a tile sheet that also carries the frame tiles, not a
   swappable pic.
-  `pokemon.sprite` has a second site of its own in
-  `src/ui/gen2/BattleState.lua`, which adds `letter` (Unown) and `shiny` to the
-  Gen 1 ctx keys -- both concepts Red does not have.
+  `pokemon.sprite` is raised by `Sprites.pic` over an already-resolved path,
+  and every Gen 2 screen that draws a mon pic calls it after its own Unown
+  form pick: battle (`kind` `battle` / `battle_anim`), the stats screen
+  (`summary` / `summary_anim`), Bill's PC (`box`), the Pokedex (`dex`), the
+  trade (`trade` / `trade_anim`), evolution (`evolution` / `evolution_anim`),
+  egg hatching (`hatch` / `hatch_anim`), the Hall of Fame front and back pics
+  (`hof` / `hof_anim`), Cameron's photo (`photo`), the Alph stamp viewer
+  (`unown_printer`), Oak's speech (`oak`), the script `pokepic` window
+  (`overworld`) and the online lobby preview (`online`, both games). The
+  `*_anim` kinds carry the Crystal anim sheet; a replaced static pic with an
+  unreplaced sheet holds the static pic instead of animating. Gen 2 ctx adds
+  `letter` (Unown) and `shiny` to the Gen 1 keys where the screen knows them,
+  and a `ctx.trueColor = true` answer skips the GBC palette on every screen.
 - *Save and the script VM:* `save.created`, `save.loaded`, `save.loading`,
   `save.writing`; hooks `save.write`, `save.new_game`, `script.command`, and
   the `script.started` / `script.ended` pair off `src/script/gen2/Vm.lua`.

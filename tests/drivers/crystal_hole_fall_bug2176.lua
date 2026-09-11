@@ -1,6 +1,8 @@
 local U = require("tests.drivers.util")
 local Permissions = require("src.world.gen2.Permissions")
 
+local SHOTS = os.getenv("POKEPORT_SHOT_DIR") or "/tmp/pokeport-shots"
+
 -- ../pokecrystal/maps/IcePathB1F.asm:82-85
 local MAP = "ICE_PATH_B1F"
 local BELOW = "ICE_PATH_B2F_MAHOGANY_SIDE"
@@ -50,7 +52,25 @@ return function(game)
   U.shot(game, "/tmp/pokeport-shots/hole2176_before.png")
 
   U.tap(game, dir)
-  U.wait(30)
+  local sawLoad, maskedThroughFadeIn, shotFadeIn = false, true, false
+  for _ = 1, 300 do
+    local ms = world.mapSetup
+    if ms and ms.phase == "in" then
+      sawLoad = true
+      if not world.playerMasked then maskedThroughFadeIn = false end
+      if not shotFadeIn and not world.fadeHold and (world.fadeLevel or 1) <= 0.5 then
+        shotFadeIn = true
+        U.shot(game, SHOTS .. "/2193_01_fade_in_no_player.png")
+      end
+    elseif sawLoad and not ms then
+      break
+    end
+    U.wait(1)
+  end
+  ok(sawLoad, "the FALL map setup loaded the floor below")
+  ok(maskedThroughFadeIn,
+    "ResetPlayerObjectAction: no player sprite anywhere during the fade-in")
+  ok(shotFadeIn, "and the empty landing cell was captured mid-ramp")
   for _ = 1, 240 do
     if world.skyfall then break end
     U.wait(1)
@@ -59,13 +79,36 @@ return function(game)
   ok(world.map and world.map.id == BELOW, "landed on " .. BELOW)
   ok(world:busy(), "and the applymovement holds the overworld")
   U.shot(game, "/tmp/pokeport-shots/hole2176_hidden.png")
-  U.wait(20)
-  U.shot(game, "/tmp/pokeport-shots/hole2176_falling.png")
-
+  os.execute('mkdir -p "' .. SHOTS .. '" 2>/dev/null')
+  local FIRST = SHOTS .. "/2240_01_first_unmasked_frame.png"
+  local FALLING = SHOTS .. "/2193_02_falling.png"
+  local onTile, sawFall, shotFirst, shotFalling = 0, false, false, false
   for _ = 1, 120 do
     if not world.skyfall then break end
+    if not world.playerMasked then
+      if world.skyfall.phase == "fall" then sawFall = true end
+      if (world.player.spriteYOffset or 0) >= 0 then onTile = onTile + 1 end
+      if not shotFirst then
+        shotFirst = true
+        game.capturePath = FIRST
+      elseif not shotFalling and (world.player.spriteYOffset or 0) > -40 then
+        shotFalling = true
+        game.capturePath = FALLING
+      end
+    end
     U.wait(1)
   end
+  ok(sawFall, "the sprite only reappears once it is dropping")
+  ok(onTile == 0, "no skyfall frame draws the player on the landing cell ("
+    .. onTile .. " did)")
+  U.wait(2)
+  local function onDisk(path)
+    local f = io.open(path, "rb")
+    if f then f:close() return true end
+    return false
+  end
+  ok(onDisk(FIRST) and onDisk(FALLING),
+    "captured the first unmasked and a falling frame")
   ok(world.shake ~= nil, "earthquake 16 fires on the landing")
   ok(world.shake and world.shake.amplitude == 1, "one pixel of it")
   U.shot(game, "/tmp/pokeport-shots/hole2176_landed.png")

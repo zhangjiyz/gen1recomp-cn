@@ -153,6 +153,7 @@ function StartMenu.new(game, opts)
     if item.translateLabel then item.label = Strings(item.label) end
     if item.translateDesc then
       item.descSource = item.desc
+      item.desc = translatedDescription(item.descSource)
     end
   end
   self.items = items

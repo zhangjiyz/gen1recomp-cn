@@ -977,6 +977,15 @@ function Game2:writeSave()
   return written, err
 end
 
+-- engine/overworld/events.asm:241-244
+function Game2:quickSaveAllowed()
+  local w = self.world
+  if not w then return true end
+  if not (w.map and w.player) then return true end
+  if not w.acceptsMenuInput then return true end
+  return w:acceptsMenuInput() == true
+end
+
 function Game2:syncEngine()
   if self._syncOff then return nil end
   local eng = self._syncEngineRef
@@ -1753,6 +1762,15 @@ function Game2:paintBattleSurround(w, h)
     ox, oy = Chrome.fitOriginFor(w, h, scale, sw / 8, sh / 8)
   end
   local pw, ph = sw * scale, sh * scale
+  if owner and owner.extendedHUD and owner:extendedHUD()
+     and stack and stack.top and stack:top() == owner then
+    if mode == "world" then return end
+    G.setColor(0, 0, 0, 1)
+    if ox > 0 then G.rectangle("fill", 0, 0, ox, h) end
+    if ox + pw < w then G.rectangle("fill", ox + pw, 0, w - ox - pw, h) end
+    G.setColor(1, 1, 1, 1)
+    return
+  end
   G.setColor(0, 0, 0, alpha)
   if oy > 0 then G.rectangle("fill", 0, 0, w, oy) end
   if oy + ph < h then G.rectangle("fill", 0, oy + ph, w, h - oy - ph) end
@@ -1963,9 +1981,11 @@ function Game2:hotkey(key)
     self:persistOptions()
   end
   if key == "f1" then
+    if not self:quickSaveAllowed() then return true end
     self:writeSave()
     return true
   elseif key == "f2" then
+    if not self:quickSaveAllowed() then return true end
     local loaded = Save.load()
     if loaded then self:continueGame(loaded) end
     return true
@@ -1991,22 +2011,31 @@ function Game2:hotkey(key)
     return self:pipelineHotkey(key, options, persist)
   end
   if key == "-" or key == "kp-" then
-    self.world:zoomStep(-1)
-    options.zoom = require("src.render.Zoom").offset
-    persist()
+    self:zoomStep(-1)
     return true
   elseif key == "=" or key == "kp+" then
-    self.world:zoomStep(1)
-    options.zoom = require("src.render.Zoom").offset
-    persist()
+    self:zoomStep(1)
     return true
   elseif key == "4" then
     self.world:zoomCycle()
-    options.zoom = require("src.render.Zoom").offset
-    persist()
+    self:storeZoom()
     return true
   end
   return self:pipelineHotkey(key, options, persist)
+end
+
+function Game2:storeZoom()
+  local options = self.options or {}
+  self.options = options
+  options.zoom = require("src.render.Zoom").offset
+  if self.save then self.save.options = options end
+  self:persistOptions()
+end
+
+function Game2:zoomStep(delta)
+  if not (self.world and self.world.map) then return end
+  self.world:zoomStep(delta)
+  self:storeZoom()
 end
 
 -- The (top, overworld) pair src/render/Pipelines.lua's free-roam gate reads.
@@ -2041,32 +2070,48 @@ function Game2:pipelineHotkey(key, options, persist)
   return true
 end
 
+-- RFC 0020: see Game:keypressed's own comment (src/core/Game.lua) for the
+-- full precedent this restores -- fires before self:hotkey,
+-- before Input:keypressed, before anything else in this method.
 function Game2:keypressed(key)
-  -- Escape is NOT a quit key: src/core/Input.lua binds it to START, which is
-  -- how the start menu opens on a desktop keyboard.  Quitting is the start
-  -- menu's QUIT row and the intro menu's EXIT GAME.
-  -- A screen that is open owns the keyboard, the same way Game hands the top
-  -- state first refusal -- except for the display ladder, which is a host
-  -- control rather than a game button.  It runs during the boot cinema too:
-  -- the title screen and the intro menu are exactly where someone tries the
-  -- COLOR key, and the ladder's world-only rungs already refuse themselves
-  -- when there is no map.
-  if self:hotkey(key) then return end
-  Input:keypressed(key)
+  local function vanilla()
+    -- Escape is NOT a quit key: src/core/Input.lua binds it to START, which is
+    -- how the start menu opens on a desktop keyboard.  Quitting is the start
+    -- menu's QUIT row and the intro menu's EXIT GAME.
+    -- A screen that is open owns the keyboard, the same way Game hands the top
+    -- state first refusal -- except for the display ladder, which is a host
+    -- control rather than a game button.  It runs during the boot cinema too:
+    -- the title screen and the intro menu are exactly where someone tries the
+    -- COLOR key, and the ladder's world-only rungs already refuse themselves
+    -- when there is no map.
+    if self:hotkey(key) then return end
+    Input:keypressed(key)
+  end
+  if not ModRuntime.wantsHook("input.key") then return vanilla() end
+  return ModRuntime.call("input.key", vanilla, self, { phase = "pressed", key = key })
 end
 
 function Game2:keyreleased(key)
-  Input:keyreleased(key)
+  local function vanilla()
+    Input:keyreleased(key)
+  end
+  if not ModRuntime.wantsHook("input.key") then return vanilla() end
+  return ModRuntime.call("input.key", vanilla, self, { phase = "released", key = key })
 end
 
+-- RFC 0020: input.wheel is a plain observer -- see Game:wheelmoved's own
+-- comment (src/core/Game.lua).
 function Game2:wheelmoved(_x, dy)
-  if self.phase == "boot" or self.stack:top() then return end
-  if not (self.world and self.world.map) then return end
-  if dy > 0 then
-    self.world:zoomStep(1)
-  elseif dy < 0 then
-    self.world:zoomStep(-1)
+  local function vanilla()
+    if self.phase == "boot" or self.stack:top() then return end
+    if dy > 0 then
+      self:zoomStep(1)
+    elseif dy < 0 then
+      self:zoomStep(-1)
+    end
   end
+  if not ModRuntime.wantsHook("input.wheel") then return vanilla() end
+  return ModRuntime.call("input.wheel", vanilla, self, dy)
 end
 
 -- ---- the gameplay pointer seam (#807) --------------------------------------
@@ -2293,55 +2338,73 @@ end
 -- the PACK's move-item, the party menu's reorder and half the soft-reset chord
 -- (A+B+SELECT+START) were all unreachable from a pad, and pressing the button
 -- to find out killed the process.  It reaches Input like every other button now.
+-- RFC 0020: input.gamepad covers press/release/axis, see Game:gamepadpressed's
+-- own comment (src/core/Game.lua) for why, and for the precedent this
+-- restores.
 function Game2:gamepadpressed(joystick, button)
-  -- a controller is being used: the touch overlay steps aside until the next
-  -- screen touch (mobile only; a no-op elsewhere)
-  TouchControls:noteGamepad()
-  local selectHeld = Input:isDown("select")
-  if not selectHeld and joystick and joystick.isGamepadDown then
-    local ok, down = pcall(function()
-      return joystick:isGamepadDown("back")
-    end)
-    selectHeld = ok and down == true
-  end
-  local top = self.stack and self.stack:top()
-  if top and top.onGamepadPressed then
-    top:onGamepadPressed(button)
-    return
-  end
-  if not selectHeld then
-    local action = Input:padAction(button)
-    if action == "speedUp" then
-      self:_cycleSpeed(1)
-      return
-    elseif action == "speedDown" then
-      self:_cycleSpeed(-1)
+  local function vanilla()
+    -- a controller is being used: the touch overlay steps aside until the next
+    -- screen touch (mobile only; a no-op elsewhere)
+    TouchControls:noteGamepad()
+    local selectHeld = Input:isDown("select")
+    if not selectHeld and joystick and joystick.isGamepadDown then
+      local ok, down = pcall(function()
+        return joystick:isGamepadDown("back")
+      end)
+      selectHeld = ok and down == true
+    end
+    local top = self.stack and self.stack:top()
+    if top and top.onGamepadPressed then
+      top:onGamepadPressed(button)
       return
     end
-  end
-  if selectHeld then
-    local digit = GamepadMap.displayChordDigit(button)
-    if digit then
-      self:keypressed(digit)
-      return
+    if not selectHeld then
+      local action = Input:padAction(button)
+      if action == "speedUp" then
+        self:_cycleSpeed(1)
+        return
+      elseif action == "speedDown" then
+        self:_cycleSpeed(-1)
+        return
+      end
     end
-  end
-  -- START opens the start menu in the overworld; it used to quit, from before
-  -- there was a menu to open.
+    if selectHeld then
+      local digit = GamepadMap.displayChordDigit(button)
+      if digit then
+        self:keypressed(digit)
+        return
+      end
+    end
+    -- START opens the start menu in the overworld; it used to quit, from before
+    -- there was a menu to open.
 
-  Input:gamepadpressed(joystick, button)
+    Input:gamepadpressed(joystick, button)
+  end
+  if not ModRuntime.wantsHook("input.gamepad") then return vanilla() end
+  return ModRuntime.call("input.gamepad", vanilla, self,
+    { phase = "pressed", joystick = joystick, button = button })
 end
 
 function Game2:gamepadreleased(joystick, button)
-  Input:gamepadreleased(joystick, button)
-  local top = self.stack and self.stack:top()
-  if top and top.onGamepadReleased then top:onGamepadReleased(button) end
+  local function vanilla()
+    Input:gamepadreleased(joystick, button)
+    local top = self.stack and self.stack:top()
+    if top and top.onGamepadReleased then top:onGamepadReleased(button) end
+  end
+  if not ModRuntime.wantsHook("input.gamepad") then return vanilla() end
+  return ModRuntime.call("input.gamepad", vanilla, self,
+    { phase = "released", joystick = joystick, button = button })
 end
 
 function Game2:gamepadaxis(joystick, axis, value)
-  -- past-deadzone only, so resting-stick drift cannot hide the overlay
-  if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
-  Input:gamepadaxis(joystick, axis, value)
+  local function vanilla()
+    -- past-deadzone only, so resting-stick drift cannot hide the overlay
+    if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
+    Input:gamepadaxis(joystick, axis, value)
+  end
+  if not ModRuntime.wantsHook("input.gamepad") then return vanilla() end
+  return ModRuntime.call("input.gamepad", vanilla, self,
+    { phase = "axis", joystick = joystick, axis = axis, value = value })
 end
 
 -- The raw joystick road, same bodies as src/core/Game.lua:935 (#620, #632, #1570).

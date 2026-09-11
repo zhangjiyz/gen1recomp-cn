@@ -30,6 +30,13 @@ local FADE_BGP = {
   white = { out = { 0x90, 0x40, 0x00 },
             ["in"] = { 0x40, 0x90, 0xE4 } },
 }
+-- FadePal1..FadePal8 rOBP0 column, pokered home/fade.asm:65-73
+local FADE_OBP0 = {
+  black = { out = { 0xD0, 0xE4, 0xFE, 0xFF },
+            ["in"] = { 0xFF, 0xFE, 0xE4, 0xD0 } },
+  white = { out = { 0x80, 0x40, 0x00 },
+            ["in"] = { 0x40, 0x80, 0xD0 } },
+}
 local BGP_IDENTITY = 0xE4
 
 -- Veil alpha `t` frames into a `len`-frame fade out.  GBFadeOutToBlack
@@ -143,27 +150,40 @@ function Transition:alpha()
 end
 
 -- the $E4 identity BGP, pokered engine/gfx/palettes.asm:517-518
+local shadeMaps = {}
 function Transition.shadeMapFor(byte)
   if not byte or byte == BGP_IDENTITY then return nil end
-  local map = {}
-  for i = 0, 3 do map[i] = math.floor(byte / (4 ^ i)) % 4 end
+  local map = shadeMaps[byte]
+  if not map then
+    map = {}
+    for i = 0, 3 do map[i] = math.floor(byte / (4 ^ i)) % 4 end
+    shadeMaps[byte] = map
+  end
   return map
 end
 
-function Transition:fadeTable()
+function Transition:fadeTable(column)
   local c = self.color or { 0, 0, 0 }
   local white = (c[1] or 0) > 0.5 and (c[2] or 0) > 0.5 and (c[3] or 0) > 0.5
-  local set = FADE_BGP[white and "white" or "black"]
+  local set = (column or FADE_BGP)[white and "white" or "black"]
   return set[self.phase == "in" and "in" or "out"]
+end
+
+local function fadeByte(self, tab)
+  local len = (self.phase == "out") and self.frames or self.framesIn
+  local step = math.min(#tab,
+    math.floor(fadeAlpha(self.t, len) * (#tab - 1) + 0.5) + 1)
+  return tab[step] or 0xFF
 end
 
 -- pokered home/fade.asm:58
 function Transition:bgp()
-  local len = (self.phase == "out") and self.frames or self.framesIn
-  local tab = self:fadeTable()
-  local step = math.min(#tab,
-    math.floor(fadeAlpha(self.t, len) * (#tab - 1) + 0.5) + 1)
-  return tab[step] or 0xFF
+  return fadeByte(self, self:fadeTable())
+end
+
+-- pokered home/fade.asm:55
+function Transition:obp0()
+  return fadeByte(self, self:fadeTable(FADE_OBP0))
 end
 
 function Transition:draw()
@@ -220,6 +240,36 @@ end
 function WhiteFlash:draw()
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
+end
+
+-- home/fade.asm:26-41
+local BgpFade = {}
+BgpFade.__index = BgpFade
+BgpFade.isOpaque = false
+
+function Transition.whiteOut(game, onDone)
+  return setmetatable({ game = game, onDone = onDone, t = 0,
+                        bytes = FADE_BGP.white.out,
+                        step = FADE_STEP_FRAMES }, BgpFade)
+end
+
+function BgpFade:update(dt)
+  self.t = self.t + 1
+  if self.t >= #self.bytes * self.step then
+    self.game.stack:pop()
+    if self.onDone then self.onDone() end
+  end
+end
+
+-- home/fade.asm:58
+function BgpFade:bgpByte()
+  local i = math.floor((math.max(1, self.t) - 1) / self.step) + 1
+  return self.bytes[math.min(#self.bytes, i)]
+end
+
+function BgpFade:draw()
+  require("src.render.PaletteFX")
+    .setShadeMap(Transition.shadeMapFor(self:bgpByte()))
 end
 
 -- Coming back to the overworld after a battle.

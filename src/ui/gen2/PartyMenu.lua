@@ -575,8 +575,12 @@ function PartyMenu:updateSubmenu(input)
   elseif input:wasPressed("down") then
     menu.index = menu.index < total and menu.index + 1 or 1
   elseif input:wasPressed("b") then
+    -- engine/pokemon/mon_submenu.asm:50
+    self:playSfx("Sfx_ReadText2")
     self:closeSubmenu()
   elseif input:wasPressed("a") then
+    -- engine/pokemon/mon_submenu.asm:50
+    self:playSfx("Sfx_ReadText2")
     local item = menu.items[menu.index]
     local mon = menu.mon
     local slot = menu.slot or self.index
@@ -743,6 +747,8 @@ function PartyMenu:update(_dt)
   elseif input:wasPressed("down") then
     self.index = self.index < total and self.index + 1 or 1
   elseif input:wasPressed("a") then
+    -- engine/pokemon/party_menu.asm:694
+    self:playSfx("Sfx_ReadText2")
     self:storeCursor()
     if self:isCancel() then
       if self.onCancel then self.onCancel() end
@@ -759,6 +765,8 @@ function PartyMenu:update(_dt)
       self.onChoose(self.index, mon)
     end
   elseif input:wasPressed("b") then
+    -- engine/pokemon/party_menu.asm:701
+    self:playSfx("Sfx_ReadText2")
     self:storeCursor()
     if self.onCancel then self.onCancel() end
   end
@@ -936,6 +944,7 @@ local function statusString(mon, hp, statuses)
   if (hp or 0) <= 0 then return Strings(FAINTED_LABEL) end
   local status = mon.status
   if not status then return nil end
+  statuses = statuses and (statuses.gen2Statuses or statuses)
   local key = tostring(status):lower()
   if statuses and statuses[key] then
     return Strings(Status.hudLabelFor(statuses, key))
