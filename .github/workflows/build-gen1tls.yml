@@ -1,0 +1,59 @@
+name: Build Windows gen1tls
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: "How many days to keep the downloadable gen1tls artifact."
+        required: false
+        default: "14"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-gen1tls-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gen1tls-win-x64:
+    name: build gen1tls.dll (win-x64)
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish gen1tls.dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "dist/native/win-x64"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          dotnet publish native/tls_dial/Gen1Tls.csproj `
+            -c Release `
+            -r win-x64 `
+            -o $out `
+            /p:ContinuousIntegrationBuild=true
+
+          $dll = Join-Path $out "gen1tls.dll"
+          if (-not (Test-Path $dll)) {
+            throw "gen1tls.dll missing after publish"
+          }
+
+          Get-Item $dll | Format-List Name, Length, LastWriteTime
+          Get-FileHash $dll -Algorithm SHA256 | Format-List Algorithm, Hash, Path
+
+      - name: Upload gen1tls.dll
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen1tls-win-x64
+          path: dist/native/win-x64/gen1tls.dll
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
